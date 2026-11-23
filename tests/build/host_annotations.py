@@ -246,6 +246,50 @@ UDONCL_EXPORT int clear(void) { image = 0; return 0; }
                               'typedef struct _cl_mem *cl_mem;\n' + source)
         harness.rejected(name, program, diagnostic, '--host-llvm', module)
 
+    # UDONCL_PROGRAM names the program in the Host source. The name is not
+    # Host memory.
+    declared = harness.host('declared', '''\
+#include <udoncl/export.h>
+UDONCL_PROGRAM("declared_program");
+UDONCL_EXPORT int run(void) { return 0; }
+''')
+    unnamed = {'schema_version': 2}
+    artifact, result = harness.compile('declared', unnamed, '--host-llvm',
+                                       declared)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    manifest = json.loads((artifact / 'manifest.json').read_text(
+        encoding='utf-8'))
+    assert manifest['program']['name'] == 'declared_program', manifest
+    assert b'declared_program' not in (artifact / 'host.uasm').read_bytes()
+    harness.rejected(
+        'declared-and-configured', program,
+        'the Unity library config key program cannot be combined with '
+        'UDONCL_PROGRAM("declared_program")', '--host-llvm', declared)
+    harness.rejected(
+        'undeclared', unnamed,
+        'a Unity library Host requires UDONCL_PROGRAM("name")',
+        '--host-llvm', host)
+    twice = harness.host('declared-twice', '''\
+#include <udoncl/export.h>
+UDONCL_PROGRAM("first");
+static const char second[] __attribute__((annotate("udoncl.program"), used)) =
+    "second";
+UDONCL_EXPORT int run(void) { return 0; }
+''')
+    harness.rejected(
+        'declared-twice', unnamed,
+        'a Unity library Host declares exactly one UDONCL_PROGRAM; found '
+        '"first" and "second"', '--host-llvm', twice)
+    misnamed = harness.host('misnamed', '''\
+#include <udoncl/export.h>
+UDONCL_PROGRAM("not a name");
+UDONCL_EXPORT int run(void) { return 0; }
+''')
+    harness.rejected(
+        'misnamed', unnamed,
+        'Unity library program name must be a C identifier: not a name',
+        '--host-llvm', misnamed)
+
     # --report-static-resources says whether static Unity resource lowering
     # applies; a Host without Device resources is never assessed.
     _, report = harness.compile('report', program, '--host-llvm', host,

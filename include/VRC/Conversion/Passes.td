@@ -160,7 +160,8 @@ def AttachHostAnnotationsPass : Pass<"vrc-attach-host-annotations", "mlir::Modul
     `udoncl.parameter_names` on a function whose argument count still
     matches, and `public` (UDONCL_PUBLIC variables) -> `udoncl.public` with
     the element type ("float32", "int32" or "int64") on the `udonhl.global`.
-    A named function or variable that recovery lost is an error.
+    The UDONCL_PROGRAM name (`program`) becomes the `udoncl.program` module
+    attribute. A named function or variable that recovery lost is an error.
   }];
   let dependentDialects = ["mlir::func::FuncDialect", "::vrc::udonhl::UdonHLDialect"];
 }
@@ -340,7 +341,10 @@ def ConfigureUnityExportsPass : Pass<"vrc-configure-unity-exports", "mlir::Modul
   let description = [{
     Consumes the Unity library configuration that udonclc attaches as the
     `udoncl.unity_library_config` module dictionary (the JSON configuration
-    file converted key by key). Schema 1 lists every export with its id,
+    file converted key by key). The program is named by the `udoncl.program`
+    module attribute (UDONCL_PROGRAM) or the configuration's `program` key,
+    exactly one of the two, and recorded as `vrc.program`. Schema 1 lists
+    every export with its id,
     public name and parameter names. Schema 2 publishes every function marked
     `udoncl.export` under the PascalCase of its symbol, with parameters named
     after `udoncl.parameter_names` (arg<i> without one), unless an

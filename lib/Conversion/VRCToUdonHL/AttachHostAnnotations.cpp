@@ -26,6 +26,18 @@ struct AttachHostAnnotationsPass
     module->removeAttr(annotationsAttribute);
     UnitAttr unit = UnitAttr::get(module.getContext());
 
+    // UDONCL_PROGRAM names the program of the module.
+    if (Attribute value = annotations.get("program")) {
+      auto program = dyn_cast<StringAttr>(value);
+      if (!program) {
+        module.emitError("malformed ")
+            << annotationsAttribute << " entry program";
+        signalPassFailure();
+        return;
+      }
+      module->setAttr("udoncl.program", program);
+    }
+
     // Marks every function a symbol list names with `marker`.
     auto mark = [&](StringRef key, StringRef marker,
                     StringRef lostMessage) -> LogicalResult {

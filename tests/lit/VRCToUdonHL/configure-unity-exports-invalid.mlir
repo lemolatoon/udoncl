@@ -76,3 +76,26 @@ module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, prog
   func.func @both() attributes {udoncl.export, udoncl.static_constructor, udoncl.static_destructor} { return }
   func.func @run() attributes {udoncl.export} { return }
 }
+
+// -----
+
+// expected-error@below {{the Unity library config key program cannot be combined with UDONCL_PROGRAM("declared")}}
+module attributes {udoncl.program = "declared",
+    udoncl.unity_library_config = {schema_version = 2 : i64, program = "configured"}} {
+  func.func @run() attributes {udoncl.export} { return }
+}
+
+// -----
+
+// expected-error@below {{a Unity library Host requires UDONCL_PROGRAM("name")}}
+module attributes {udoncl.unity_library_config = {schema_version = 2 : i64}} {
+  func.func @run() attributes {udoncl.export} { return }
+}
+
+// -----
+
+// expected-error@below {{Unity library program name must be a C identifier: not-a-name}}
+module attributes {udoncl.program = "not-a-name",
+    udoncl.unity_library_config = {schema_version = 2 : i64}} {
+  func.func @run() attributes {udoncl.export} { return }
+}

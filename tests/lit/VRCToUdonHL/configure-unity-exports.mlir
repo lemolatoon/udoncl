@@ -164,3 +164,17 @@ module attributes {udoncl.unity_library_config = {
 // CHECK-SAME: vrc.static_initialization = {constructor = "initialize", omitted_exports = ["shutdown"]}
 // CHECK: func.func @initialize
 // CHECK-NOT: @shutdown
+
+// -----
+
+// UDONCL_PROGRAM names the program when the configuration does not.
+module attributes {udoncl.program = "declared_probe",
+    udoncl.unity_library_config = {schema_version = 2 : i64}} {
+  func.func @run() attributes {udoncl.export} {
+    return
+  }
+}
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.program = "declared_probe"
+// CHECK: func.func @run

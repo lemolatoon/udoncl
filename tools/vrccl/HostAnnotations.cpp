@@ -1,10 +1,12 @@
 #include "HostAnnotations.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
 
@@ -15,6 +17,19 @@ namespace udoncl {
 constexpr StringLiteral kExportAnnotation = "udoncl.export";
 constexpr StringLiteral kWhileBusyAnnotation = "udoncl.export_while_busy";
 constexpr StringLiteral kPublicAnnotation = "udoncl.public";
+constexpr StringLiteral kProgramAnnotation = "udoncl.program";
+
+/// The annotation string of a llvm.global.annotations entry, if it has one.
+std::optional<StringRef> annotationString(const ConstantStruct &entry) {
+  auto *annotationGlobal = dyn_cast<GlobalVariable>(
+      getUnderlyingObject(entry.getOperand(1), /*MaxLookup=*/6));
+  auto *annotation = annotationGlobal ? dyn_cast_or_null<ConstantDataArray>(
+                                            annotationGlobal->getInitializer())
+                                      : nullptr;
+  if (!annotation || !annotation->isCString())
+    return std::nullopt;
+  return annotation->getAsCString();
+}
 
 /// The element type a UDONCL_PUBLIC(type) annotation names.
 std::optional<StringRef> publicElementType(StringRef type) {
@@ -92,16 +107,29 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
     }
     const Value *target = entry->getOperand(0)->stripPointerCasts();
     auto *function = dyn_cast<Function>(target);
-    auto *annotationGlobal = dyn_cast<GlobalVariable>(
-        getUnderlyingObject(entry->getOperand(1), /*MaxLookup=*/6));
-    auto *annotation = annotationGlobal
-                           ? dyn_cast_or_null<ConstantDataArray>(
-                                 annotationGlobal->getInitializer())
-                           : nullptr;
-    StringRef publicType;
-    if (annotation && annotation->isCString() &&
-        annotation->getAsCString().starts_with(kPublicAnnotation)) {
-      StringRef kind = annotation->getAsCString();
+    std::optional<StringRef> annotation = annotationString(*entry);
+    // UDONCL_PROGRAM("name"): a variable holding the program name.
+    if (annotation && *annotation == kProgramAnnotation) {
+      auto *variable = dyn_cast<GlobalVariable>(target);
+      auto *name = variable && variable->hasInitializer()
+                       ? dyn_cast<ConstantDataArray>(variable->getInitializer())
+                       : nullptr;
+      if (!name || !name->isCString()) {
+        diagnostics << "UDONCL_PROGRAM requires a string literal name\n";
+        return mlir::failure();
+      }
+      if (annotations.program) {
+        diagnostics << "a Unity library Host declares exactly one "
+                       "UDONCL_PROGRAM; found \""
+                    << *annotations.program << "\" and \""
+                    << name->getAsCString() << "\"\n";
+        return mlir::failure();
+      }
+      annotations.program = name->getAsCString().str();
+      continue;
+    }
+    if (annotation && annotation->starts_with(kPublicAnnotation)) {
+      StringRef kind = *annotation;
       auto *variable = dyn_cast<GlobalVariable>(target);
       std::string name = target->getName().str();
       if (!variable) {
@@ -147,12 +175,12 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
       annotations.publicGlobals.push_back({name, elementType->str()});
       continue;
     }
-    if (!function || !annotation || !annotation->isCString()) {
+    if (!function || !annotation) {
       diagnostics
           << "llvm.global.annotations entry is not a function annotation\n";
       return mlir::failure();
     }
-    StringRef kind = annotation->getAsCString();
+    StringRef kind = *annotation;
     if (kind != kExportAnnotation && kind != kWhileBusyAnnotation)
       continue;
     StringRef macro = kind == kExportAnnotation ? "UDONCL_EXPORT"
@@ -201,13 +229,37 @@ void internalizePublicGlobals(llvm::Module &module,
 }
 
 void eraseHostAnnotations(llvm::Module &module) {
+  // The UDONCL_PROGRAM variables only carry the program name, which the
+  // compiler has read; their `used` attribute kept them until here.
+  SmallPtrSet<Constant *, 2> programs;
   // The annotations have been converted to compiler-owned metadata. The MLIR
   // LLVM importer otherwise preserves the appending metadata global as an
   // ordinary llvm.mlir.global, which is not Host memory and must not reach
   // raw memory recovery.
   if (GlobalVariable *annotations =
-          module.getNamedGlobal("llvm.global.annotations"))
+          module.getNamedGlobal("llvm.global.annotations")) {
+    if (auto *entries =
+            dyn_cast_or_null<ConstantArray>(annotations->getInitializer()))
+      for (const Use &use : entries->operands())
+        if (auto *entry = dyn_cast<ConstantStruct>(use.get()))
+          if (entry->getNumOperands() >= 2 &&
+              annotationString(*entry) == kProgramAnnotation)
+            if (auto *variable = dyn_cast<GlobalVariable>(
+                    entry->getOperand(0)->stripPointerCasts()))
+              programs.insert(variable);
     annotations->eraseFromParent();
+  }
+  if (!programs.empty()) {
+    removeFromUsedLists(module, [&](Constant *value) {
+      return programs.contains(value->stripPointerCasts());
+    });
+    for (Constant *program : programs) {
+      auto *variable = cast<GlobalVariable>(program);
+      variable->removeDeadConstantUsers();
+      if (variable->use_empty())
+        variable->eraseFromParent();
+    }
+  }
   // So are the constructor and destructor lists: the compiler runs a
   // constructor itself (static initialization), and a closed-world artifact
   // never unloads.

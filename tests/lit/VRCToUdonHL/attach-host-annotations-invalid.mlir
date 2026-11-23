@@ -27,3 +27,9 @@ module attributes {udoncl.host_annotations = {public = [{symbol = "image", eleme
 // expected-error@+1 {{malformed udoncl.host_annotations entry public}}
 module attributes {udoncl.host_annotations = {public = [{symbol = "image", element_type = "double"}]}} {
 }
+
+// -----
+
+// expected-error@+1 {{malformed udoncl.host_annotations entry program}}
+module attributes {udoncl.host_annotations = {program = 1 : i32}} {
+}

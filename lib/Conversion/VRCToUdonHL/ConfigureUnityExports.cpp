@@ -393,12 +393,25 @@ LogicalResult ExportConfiguration::configure(bool finalizeReachability) {
   for (func::FuncOp function : module.getOps<func::FuncOp>())
     if (function->hasAttr("udoncl.export"))
       annotatedExports.insert(function.getSymName().str());
+  // The program is named in the Host source (UDONCL_PROGRAM), or by the
+  // configuration until the configuration file is retired; never both.
   auto program = getString(config, "program");
+  if (auto declared = module->getAttrOfType<StringAttr>("udoncl.program")) {
+    if (program)
+      return error() << "the Unity library config key program cannot be "
+                        "combined with UDONCL_PROGRAM(\""
+                     << declared.getValue() << "\")";
+    program = declared.getValue();
+  }
+  if (!program)
+    return error() << "a Unity library Host requires UDONCL_PROGRAM(\"name\")";
+  if (!isUdonSharpIdentifier(*program))
+    return error() << "Unity library program name must be a C identifier: "
+                   << *program;
   auto schema = getInteger(config, "schema_version");
-  if (!schema || (*schema != 1 && *schema != 2) || !program ||
-      !isUdonSharpIdentifier(*program))
-    return error() << "Unity library config requires schema_version 1 or 2 "
-                      "and a safe program name";
+  if (!schema || (*schema != 1 && *schema != 2))
+    return error() << "Unity library config requires schema_version 1 or 2";
+  module->setAttr("vrc.program", builder.getStringAttr(*program));
   auto exports =
       config.getAs<ArrayAttr>(*schema == 1 ? "exports" : "export_overrides");
   if (*schema == 1 && (!exports || exports.empty()))

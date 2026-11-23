@@ -3,5 +3,5 @@ add_llvm_executable(vrccl vrccl.cpp HostAnnotations.cpp HostBufferPlan.cpp Unity
 set_target_properties(vrccl PROPERTIES OUTPUT_NAME udonclc)
 llvm_update_compile_flags(vrccl)
 target_link_libraries(vrccl PRIVATE VRCHostStoragePipeline VRCBoundaryFrontend VRCConversionHost VRCConversionVRC VRCConversionDevice VRCConversionUdon VRCManifest VRCTargetHLSL VRCTargetUdon
-  MLIRParser MLIRPass MLIRAsyncDialect MLIRAsyncTransforms MLIRGPUDialect MLIRMemRefDialect MLIRArithDialect MLIRFuncDialect MLIRFuncInlinerExtension LLVMAnalysis)
+  MLIRParser MLIRPass MLIRAsyncDialect MLIRAsyncTransforms MLIRGPUDialect MLIRMemRefDialect MLIRArithDialect MLIRFuncDialect MLIRFuncInlinerExtension LLVMAnalysis LLVMTransformUtils)
 vrc_configure_target(vrccl)

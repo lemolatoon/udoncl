@@ -24,6 +24,16 @@
  * Its clCreateBuffer flags give its direction: CL_MEM_READ_ONLY is written by
  * U#, CL_MEM_WRITE_ONLY is read by U#. The variable must hold the buffer of
  * exactly one allocation context.
+ *
+ * UDONCL_PROGRAM("name") names the Unity library program the Host belongs
+ * to. Write it once, at file scope, in exactly one Host translation unit of
+ * the library:
+ *
+ *   UDONCL_PROGRAM("saxpy_demo");
+ *
+ * The name must be a C identifier; the Unity importer installs the program
+ * under Assets/udoncl-generated/<name>. udonclc rejects a Host without one or
+ * with more than one.
  */
 #if defined(__clang__)
 #if defined(__has_attribute)
@@ -36,10 +46,14 @@
   __attribute__((annotate("udoncl.export"),                                    \
                  annotate("udoncl.export_while_busy")))
 #define UDONCL_PUBLIC(type) __attribute__((annotate("udoncl.public:" #type)))
+#define UDONCL_PROGRAM(name)                                                   \
+  static const char __udoncl_program[]                                         \
+      __attribute__((annotate("udoncl.program"), used)) = name
 #else
 #define UDONCL_EXPORT
 #define UDONCL_EXPORT_WHILE_BUSY
 #define UDONCL_PUBLIC(type)
+#define UDONCL_PROGRAM(name) extern const char __udoncl_program_unused[]
 #endif
 
 #endif

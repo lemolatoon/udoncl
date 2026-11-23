@@ -1584,18 +1584,20 @@ markRecoveredHostAnnotations(ModuleOp module,
   SmallVector<NamedAttribute> parameterNames;
   for (const auto &[symbol, names] : annotations.parameterNames)
     parameterNames.push_back(builder.getNamedAttr(symbol, strings(names)));
-  module->setAttr(
-      "udoncl.host_annotations",
-      builder.getDictionaryAttr({
-          builder.getNamedAttr("constructors",
-                               strings(annotations.constructors)),
-          builder.getNamedAttr("destructors", strings(annotations.destructors)),
-          builder.getNamedAttr("exports", strings(annotations.exports)),
-          builder.getNamedAttr("parameter_names",
-                               builder.getDictionaryAttr(parameterNames)),
-          builder.getNamedAttr("public", builder.getArrayAttr(publicGlobals)),
-          builder.getNamedAttr("while_busy", strings(annotations.whileBusy)),
-      }));
+  SmallVector<NamedAttribute> entries{
+      builder.getNamedAttr("constructors", strings(annotations.constructors)),
+      builder.getNamedAttr("destructors", strings(annotations.destructors)),
+      builder.getNamedAttr("exports", strings(annotations.exports)),
+      builder.getNamedAttr("parameter_names",
+                           builder.getDictionaryAttr(parameterNames)),
+      builder.getNamedAttr("public", builder.getArrayAttr(publicGlobals)),
+      builder.getNamedAttr("while_busy", strings(annotations.whileBusy)),
+  };
+  if (annotations.program)
+    entries.push_back(builder.getNamedAttr(
+        "program", builder.getStringAttr(*annotations.program)));
+  module->setAttr("udoncl.host_annotations",
+                  builder.getDictionaryAttr(entries));
   PassManager attach(module.getContext());
   attach.addPass(::vrc::createAttachHostAnnotationsPass());
   return attach.run(module);
@@ -3337,7 +3339,14 @@ int main(int argc, char **argv) {
           isa<::vrc::vrc::BufferUploadOp, ::vrc::vrc::BufferReadbackOp,
               ::vrc::vrc::AwaitOp>(operation);
     });
-    auto program = unityConfig->getString("program");
+    // vrc-configure-unity-exports resolved the program name from
+    // UDONCL_PROGRAM or the configuration.
+    auto programAttr = (*module)->getAttrOfType<StringAttr>("vrc.program");
+    if (!programAttr) {
+      errs() << "Unity library export configuration named no program\n";
+      return 1;
+    }
+    std::optional<StringRef> program = programAttr.getValue();
     manifest["artifact_stage"] = "unity-udoncl-library";
     json::Object programManifest{{"name", *program},
                                  {"assembly", "host.uasm"},

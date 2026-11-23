@@ -3,6 +3,7 @@
 
 #include "mlir/Support/LogicalResult.h"
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -25,6 +26,8 @@ struct PublicGlobal {
 /// (<udoncl/export.h>), collected in one place so every consumer of the Host
 /// sees the same roots.
 struct HostAnnotations {
+  /// The UDONCL_PROGRAM name, if the Host declares one.
+  std::optional<std::string> program;
   /// UDONCL_EXPORT definitions, in annotation order.
   std::vector<std::string> exports;
   /// UDONCL_EXPORT_WHILE_BUSY definitions; a subset of `exports`.
@@ -42,15 +45,16 @@ struct HostAnnotations {
 
 /// Reads the UdonCL annotations of `module` without changing it. An export
 /// annotation on something other than a function with a linked definition,
-/// and a UDONCL_PUBLIC annotation on something other than a file-scope,
-/// non-static pointer variable definition, are errors.
+/// a UDONCL_PUBLIC annotation on something other than a file-scope,
+/// non-static pointer variable definition, and more than one UDONCL_PROGRAM
+/// are errors.
 mlir::FailureOr<HostAnnotations>
 readHostAnnotations(const llvm::Module &module, llvm::raw_ostream &diagnostics);
 
-/// Erases the annotation metadata `readHostAnnotations` consumed, and the
-/// annotation and source file name strings it referenced: left in place they
-/// would become Host raw memory, and the artifact would depend on the path of
-/// the Host C source.
+/// Erases the annotation metadata `readHostAnnotations` consumed, the
+/// annotation and source file name strings it referenced, and the
+/// UDONCL_PROGRAM name variables: left in place they would become Host raw
+/// memory, and the artifact would depend on the path of the Host C source.
 void eraseHostAnnotations(llvm::Module &module);
 
 /// Gives every UDONCL_PUBLIC variable internal linkage. A Unity library Host
