@@ -1861,9 +1861,6 @@ def main():
         udonblas_artifact / 'frontend.recovered.mlir'
     ).read_text(encoding='utf-8')
     assert 'vrc.static_device_resource_discovery' in udonblas_recovered
-    assert udonblas_recovered.count(
-        'vrc.static_device_allocation_site'
-    ) == 3
     udonblas_inventory = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_device_resource_inventory'
     )
@@ -1885,6 +1882,16 @@ def main():
     udonblas_layout = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_unity_buffer_layout_plan'
     )
+    udonblas_transfer_materialization = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_transfer_resource_materialization'
+    )
+    udonblas_readiness = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_unity_resource_lowering_readiness'
+    )
+    # The UDONCL_PUBLIC matrix_a, matrix_b and matrix_c hold the three
+    # allocations: no config lists a buffer, and each resolves at compile time
+    # to its own Unity Texture.
+    assert not (udonblas_source / 'unity-library.json').exists()
     assert udonblas_inventory.count('resource_kind = "allocation"') == 3
     assert 'context_count = 3 : i32' in udonblas_context_plan
     assert 'allocation_site_count = 3 : i32' in udonblas_context_plan
@@ -1894,19 +1901,19 @@ def main():
     assert 'cloned_function_count = 0 : i32' in udonblas_context_specialization
     assert 'rewritten_call_count = 0 : i32' in udonblas_context_specialization
     assert 'specialized_context_count = 0 : i32' in udonblas_context_specialization
-    assert udonblas_inventory.count('public = false') == 3
-    assert 'vrc.static_device_resource_public_bindings' not in udonblas_recovered
+    assert udonblas_inventory.count('public = true') == 3
+    for name, access in [('matrix_a', 'input'), ('matrix_b', 'input'),
+                         ('matrix_c', 'output')]:
+        assert (f'name = "{name}", persistent = true, public = true, '
+                f'public_access = "{access}"') in udonblas_inventory, name
     assert udonblas_assignments.count('texture_id = ') == 3
-    assert 'resolved_count = 0 : i32' in udonblas_public_aliases
-    assert 'configured_count = 3 : i32' in udonblas_reconciliation
-    assert 'resolved_alias_count = 0 : i32' in udonblas_reconciliation
-    assert 'unresolved_public_count = 3 : i32' in udonblas_reconciliation
+    assert 'resolved_count = 3 : i32' in udonblas_public_aliases
+    assert 'configured_count = 0 : i32' in udonblas_reconciliation
+    assert 'declared_alias_count = 3 : i32' in udonblas_reconciliation
+    assert 'unresolved_public_count = 0 : i32' in udonblas_reconciliation
     assert 'unresolved_private_count = 0 : i32' in udonblas_reconciliation
-    assert 'planned_count = 3 : i32' in udonblas_layout
-    assert 'legacy_configured_count = 3 : i32' in udonblas_layout
-    assert 'blocker_count = 3 : i32' in udonblas_layout
-    assert 'unresolved_public_count = 3 : i32' in udonblas_layout
-    assert 'ready = false' in udonblas_layout
+    assert 'blocker_count = 0 : i32' in udonblas_layout
+    assert 'ready = true' in udonblas_layout
     udonblas_transfers = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_transfer_bindings'
     )
@@ -1919,22 +1926,53 @@ def main():
     ) == 3
     assert udonblas_recovered.count('transfer_kind = "write"') == 2
     assert udonblas_recovered.count('transfer_kind = "read"') == 1
+    # Each upload and the readback call a specialization of the runtime
+    # transfer that addresses the assigned Texture of its matrix.
+    assert 'materialized_call_count = 3 : i32' in (
+        udonblas_transfer_materialization)
+    assert 'specialized_function_count = 3 : i32' in (
+        udonblas_transfer_materialization)
+    assert 'unresolved_call_count = 0 : i32' in (
+        udonblas_transfer_materialization)
+    for specialization in [
+        '@__vrc_static_clEnqueueWriteBuffer_1_0(',
+        '@__vrc_static_clEnqueueWriteBuffer_1_1(',
+        '@__vrc_static_clEnqueueReadBuffer_1_2(',
+    ]:
+        assert f'call {specialization}' in udonblas_recovered, specialization
+    assert 'call @clEnqueueWriteBuffer(' not in udonblas_recovered
+    assert 'call @clEnqueueReadBuffer(' not in udonblas_recovered
+    assert 'applied = true' in udonblas_readiness
+    assert 'pool_replacement_ready = true' in udonblas_readiness
+    assert 'typed_upload_count = 2 : i32' in udonblas_readiness
+    assert 'typed_readback_count = 1 : i32' in udonblas_readiness
+    assert 'unresolved_typed_transfer_operand_count = 0 : i32' in (
+        udonblas_readiness)
     udonblas_manifest = json.loads(
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
-    assert [export['public_name'] for export in udonblas_manifest['exports']] == [
-        'RunUdonBlasSgemm',
-        'GetUdonBlasSgemmResult',
+    udonblas_exports = {
+        export['public_name']: export for export in udonblas_manifest['exports']
+    }
+    assert sorted(udonblas_exports) == [
         'GetUdonBlasSgemmPhase',
+        'GetUdonBlasSgemmResult',
+        'RunUdonBlasSgemm',
     ]
-    assert udonblas_manifest['exports'][0]['async'] is True
-    assert udonblas_manifest['exports'][0]['result']['kind'] == 'i32'
-    assert udonblas_manifest['exports'][1]['async'] is False
-    assert udonblas_manifest['exports'][1]['parameters'][0]['kind'] == 'i32'
-    assert udonblas_manifest['exports'][1]['result']['kind'] == 'f32'
-    assert udonblas_manifest['exports'][2]['result']['kind'] == 'i32'
+    assert udonblas_exports['RunUdonBlasSgemm']['async'] is True
+    assert udonblas_exports['RunUdonBlasSgemm']['result']['kind'] == 'i32'
+    assert udonblas_exports['GetUdonBlasSgemmResult']['async'] is False
+    assert [
+        (parameter['name'], parameter['kind'])
+        for parameter in udonblas_exports['GetUdonBlasSgemmResult']['parameters']
+    ] == [('column', 'i32')]
+    assert udonblas_exports['GetUdonBlasSgemmResult']['result']['kind'] == 'f32'
+    assert udonblas_exports['GetUdonBlasSgemmPhase']['result']['kind'] == 'i32'
     assert udonblas_manifest['ready_for_unity'] is True
     assert udonblas_manifest['program']['binding_source'] == 'binding.cs'
+    assert udonblas_manifest['program']['name'] == 'udonblas_sgemm_m1n10k144'
+    assert udonblas_manifest['program']['binding_class'] == (
+        'UdonBlasSgemmBinding')
     assert udonblas_manifest['public_abi_fingerprint'] == (
         public_abi_fingerprint(udonblas_manifest)
     )
@@ -2001,13 +2039,17 @@ def main():
     assert_binding_identity(udonblas_manifest, udonblas_binding)
     assert 'public sealed class UdonBlasSgemmBinding' in udonblas_binding
     # A synchronous export is rejected while an async export is pending
-    # unless the library declares it "allowed_while_busy"; such an export
-    # keeps the pending export's busy state and is not part of the public
-    # ABI fingerprint.
-    assert [
-        export.get('allowed_while_busy', False)
-        for export in udonblas_manifest['exports']
-    ] == [False, False, True]
+    # unless the Host marks it UDONCL_EXPORT_WHILE_BUSY; such an export keeps
+    # the pending export's busy state and is not part of the public ABI
+    # fingerprint.
+    assert {
+        name: export.get('allowed_while_busy', False)
+        for name, export in udonblas_exports.items()
+    } == {
+        'GetUdonBlasSgemmPhase': True,
+        'GetUdonBlasSgemmResult': False,
+        'RunUdonBlasSgemm': False,
+    }
 
     def sync_method(name):
         return udonblas_binding.split(
@@ -2059,31 +2101,27 @@ def main():
 
     # The frame budget defaults to 8 ms and the setting maximum of
     # continuations, so the time budget rather than the count ends a busy
-    # frame, and is a per-library device_work_budget setting; zero keeps one
+    # frame, and is a per-library DEVICE_WORK_BUDGET setting; zero keeps one
     # continuation per frame.
     udonblas_commands = udonblas_manifest['program']['async_commands']
     assert udonblas_commands['frame_budget_microseconds'] == 8000
     assert udonblas_commands['frame_continuation_limit'] == 1000000
-    udonblas_config = json.loads(
-        (udonblas_source / 'unity-library.json').read_text(encoding='utf-8')
-    )
 
     def udonblas_frame_budget_command(name, budget):
-        config = output / f'udonblas-frame-budget-{name}.json'
-        document = dict(udonblas_config)
-        if budget is not None:
-            document['device_work_budget'] = budget
-        config.write_text(json.dumps(document), encoding='utf-8')
-        return [
-            installed_compiler, '--emit-unity-library-bundle', config,
+        command = [
+            installed_compiler, '--emit-unity-library-bundle',
             '--host-llvm', udonblas_root / 'host.bc',
             '--host-library-llvm', runtime_module,
             '--device-llvm', udonblas_root / 'device.bc',
+            '--binding-class', 'UdonBlasSgemmBinding',
             '-o', output / f'udonblas-frame-budget-{name}-artifact',
         ]
+        if budget is not None:
+            command.insert(2, f'--device-work-budget={budget}')
+        return command
 
     run(udonblas_frame_budget_command(
-        'custom', {'frame_microseconds': 2500, 'frame_continuations': 3}
+        'custom', 'frame_microseconds=2500,frame_continuations=3'
     ))
     custom_budget_artifact = output / 'udonblas-frame-budget-custom-artifact'
     custom_budget_commands = json.loads(
@@ -2100,12 +2138,18 @@ def main():
     assert 'public const int AsyncFrameContinuationLimit = 3;' in (
         custom_budget_binding
     )
-    # --device-work-budget sets the same budgets as the config key.
-    option_budget_command = udonblas_frame_budget_command('option', None)
-    option_budget_command.insert(
-        2, '--device-work-budget=frame_microseconds=2500,frame_continuations=3'
-    )
-    run(option_budget_command)
+    # The device_work_budget config key sets the same budgets as
+    # --device-work-budget until the config is removed.
+    budget_config = output / 'udonblas-frame-budget-config.json'
+    budget_config.write_text(json.dumps({
+        'schema_version': 2,
+        'device_work_budget': {
+            'frame_microseconds': 2500, 'frame_continuations': 3,
+        },
+    }), encoding='utf-8')
+    config_budget_command = udonblas_frame_budget_command('option', None)
+    config_budget_command.insert(2, budget_config)
+    run(config_budget_command)
     assert (
         output / 'udonblas-frame-budget-option-artifact/binding.cs'
     ).read_text(encoding='utf-8') == custom_budget_binding
@@ -2114,7 +2158,7 @@ def main():
         'AsyncFrameBudgetMicroseconds;' in custom_budget_binding
     )
     run(udonblas_frame_budget_command(
-        'disabled', {'frame_microseconds': 0, 'frame_continuations': 0}
+        'disabled', 'frame_microseconds=0,frame_continuations=0'
     ))
     disabled_budget_binding = (
         output / 'udonblas-frame-budget-disabled-artifact/binding.cs'
@@ -2127,18 +2171,19 @@ def main():
     )
     assert 'if (asyncFrameContinuations > 0)' in disabled_budget_binding
     run_failure(
-        udonblas_frame_budget_command('negative', {'frame_microseconds': -1}),
+        udonblas_frame_budget_command('negative', 'frame_microseconds=-1'),
         'device_work_budget.frame_microseconds must be between 0 and 1000000',
     )
     run_failure(
         udonblas_frame_budget_command(
-            'excessive', {'frame_continuations': 1000001}
+            'excessive', 'frame_continuations=1000001'
         ),
         'device_work_budget.frame_continuations must be between 0 and 1000000',
     )
     run_failure(
-        udonblas_frame_budget_command('fraction', {'frame_microseconds': 0.5}),
-        'device_work_budget.frame_microseconds must be an integer',
+        udonblas_frame_budget_command('fraction', 'frame_microseconds=0.5'),
+        '--device-work-budget entry must be key=integer: '
+        'frame_microseconds=0.5',
     )
 
     assert [item['name'] for item in udonblas_manifest['device']['kernels']] == [
