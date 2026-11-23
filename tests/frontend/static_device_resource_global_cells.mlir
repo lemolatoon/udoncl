@@ -2,6 +2,7 @@ module {
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "primary"}> : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "forwarded"}> : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "ordinary_pointer"}> : () -> ()
+  "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "single"}> : () -> ()
   func.func private @clCreateBuffer() -> !udonhl.ptr<0>
   func.func private @clReleaseMemObject(!udonhl.ptr<0>) -> i32
   func.func private @createOrdinaryObject() -> !udonhl.ptr<0>
@@ -42,6 +43,13 @@ module {
     "udonhl.store"(%object, %address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %loaded = "udonhl.load"(%address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     func.call @consumeOrdinaryObject(%loaded) : (!udonhl.ptr<0>) -> ()
+    return
+  }
+
+  func.func @FSingle() attributes {udoncl.export} {
+    %resource = func.call @clCreateBuffer() : () -> !udonhl.ptr<0>
+    %address = udonhl.address_of @single : !udonhl.ptr<0>
+    "udonhl.store"(%resource, %address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     return
   }
 

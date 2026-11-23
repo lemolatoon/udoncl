@@ -165,6 +165,12 @@ def InferStaticDeviceResourceRequirementsPass : Pass<"vrc-infer-static-device-re
 }
 def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-provenance", "mlir::ModuleOp"> {
   let summary = "Propagate context-sensitive static device resource identities through Host SSA";
+  let description = [{
+    Also records, as `vrc.static_device_global_cell_provenance`, the
+    allocation identities every tracked Host global cell may hold: the union
+    over all writes and call contexts, whether it may be null and whether it
+    may hold an unknown handle.
+  }];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
 }
 def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-device-resources", "mlir::ModuleOp"> {

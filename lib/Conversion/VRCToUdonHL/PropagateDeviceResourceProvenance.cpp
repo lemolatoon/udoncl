@@ -40,6 +40,8 @@ namespace {
 
 constexpr StringLiteral discoveryAttribute =
     "vrc.static_device_resource_discovery";
+constexpr StringLiteral globalCellAttribute =
+    "vrc.static_device_global_cell_provenance";
 constexpr StringLiteral provenanceAttribute =
     "vrc.static_device_resource_provenance";
 constexpr StringLiteral allocationSiteAttribute =
@@ -3825,6 +3827,42 @@ struct PropagateDeviceResourceProvenancePass
     }
   }
 
+  /// Records the Device resources each tracked Host global cell may hold
+  /// once the analysis has converged: the union over every write of every
+  /// call context, and whether it may also be null (its zero initial value)
+  /// or an unknown handle.
+  void emitGlobalCells() {
+    SmallVector<StringRef> names;
+    for (const auto &entry : resourceGlobals)
+      if (eligibleGlobals.contains(entry.getKey()))
+        names.push_back(entry.getKey());
+    if (names.empty())
+      return;
+    llvm::sort(names);
+    SmallVector<Attribute> cells;
+    for (StringRef name : names) {
+      const Fact &fact = globalFacts[name];
+      SmallVector<Attribute> ids;
+      for (int32_t id : fact.ids)
+        ids.push_back(builder->getI32IntegerAttr(id));
+      cells.push_back(builder->getDictionaryAttr({
+          builder->getNamedAttr(
+              "global", FlatSymbolRefAttr::get(module.getContext(), name)),
+          builder->getNamedAttr("may_be_null",
+                                builder->getBoolAttr(fact.mayBeNull)),
+          builder->getNamedAttr("resource_ids", builder->getArrayAttr(ids)),
+          builder->getNamedAttr("unknown", builder->getBoolAttr(fact.unknown)),
+      }));
+    }
+    module->setAttr(
+        globalCellAttribute,
+        builder->getDictionaryAttr({
+            builder->getNamedAttr("cells", builder->getArrayAttr(cells)),
+            builder->getNamedAttr("schema_version",
+                                  builder->getI32IntegerAttr(1)),
+        }));
+  }
+
   void runOnOperation() override {
     module = getOperation();
     debugProgress = module->hasAttr(debugProvenanceAttribute);
@@ -3855,6 +3893,7 @@ struct PropagateDeviceResourceProvenancePass
       operation->removeAttr(functionResultAttribute);
     });
     module->removeAttr(provenanceAttribute);
+    module->removeAttr(globalCellAttribute);
     functions.clear();
     eligibleGlobals.clear();
     eligibleHandleGlobals.clear();
@@ -4154,6 +4193,7 @@ struct PropagateDeviceResourceProvenancePass
     emitCases(resultCases, resultAttribute);
     emitCases(argumentCases, argumentAttribute);
     emitCases(functionResultCases, functionResultAttribute);
+    emitGlobalCells();
     module->setAttr(provenanceAttribute,
                     builder->getDictionaryAttr({
                         builder->getNamedAttr("discovery_schema_version",
