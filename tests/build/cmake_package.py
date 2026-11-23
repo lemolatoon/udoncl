@@ -573,15 +573,9 @@ def main():
         )
 
     onnx_mnist_source = args.source.resolve().parents[1] / 'examples/onnx-mnist'
-    configured_mnist = json.loads(
-        (onnx_mnist_source / 'unity-library.json').read_text(encoding='utf-8')
-    )
-    # The config lists only the public buffers; udonclc derives the
-    # internal ones from the ONNX execution plan.
-    assert [
-        (buffer['id'], buffer['name'], buffer['public_access'])
-        for buffer in configured_mnist['buffers']
-    ] == [(1, 'image', 'input'), (2, 'logits', 'output')]
+    # The Host C names the program and declares the public image and logits
+    # buffers it binds to the model; no config describes the library.
+    assert not (onnx_mnist_source / 'unity-library.json').exists()
     run([
         args.cmake,
         '-S', onnx_mnist_source,
@@ -655,27 +649,35 @@ def main():
     assert 'cloned_function_count = 1 : i32' in mnist_context_specialization
     assert 'rewritten_call_count = 1 : i32' in mnist_context_specialization
     assert 'specialized_context_count = 1 : i32' in mnist_context_specialization
-    assert 'public = true' not in mnist_inventory
+    # The UDONCL_PUBLIC image and logits are the buffers the two contexts of
+    # create_buffer store into them; the generated ONNX binding keeps its
+    # buffers private. Every Device buffer resolves at compile time to its
+    # own Unity Texture, so the static lowering replaces the buffer pool.
+    assert mnist_inventory.count('public = true') == 2
+    for name, access in [('image', 'input'), ('logits', 'output')]:
+        assert (f'name = "{name}", persistent = true, public = true, '
+                f'public_access = "{access}"') in mnist_inventory, name
     assert 'resource_id = 0 : i32' in mnist_inventory
     assert 'resource_id = 1 : i32' in mnist_inventory
-    assert mnist_inventory.count('public = false') == 5
+    assert mnist_inventory.count('public = false') == 3
     assert mnist_assignments.count('texture_id = ') == 5
-    assert 'resolved_count = 0 : i32' in mnist_public_aliases
-    assert 'resource_kind = "allocation"' not in mnist_public_aliases
+    assert 'resolved_count = 2 : i32' in mnist_public_aliases
+    assert mnist_public_aliases.count('resource_kind = "allocation"') == 2
     assert 'configured_count = 7 : i32' in mnist_reconciliation
+    assert 'declared_alias_count = 2 : i32' in mnist_reconciliation
     assert 'resolved_alias_count = 0 : i32' in mnist_reconciliation
-    assert 'unresolved_public_count = 2 : i32' in mnist_reconciliation
-    assert 'unresolved_private_count = 5 : i32' in mnist_reconciliation
+    assert 'unresolved_public_count = 0 : i32' in mnist_reconciliation
+    assert 'unresolved_private_count = 7 : i32' in mnist_reconciliation
     assert 'planned_count = 5 : i32' in mnist_layout
     assert 'legacy_configured_count = 7 : i32' in mnist_layout
-    assert 'removable_legacy_count = 0 : i32' in mnist_layout
-    assert 'blocker_count = 2 : i32' in mnist_layout
-    assert 'ready = false' in mnist_layout
+    assert 'removable_legacy_count = 2 : i32' in mnist_layout
+    assert 'blocker_count = 0 : i32' in mnist_layout
+    assert 'ready = true' in mnist_layout
     assert mnist_layout.count('resource_kind = "allocation"') == 5
-    assert 'preview = true' in mnist_lowering_readiness
-    assert 'applied = false' in mnist_lowering_readiness
-    assert 'resource_operands_ready = false' in mnist_lowering_readiness
-    assert 'pool_replacement_ready = false' in mnist_lowering_readiness
+    assert 'preview = false' in mnist_lowering_readiness
+    assert 'applied = true' in mnist_lowering_readiness
+    assert 'resource_operands_ready = true' in mnist_lowering_readiness
+    assert 'pool_replacement_ready = true' in mnist_lowering_readiness
     # Convolution, the fused bias Add and Relu, pooling, SGEMM and its bias.
     assert 'dispatch_candidate_count = 5 : i32' in mnist_lowering_readiness
     assert 'dynamic_allocation_count = 0 : i32' in mnist_lowering_readiness
@@ -1112,18 +1114,21 @@ def main():
         ('image', 3136, 'float32', 'input', 8192, 2),
         ('logits', 40, 'float32', 'output', 8192, 2),
     ]
+    # The five allocations of the static lowering: the public image and
+    # logits, then the private intermediates of the generated ONNX binding.
     assert [
-        (buffer['width'], buffer['height'])
+        (buffer['name'], buffer['width'], buffer['height'],
+         buffer['capacity_bytes'])
         for buffer in onnx_mnist_manifest['device']['buffers'][2:]
-    ] == [(8192, 2)] * 5
-    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 7
+    ] == [
+        ('private_3', 8192, 2, 36864),
+        ('private_4', 8192, 2, 36864),
+        ('private_5', 8192, 2, 40),
+    ]
     assert [
         item['id'] for item in onnx_mnist_manifest['device']['buffers']
-    ] == list(range(1, 8))
-    assert [
-        item['capacity_bytes']
-        for item in onnx_mnist_manifest['device']['buffers'][-2:]
-    ] == [3136, 40]
+    ] == list(range(1, 6))
+    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 7
     # 4096 is the synthesized kernel of the fused bias Add and Relu: 9216
     # elements, which the 8192x2 buffer textures of this bundle hold.
     for kernel_id in [221, 231, 232, 234, 4096]:

@@ -548,8 +548,8 @@ session and becomes the U# API. Build the compiler first as described in
 
 #### 1. The files you write
 
-An ONNX project has four inputs: the `.onnx` model, Host C that drives it, a
-`CMakeLists.txt`, and a `unity-library.json`.
+An ONNX project has three inputs: the `.onnx` model, Host C that drives it
+and describes the U# API, and a `CMakeLists.txt`.
 
 **The model.** [`examples/mnist-cnn/generate_onnx.py`](examples/mnist-cnn/generate_onnx.py)
 writes the trained network of the [MNIST CNN reference](examples/mnist-cnn/README.md)
@@ -564,16 +564,21 @@ exports three functions. Every export returns a `udononnxStatus_t`
 (`UDONONNX_STATUS_SUCCESS` is `0`). The essential parts are:
 
 ```c
+UDONCL_PROGRAM("generic_onnx_mnist");
+
+UDONCL_PUBLIC(float) cl_mem image, logits;
+
 static cl_context context;
 static cl_command_queue queue;
 static udonclBufferHandle_t input_buffer;
 static udonclBufferHandle_t output_buffer;
 static udononnxSession_t session;
 
-/* clCreateBuffer, then wrap the cl_mem as an ONNX tensor of the model's
-   shape (udonclDeviceBufferAdopt, udonclDeviceBufferView,
+/* *memory = clCreateBuffer(...), then wrap the cl_mem as an ONNX tensor of
+   the model's shape (udonclDeviceBufferAdopt, udonclDeviceBufferView,
    udononnxCreateTensor). */
 static udononnxStatus_t create_buffer(cl_mem_flags flags, size_t elements,
+                                      cl_mem *memory,
                                       udonclBufferHandle_t *handle,
                                       udononnxTensor_t *tensor, uint32_t rank,
                                       const int64_t *dimensions);
@@ -585,10 +590,10 @@ static udononnxStatus_t complete(cl_event event,
 UDONCL_EXPORT udononnxStatus_t initialize(void) {
   /* ... udononnxGetModel(0, &model), clGetPlatformIDs, clGetDeviceIDs,
      clCreateContext, clCreateCommandQueue ... */
-  status = create_buffer(CL_MEM_READ_ONLY, MNIST_INPUT_ELEMENTS, &input_buffer,
-                         &input_tensor, model->inputs[0].rank,
+  status = create_buffer(CL_MEM_READ_ONLY, MNIST_INPUT_ELEMENTS, &image,
+                         &input_buffer, &input_tensor, model->inputs[0].rank,
                          model->inputs[0].dimensions);
-  /* ... the output buffer (CL_MEM_WRITE_ONLY, 10 elements) likewise ... */
+  /* ... logits (CL_MEM_WRITE_ONLY, 10 elements) likewise ... */
   status = udononnxCreateSession(&session, model, context, input_bindings,
                                  output_bindings);
   /* Uploads the model weights. */
@@ -618,6 +623,22 @@ UDONCL_EXPORT udononnxStatus_t shutdown(void) {
 asynchronous U# methods. U# writes the image into the buffer bound as the
 model input and reads the buffer bound as the model output; the Host C never
 copies tensor data itself.
+
+- `UDONCL_PROGRAM("generic_onnx_mnist")` names the program: Unity imports the
+  artifact under `Assets/udoncl-generated/generic_onnx_mnist` and names the
+  binding `UdonclGenericOnnxMnistBinding`.
+- `UDONCL_PUBLIC(float) cl_mem image, logits;` makes the two buffers public,
+  named after the variables: `image` (784 floats, `CL_MEM_READ_ONLY`,
+  `TryWriteImage`) and `logits` (10 floats, `CL_MEM_WRITE_ONLY`,
+  `StartReadLogits`). `create_buffer` stores each into the variable it is
+  given; the build resolves each variable to the one buffer it holds.
+- The three `UDONCL_EXPORT` functions are U# methods named after the
+  PascalCase of their C names: `initialize` → `Initialize`, `run` → `Run`,
+  and `shutdown` → `Shutdown`, none with parameters.
+- The generated ONNX Host library also defines helper functions
+  (`udon_onnx_binding_*`) that your Host calls. They are never part of your
+  U# API. The other Device buffers of the model stay private; the compiler
+  derives them from the model.
 
 **The CMake project** ([`CMakeLists.txt`](examples/onnx-mnist/CMakeLists.txt)):
 
@@ -655,7 +676,6 @@ udoncl_add_host_library(mnist_user_host host.c)
 target_include_directories(mnist_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
 udoncl_add_unity_library(onnx-mnist
-  CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
   HOST_LIBRARIES
     mnist_host
     mnist_user_host
@@ -676,44 +696,6 @@ udoncl_add_unity_library(onnx-mnist
 - `UdonATen::Device` and `UdonBLAS::Device` provide the OpenCL C kernels the
   model's operators launch. You do not list the kernels: the build derives
   them from the Host.
-
-**The public API description**
-([`unity-library.json`](examples/onnx-mnist/unity-library.json)), without
-its `buffers` array (see below):
-
-```json
-{
-  "schema_version": 2,
-  "program": "generic_onnx_mnist",
-  "generate_onnx_public_buffers": true,
-  "binding": {
-    "namespace": "Lemolatoon.Udoncl.Generated",
-    "class_name": "UdonclGenericOnnxMnistBinding"
-  }
-}
-```
-
-- `schema_version`: `2`.
-- `program`: `generic_onnx_mnist`; Unity imports the artifact under
-  `Assets/udoncl-generated/generic_onnx_mnist`.
-- `generate_onnx_public_buffers`: `true` makes the compiler create the public
-  U# buffers from the model's inputs and outputs, named after the ONNX
-  tensors: `image` (784 floats, `TryWriteImage`) and `logits` (10 floats,
-  `StartReadLogits`).
-- `binding`: the namespace and class name of the generated U# binding,
-  `UdonclGenericOnnxMnistBinding`.
-- The three `UDONCL_EXPORT` functions are U# methods named after the
-  PascalCase of their C names: `initialize` → `Initialize`, `run` → `Run`,
-  and `shutdown` → `Shutdown`, none with parameters.
-- The generated ONNX Host library also defines helper functions
-  (`udon_onnx_binding_*`) that your Host calls. They are never part of your
-  U# API, and you do not list them.
-
-You do not list buffers: the compiler derives every Device buffer of an ONNX
-Host from the model. The example's config keeps a `buffers` array with the
-two public buffers, `image` and `logits`, as a checked record of its U# API.
-If you list entries in your own config, each must match the derived buffer,
-or the build fails and names the derived value.
 
 #### 2. Build
 

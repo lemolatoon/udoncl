@@ -30,8 +30,9 @@ target_include_directories(mnist_host INTERFACE
 udoncl_add_host_library(mnist_user_host host.c)
 target_include_directories(mnist_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
+# host.c names the program and declares the public image and logits
+# buffers it binds to the model input and output.
 udoncl_add_unity_library(onnx-mnist
-  CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
   HOST_LIBRARIES
     mnist_host
     mnist_user_host
