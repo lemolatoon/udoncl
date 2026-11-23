@@ -509,31 +509,6 @@ bool dottedIdentifier(StringRef value) {
          });
 }
 
-// The U# class the Unity importer names the binding of a program without a
-// `binding` config: `Udoncl`, the program name in PascalCase and `Binding`,
-// as VRCWrapperGenerator.BindingClassName derives it.
-std::string defaultBindingClassName(StringRef program) {
-  std::string result = "Udoncl";
-  bool capitalize = true;
-  for (char c : program) {
-    if (!isAlnum(c)) {
-      capitalize = true;
-      continue;
-    }
-    result += capitalize ? toUpper(c) : c;
-    capitalize = false;
-  }
-  return result + "Binding";
-}
-
-bool hasAsyncExports(const json::Object &manifest) {
-  const json::Array *exports = manifest.getArray("exports");
-  return exports && llvm::any_of(*exports, [](const json::Value &value) {
-           const json::Object *entry = value.getAsObject();
-           return entry && entry->getBoolean("async").value_or(false);
-         });
-}
-
 /// The texel format a config requests for its Device buffers (key `key`):
 /// `rgba8_unorm` (the default, one word per texel) or `rgba32_float`.
 FailureOr<std::string> configTexelFormat(const json::Object &config,
@@ -3424,28 +3399,26 @@ int main(int argc, char **argv) {
     if (auto capacity = (*module)->getAttrOfType<IntegerAttr>(
             "udoncl.mutable_handle_capacity"))
       (*device)["mutable_handle_capacity"] = capacity.getInt();
-    std::optional<std::pair<std::string, std::string>> bindingName;
-    if (auto bindingNamespace =
-            (*module)->getAttrOfType<StringAttr>("vrc.binding_namespace")) {
-      auto bindingClass =
+    // Every Unity library ships its U# binding, named by
+    // vrc-configure-unity-exports, except one whose async exports have no
+    // Device buffer to carry the async command runtime: no binding runs
+    // that.
+    bool asyncExports = false;
+    if (const json::Array *exports = manifest.getArray("exports"))
+      for (const json::Value &value : *exports)
+        if (const json::Object *entry = value.getAsObject())
+          asyncExports |= entry->getBoolean("async").value_or(false);
+    if (!asyncExports || !unityBuffers.empty()) {
+      auto bindingNamespaceAttr =
+          (*module)->getAttrOfType<StringAttr>("vrc.binding_namespace");
+      auto bindingClassAttr =
           (*module)->getAttrOfType<StringAttr>("vrc.binding_class");
-      if (!bindingClass) {
-        errs() << "binding namespace requires a binding class\n";
+      if (!bindingNamespaceAttr || !bindingClassAttr) {
+        errs() << "Unity library export configuration named no binding\n";
         return 1;
       }
-      bindingName.emplace(bindingNamespace.getValue().str(),
-                          bindingClass.getValue().str());
-    } else if (hasAsyncExports(manifest) && !unityBuffers.empty()) {
-      // The Unity importer's own U# generator does not implement the async
-      // command ABI, so an async program ships the binding generated here,
-      // under the default name the importer would give it. The async
-      // command runtime moves data through the Device buffers; a program
-      // without one has no binding either way.
-      bindingName.emplace("Lemolatoon.Udoncl.Generated",
-                          defaultBindingClassName(*program));
-    }
-    if (bindingName) {
-      auto &[bindingNamespace, bindingClass] = *bindingName;
+      std::string bindingNamespace = bindingNamespaceAttr.getValue().str();
+      std::string bindingClass = bindingClassAttr.getValue().str();
       auto *programManifest = manifest["program"].getAsObject();
       (*programManifest)["binding_namespace"] = bindingNamespace;
       (*programManifest)["binding_class"] = bindingClass;

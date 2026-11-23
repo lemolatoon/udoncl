@@ -260,6 +260,12 @@ UDONCL_EXPORT int run(void) { return 0; }
     manifest = json.loads((artifact / 'manifest.json').read_text(
         encoding='utf-8'))
     assert manifest['program']['name'] == 'declared_program', manifest
+    # Every Unity library ships its generated U# binding.
+    assert manifest['program']['binding_class'] == (
+        'UdonclDeclaredProgramBinding'), manifest
+    assert manifest['program']['binding_namespace'] == (
+        'Lemolatoon.Udoncl.Generated'), manifest
+    assert (artifact / manifest['program']['binding_source']).is_file()
     assert b'declared_program' not in (artifact / 'host.uasm').read_bytes()
     harness.rejected(
         'declared-and-configured', program,

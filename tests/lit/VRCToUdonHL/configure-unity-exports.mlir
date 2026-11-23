@@ -167,7 +167,8 @@ module attributes {udoncl.unity_library_config = {
 
 // -----
 
-// UDONCL_PROGRAM names the program when the configuration does not.
+// UDONCL_PROGRAM names the program when the configuration does not, and
+// the binding has the default names.
 module attributes {udoncl.program = "declared_probe",
     udoncl.unity_library_config = {schema_version = 2 : i64}} {
   func.func @run() attributes {udoncl.export} {
@@ -176,5 +177,22 @@ module attributes {udoncl.program = "declared_probe",
 }
 
 // CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.binding_class = "UdonclDeclaredProbeBinding"
+// CHECK-SAME: vrc.binding_namespace = "Lemolatoon.Udoncl.Generated"
 // CHECK-SAME: vrc.program = "declared_probe"
 // CHECK: func.func @run
+
+// -----
+
+// A configured binding class keeps the default namespace.
+module attributes {udoncl.program = "class_only",
+    udoncl.unity_library_config = {schema_version = 2 : i64,
+                                   binding = {class_name = "CustomBinding"}}} {
+  func.func @run() attributes {udoncl.export} {
+    return
+  }
+}
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.binding_class = "CustomBinding"
+// CHECK-SAME: vrc.binding_namespace = "Lemolatoon.Udoncl.Generated"

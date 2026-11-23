@@ -362,8 +362,10 @@ def ConfigureUnityExportsPass : Pass<"vrc-configure-unity-exports", "mlir::Modul
 
     Each U# export receives `vrc.export_id`, `vrc.public_name`,
     `vrc.parameter_names` and, when allowed while busy,
-    `vrc.allowed_while_busy`; the module receives `vrc.binding_namespace`,
-    `vrc.binding_class` and `vrc.static_initialization`. With
+    `vrc.allowed_while_busy`; the module receives `vrc.binding_namespace`
+    and `vrc.binding_class` (the configured `binding` names, by default
+    `Lemolatoon.Udoncl.Generated` and `Udoncl<PascalCase program>Binding`)
+    and `vrc.static_initialization`. With
     `finalize-reachability`, functions no export reaches are erased, reached
     helpers become private and the module is marked `vrc.target = "vrc-pc"`.
   }];

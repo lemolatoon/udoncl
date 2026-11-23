@@ -57,6 +57,23 @@ bool dottedIdentifier(StringRef value) {
          });
 }
 
+/// The U# class of the binding of a program without a configured one:
+/// `Udoncl`, the program name in PascalCase and `Binding`
+/// (`saxpy_demo` -> `UdonclSaxpyDemoBinding`).
+std::string defaultBindingClassName(StringRef program) {
+  std::string result = "Udoncl";
+  bool capitalize = true;
+  for (char c : program) {
+    if (!llvm::isAlnum(c)) {
+      capitalize = true;
+      continue;
+    }
+    result += capitalize ? llvm::toUpper(c) : c;
+    capitalize = false;
+  }
+  return result + "Binding";
+}
+
 /// The U# name of an export: the PascalCase of its C symbol. Each segment
 /// between underscores starts with a capital letter and keeps the rest of
 /// its spelling (`read_streamed_text` -> `ReadStreamedText`).
@@ -441,16 +458,27 @@ LogicalResult ExportConfiguration::configure(bool finalizeReachability) {
   } else if (failed(configureSchema2(exports))) {
     return failure();
   }
+  // Every Unity library ships the U# binding generated for it, named
+  // Lemolatoon.Udoncl.Generated.Udoncl<Program>Binding unless `binding`
+  // overrides the namespace or the class.
+  std::string nameSpace = "Lemolatoon.Udoncl.Generated";
+  std::string className = defaultBindingClassName(*program);
   if (Attribute value = config.get("binding")) {
     auto binding = dyn_cast<DictionaryAttr>(value);
-    auto nameSpace = getString(binding, "namespace");
-    auto className = getString(binding, "class_name");
-    if (!nameSpace || !dottedIdentifier(*nameSpace) || !className ||
-        !isUdonSharpIdentifier(*className))
-      return error() << "binding requires namespace and safe class_name";
-    module->setAttr("vrc.binding_namespace", builder.getStringAttr(*nameSpace));
-    module->setAttr("vrc.binding_class", builder.getStringAttr(*className));
+    auto configuredNamespace = getString(binding, "namespace");
+    auto configuredClass = getString(binding, "class_name");
+    if (!binding || (binding.get("namespace") && !configuredNamespace) ||
+        (binding.get("class_name") && !configuredClass))
+      return error() << "binding namespace and class_name must be strings";
+    if (configuredNamespace)
+      nameSpace = configuredNamespace->str();
+    if (configuredClass)
+      className = configuredClass->str();
   }
+  if (!dottedIdentifier(nameSpace) || !isUdonSharpIdentifier(className))
+    return error() << "binding requires namespace and safe class_name";
+  module->setAttr("vrc.binding_namespace", builder.getStringAttr(nameSpace));
+  module->setAttr("vrc.binding_class", builder.getStringAttr(className));
   return finalizeReachability ? finalize() : success();
 }
 
