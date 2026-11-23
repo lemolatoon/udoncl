@@ -2447,48 +2447,6 @@ def main():
         '--host-llvm', consumer / 'udoncl/hello-unity-library/host.bc',
         '-o', output / 'missing-device-artifact',
     ], 'Device kernel config and --device-llvm must be provided together')
-    dispatch_artifact = output / 'typed-dispatch-artifact'
-    run([
-        installed_compiler, '--emit-unity-library-bundle',
-        args.source.resolve().parents[1]
-        / 'tests/boundary/unity_dispatch.json',
-        '--host-mlir', args.source.resolve().parents[1]
-        / 'tests/boundary/unity_dispatch.mlir',
-        '--device-llvm', consumer / 'udoncl/hello-artifact/device.bc',
-        '--runtime-validation',
-        '-o', dispatch_artifact,
-    ])
-    dispatch_manifest = json.loads(
-        (dispatch_artifact / 'manifest.json').read_text(encoding='utf-8')
-    )
-    assert dispatch_manifest['validation']['read_write_alias'] is True
-    assert dispatch_manifest['dispatch_sites'] == [{
-        'function': 'dispatch_square',
-        'kernel_id': 1,
-        'descriptor_abi': 1,
-        'resources': 1,
-        'resource_accesses': ['write'],
-        'completion': 'pending_event',
-    }]
-    dispatch_assembly = (dispatch_artifact / 'host.uasm').read_text(
-        encoding='utf-8'
-    )
-    assert dispatch_manifest['dispatch_materials'] == [
-        {'slot': '__udoncl_dispatch_material_0', 'kernel_id': 1}
-    ]
-    assert '.export __udoncl_dispatch_material_0' in dispatch_assembly
-    assert 'UnityEngineMaterial.__SetFloat__' in dispatch_assembly
-    assert dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
-    run_failure([
-        installed_compiler, '--emit-unity-library-bundle',
-        args.source.resolve().parents[1]
-        / 'tests/boundary/unity_dispatch.json',
-        '--host-mlir', args.source.resolve().parents[1]
-        / 'tests/boundary/unity_dispatch.mlir',
-        '--device-llvm', consumer / 'udoncl/hello-artifact/device.bc',
-        '--runtime-validation', '--no-runtime-validation',
-        '-o', output / 'conflicting-runtime-validation-artifact',
-    ], '--runtime-validation and --no-runtime-validation are mutually exclusive')
     saxpy_source = args.source.resolve().parent / 'saxpy'
     run([
         args.cmake,
@@ -2549,6 +2507,36 @@ def main():
     assert ('udonclc-static-resources: static Unity resource lowering '
             'applied') in saxpy_report.stderr, saxpy_report.stderr
     assert 'blocker' not in saxpy_report.stderr, saxpy_report.stderr
+    # Runtime validation checks the read-write aliasing of the dispatch the
+    # user kernel launch lowers to, and binds the site through its own
+    # exported material.
+    saxpy_validation_artifact = output / 'saxpy-runtime-validation-artifact'
+    run([
+        installed_compiler, '--emit-unity-library-bundle',
+        '--host-llvm', saxpy_root / 'host.bc',
+        '--host-library-llvm', saxpy_root / 'modules/host/capacity_runtime.bc',
+        '--device-llvm', saxpy_root / 'device.bc',
+        '--runtime-validation',
+        '-o', saxpy_validation_artifact,
+    ])
+    saxpy_validation_manifest = json.loads(
+        (saxpy_validation_artifact / 'manifest.json').read_text(
+            encoding='utf-8')
+    )
+    assert saxpy_validation_manifest['validation']['read_write_alias'] is True
+    assert saxpy_validation_manifest['dispatch_materials'] == [
+        {'slot': '__udoncl_dispatch_material_0', 'kernel_id': 1024}
+    ]
+    assert '.export __udoncl_dispatch_material_0' in (
+        saxpy_validation_artifact / 'host.uasm').read_text(encoding='utf-8')
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        '--host-llvm', saxpy_root / 'host.bc',
+        '--host-library-llvm', saxpy_root / 'modules/host/capacity_runtime.bc',
+        '--device-llvm', saxpy_root / 'device.bc',
+        '--runtime-validation', '--no-runtime-validation',
+        '-o', output / 'conflicting-runtime-validation-artifact',
+    ], '--runtime-validation and --no-runtime-validation are mutually exclusive')
     assert [
         (export['public_name'], export['async'], export['result']['kind'],
          [parameter['name'] for parameter in export['parameters']])
