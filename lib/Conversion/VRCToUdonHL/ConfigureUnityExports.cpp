@@ -354,14 +354,17 @@ LogicalResult ExportConfiguration::configure(bool finalizeReachability) {
     auto configuredClass = getString(binding, "class_name");
     if (!binding || (binding.get("namespace") && !configuredNamespace) ||
         (binding.get("class_name") && !configuredClass))
-      return error() << "binding namespace and class_name must be strings";
+      return error() << "--binding-namespace (BINDING_NAMESPACE) and "
+                        "--binding-class (BINDING_CLASS) must be strings";
     if (configuredNamespace)
       nameSpace = configuredNamespace->str();
     if (configuredClass)
       className = configuredClass->str();
   }
   if (!dottedIdentifier(nameSpace) || !isUdonSharpIdentifier(className))
-    return error() << "binding requires namespace and safe class_name";
+    return error() << "--binding-namespace (BINDING_NAMESPACE) must be a "
+                      "dotted C# identifier and --binding-class "
+                      "(BINDING_CLASS) a C# identifier";
   module->setAttr("vrc.binding_namespace", builder.getStringAttr(nameSpace));
   module->setAttr("vrc.binding_class", builder.getStringAttr(className));
   return finalizeReachability ? finalize() : success();

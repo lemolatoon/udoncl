@@ -356,7 +356,13 @@ UDONCL_EXPORT int run(void) { return 0; }
         '--device-work-budget entry must be key=integer: device_cost',
         '--host-llvm', declared, '--device-work-budget=device_cost')
     harness.rejected(
-        'budget-unknown', None, 'unknown device_work_budget key speed',
+        'texel-format', None,
+        '--device-texel-format (DEVICE_TEXEL_FORMAT) must be "rgba8_unorm" '
+        'or "rgba32_float"', '--host-llvm', declared,
+        '--device-texel-format=rgba16_float')
+    harness.rejected(
+        'budget-unknown', None,
+        'unknown --device-work-budget (DEVICE_WORK_BUDGET) key speed',
         '--host-llvm', declared, '--device-work-budget=speed=1')
 
     # --report-static-resources says whether static Unity resource lowering

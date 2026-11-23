@@ -2140,13 +2140,15 @@ def main():
     assert 'if (asyncFrameContinuations > 0)' in disabled_budget_binding
     run_failure(
         udonblas_frame_budget_command('negative', 'frame_microseconds=-1'),
-        'device_work_budget.frame_microseconds must be between 0 and 1000000',
+        '--device-work-budget (DEVICE_WORK_BUDGET) frame_microseconds must be '
+        'between 0 and 1000000',
     )
     run_failure(
         udonblas_frame_budget_command(
             'excessive', 'frame_continuations=1000001'
         ),
-        'device_work_budget.frame_continuations must be between 0 and 1000000',
+        '--device-work-budget (DEVICE_WORK_BUDGET) frame_continuations must be '
+        'between 0 and 1000000',
     )
     run_failure(
         udonblas_frame_budget_command('fraction', 'frame_microseconds=0.5'),

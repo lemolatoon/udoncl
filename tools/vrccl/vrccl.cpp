@@ -573,15 +573,16 @@ bool dottedIdentifier(StringRef value) {
 }
 
 /// The texel format a config requests for its Device buffers (key `key`):
-/// `rgba8_unorm` (the default, one word per texel) or `rgba32_float`.
+/// `rgba8_unorm` (the default, one word per texel) or `rgba32_float`. A
+/// diagnostic names the setting as the user wrote it, `setting`.
 FailureOr<std::string> configTexelFormat(const json::Object &config,
-                                         StringRef key) {
+                                         StringRef key, StringRef setting) {
   const json::Value *value = config.get(key);
   if (!value)
     return std::string("rgba8_unorm");
   auto format = value->getAsString();
   if (!format || !::vrc::vrcgpu::isGatherTexelFormat(*format)) {
-    errs() << key << " must be \"rgba8_unorm\" or \"rgba32_float\"\n";
+    errs() << setting << " must be \"rgba8_unorm\" or \"rgba32_float\"\n";
     return failure();
   }
   return format->str();
@@ -810,7 +811,7 @@ parseUnityDeviceKernels(const json::Object &config) {
     for (const json::Value &value : *kernels) {
       auto *kernel = value.getAsObject();
       if (!kernel) {
-        errs() << "Unity library device_kernels entries must be objects\n";
+        errs() << "derived Unity Device kernels must be objects\n";
         return failure();
       }
       result.push_back(kernel);
@@ -1933,15 +1934,16 @@ readDeviceWorkBudget(const json::Object &config,
   const json::Value *value = config.get("device_work_budget");
   if (!value)
     return success();
+  StringRef budgetSetting = "--device-work-budget (DEVICE_WORK_BUDGET)";
   const json::Object *budget = value->getAsObject();
   if (!budget) {
-    errs() << "device_work_budget must be an object\n";
+    errs() << budgetSetting << " must be an object\n";
     return failure();
   }
   for (const auto &[key, field] : *budget) {
     std::optional<int64_t> number = field.getAsInteger();
     if (!number) {
-      errs() << "device_work_budget." << key.str() << " must be an integer\n";
+      errs() << budgetSetting << " " << key.str() << " must be an integer\n";
       return failure();
     }
     if (key == "device_cost")
@@ -1952,15 +1954,14 @@ readDeviceWorkBudget(const json::Object &config,
       out.fragmentWeight = *number;
     else if (key == "frame_microseconds" || key == "frame_continuations") {
       if (*number < 0 || *number > kDeviceWorkFrameSettingMaximum) {
-        errs() << "device_work_budget." << key.str()
-               << " must be between 0 and " << kDeviceWorkFrameSettingMaximum
-               << "\n";
+        errs() << budgetSetting << " " << key.str() << " must be between 0 and "
+               << kDeviceWorkFrameSettingMaximum << "\n";
         return failure();
       }
       (key == "frame_microseconds" ? frame.microseconds : frame.continuations) =
           *number;
     } else {
-      errs() << "unknown device_work_budget key " << key.str() << "\n";
+      errs() << "unknown " << budgetSetting << " key " << key.str() << "\n";
       return failure();
     }
   }
@@ -2627,7 +2628,9 @@ int main(int argc, char **argv) {
     unityConfig = json::Object{};
     if (failed(applyUnityLibraryOptions(*unityConfig)))
       return 1;
-    auto texelFormat = configTexelFormat(*unityConfig, "device_texel_format");
+    auto texelFormat =
+        configTexelFormat(*unityConfig, "device_texel_format",
+                          "--device-texel-format (DEVICE_TEXEL_FORMAT)");
     if (failed(texelFormat))
       return 1;
     unityTexelFormat = *texelFormat;
@@ -2773,9 +2776,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     // Every Device kernel the Host dispatches is known once the Host has
-    // reached its exported form: hand-written device_kernels entries come
-    // first, and the library kernels it dispatches without one are derived
-    // from their dispatch sites (UnityDeviceKernels.h).
+    // reached its exported form: the library kernels it dispatches are
+    // derived from their dispatch sites (UnityDeviceKernels.h).
     phase("unity-device-kernels");
     {
       SmallVector<int64_t> synthesizedKernelIds;
@@ -3031,8 +3033,8 @@ int main(int argc, char **argv) {
       return 1;
     }
     gatherProfile = true;
-    auto texelFormat =
-        configTexelFormat(*config->getAsObject(), "texel_format");
+    auto texelFormat = configTexelFormat(*config->getAsObject(), "texel_format",
+                                         "texel_format");
     if (failed(texelFormat))
       return 1;
     module = importSynthesizedDeviceKernel(deviceMLIR, *config->getAsObject(),
@@ -3070,8 +3072,8 @@ int main(int argc, char **argv) {
       return 1;
     }
     gatherProfile = config->getAsObject()->getString("profile") == "gather-f32";
-    auto texelFormat =
-        configTexelFormat(*config->getAsObject(), "texel_format");
+    auto texelFormat = configTexelFormat(*config->getAsObject(), "texel_format",
+                                         "texel_format");
     if (failed(texelFormat))
       return 1;
     module = ::vrc::importCBoundary(
@@ -3163,7 +3165,8 @@ int main(int argc, char **argv) {
       if (failed(unreachable.run(*module)) || failed(verify(*module)))
         return 1;
       if (!evaluatedConstructor) {
-        errs() << "static_initialization constructor was not evaluated\n";
+        errs() << "the Host constructor (__attribute__((constructor))) "
+                  "was not evaluated\n";
         return 1;
       }
       if (!omitIntermediateIR) {
