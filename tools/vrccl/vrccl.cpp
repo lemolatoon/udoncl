@@ -1587,6 +1587,18 @@ markRecoveredHostAnnotations(ModuleOp module,
   return success();
 }
 
+/// The U# name of an export: the PascalCase of its C symbol. Each segment
+/// between underscores starts with a capital letter and keeps the rest of
+/// its spelling (`read_streamed_text` -> `ReadStreamedText`).
+std::string pascalCaseExportName(StringRef symbol) {
+  SmallVector<StringRef> segments;
+  symbol.split(segments, '_', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  std::string name;
+  for (StringRef segment : segments)
+    name += (Twine(toUpper(segment.front())) + segment.drop_front()).str();
+  return name;
+}
+
 /// C# keywords: valid C identifiers that cannot name a U# parameter.
 bool isCSharpKeyword(StringRef name) {
   static const llvm::StringSet<> keywords = {
@@ -1801,6 +1813,7 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
         }
       }
     }
+    std::map<std::string, std::string> namedExports;
     for (const std::string &symbol : annotatedExports) {
       if (internalExports.count(symbol) || omittedExports.count(symbol))
         continue;
@@ -1813,7 +1826,18 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
       const json::Object *entry =
           overrides.count(symbol) ? overrides.at(symbol) : nullptr;
       auto publicName = entry ? entry->getString("public_name") : std::nullopt;
-      StringRef resolvedName = publicName ? *publicName : StringRef(symbol);
+      std::string resolvedName =
+          publicName ? publicName->str() : pascalCaseExportName(symbol);
+      if (!identifier(resolvedName)) {
+        errs() << "UDONCL_EXPORT " << symbol << " has no valid U# name\n";
+        return false;
+      }
+      if (auto [named, inserted] = namedExports.emplace(resolvedName, symbol);
+          !inserted) {
+        errs() << "UDONCL_EXPORT " << named->second << " and " << symbol
+               << " both name the U# export " << resolvedName << "\n";
+        return false;
+      }
       auto *parameters = entry ? entry->getArray("parameters") : nullptr;
       if (!configure(
               symbol, resolvedName,

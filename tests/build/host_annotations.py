@@ -120,6 +120,9 @@ def main():
     exports = exports_by_symbol(
         harness.manifest('host', program, '--host-llvm', host))
     assert set(exports) == {'add_values', 'call_count'}, exports
+    # A U# export is named after the PascalCase of its C symbol.
+    assert exports['add_values']['public_name'] == 'AddValues'
+    assert exports['call_count']['public_name'] == 'CallCount'
     # UDONCL_EXPORT_WHILE_BUSY is an export the binding accepts while an
     # async export is suspended.
     assert exports['call_count']['allowed_while_busy'] is True
@@ -169,6 +172,25 @@ __attribute__((annotate("udoncl.export_while_busy"))) int phase(void) {
         }],
     }, '--host-llvm', host))
     assert parameter_names(overridden['add_values']) == ['a', 'b']
+    assert overridden['add_values']['public_name'] == 'add_values'
+    # Two symbols with one PascalCase name are an error, as is a symbol
+    # without one.
+    colliding = harness.host('name-collision', '''\
+#include <udoncl/export.h>
+UDONCL_EXPORT int read_text(void) { return 0; }
+UDONCL_EXPORT int read__text(void) { return 1; }
+''')
+    harness.rejected(
+        'name-collision', program,
+        'UDONCL_EXPORT read__text and read_text both name the U# export '
+        'ReadText', '--host-llvm', colliding)
+    harness.rejected('override-collision', {
+        **program,
+        'export_overrides': [{
+            'symbol': 'call_count', 'public_name': 'AddValues',
+            'parameters': [],
+        }],
+    }, 'both name the U# export AddValues', '--host-llvm', host)
     # A C parameter name U# cannot use is an error, not a silent rename.
     for name, source in [
         ('keyword', 'UDONCL_EXPORT int scale(int object) { return object; }'),
