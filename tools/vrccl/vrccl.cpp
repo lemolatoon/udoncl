@@ -6,6 +6,7 @@
 #include "VRC/Conversion/LLVMToHighLevel/Import.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Conversion/StaticDeviceResourcePipeline.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -2030,68 +2031,26 @@ readDeviceWorkBudget(const json::Object &config,
   return success();
 }
 
-void attachDeviceResourceOperandContracts(ModuleOp module) {
-  Builder builder(module.getContext());
-  struct Contract {
-    StringLiteral name;
-    unsigned buffers;
-  };
-  static constexpr Contract known[] = {
-      {"__vrc_enqueue_udondnn_large_convolution_device_args", 4},
-      {"__vrc_enqueue_udondnn_large_activation_device_args", 3},
-      {"__vrc_enqueue_udondnn_large_pooling_device_args", 3},
-      {"__vrc_enqueue_udondnn_large_op_tensor_device_args", 4},
-      {"__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args", 2},
-      {"__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args", 4},
-      {"__vrc_enqueue_udonaten_argmax_reduce_device_args", 2},
-      {"__vrc_enqueue_udonaten_argmax_finalize_device_args", 3},
-      {"__vrc_enqueue_udondnn_arena_softmax_device_args", 2},
-      {"__vrc_enqueue_udononnx_matmul_nbits_q4_device_args", 5},
-      {"__vrc_enqueue_udononnx_unary_device_args", 2},
-      {"__vrc_enqueue_udononnx_transpose_device_args", 2},
-      {"__vrc_enqueue_udononnx_slice_device_args", 2},
-      {"__vrc_enqueue_udononnx_expand_device_args", 2},
-      {"__vrc_enqueue_udononnx_concat2_device_args", 3},
-      {"__vrc_enqueue_udononnx_gather_axis0_device_args", 3},
-      {"__vrc_enqueue_udononnx_cast_i64_f32_device_args", 2},
-      {"__vrc_enqueue_udononnx_equal_f32_device_args", 3},
-      {"__vrc_enqueue_udononnx_where_f32_device_args", 4},
-      {"__vrc_enqueue_udononnx_scatter_nd_f32_device_args", 4},
-      {"__vrc_enqueue_udonblas_arena_sgemm_device_args", 3},
-      {"__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args", 3},
-  };
-  SmallVector<std::pair<func::FuncOp, ArrayAttr>> contracts;
-  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-    StringRef name = function.getSymName();
-    auto contract = llvm::find_if(
-        known, [&](const Contract &entry) { return entry.name == name; });
-    // The entry point of a user OpenCL C kernel names its buffer count:
-    // __vrc_enqueue_user_<id>_<buffers>_<kernel> (OpenCLUserKernels.h).
-    unsigned buffers = contract == std::end(known) ? 0 : contract->buffers;
-    StringRef user = name;
-    if (contract == std::end(known) &&
-        user.consume_front("__vrc_enqueue_user_")) {
-      StringRef count = user.split('_').second.split('_').first;
-      if (count.getAsInteger(10, buffers))
-        buffers = 0;
-    }
-    if (!function.isExternal() || buffers == 0 ||
-        function.getNumArguments() <= buffers)
-      continue;
-    SmallVector<mlir::Attribute> entries;
-    for (unsigned index = 1; index <= buffers; ++index)
-      entries.push_back(builder.getDictionaryAttr({
-          builder.getNamedAttr(
-              "access",
-              builder.getStringAttr(index == buffers ? "write" : "read")),
-          builder.getNamedAttr("capture", builder.getStringAttr("none")),
-          builder.getNamedAttr("index", builder.getI32IntegerAttr(index)),
-      }));
-    contracts.emplace_back(function, builder.getArrayAttr(entries));
+/// Prints the start and the duration of every pass of a pipeline under
+/// --debug-compiler-phases.
+struct PhaseTimingInstrumentation : PassInstrumentation {
+  std::vector<std::chrono::steady_clock::time_point> started;
+
+  void runBeforePass(Pass *pass, Operation *) override {
+    errs() << "udonclc-unity-prepare-pass=" << pass->getArgument()
+           << " state=start\n";
+    started.push_back(std::chrono::steady_clock::now());
   }
-  for (auto &[function, contract] : contracts)
-    function->setAttr("vrc.device_resource_operands", contract);
-}
+  void runAfterPass(Pass *pass, Operation *) override {
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - started.back())
+                       .count();
+    started.pop_back();
+    errs() << "udonclc-unity-prepare-pass=" << pass->getArgument()
+           << " state=complete elapsed_ms=" << elapsed << "\n";
+  }
+  void runAfterPassFailed(Pass *, Operation *) override { started.pop_back(); }
+};
 
 LogicalResult discoverStaticDeviceResources(ModuleOp module) {
   constexpr StringLiteral debugProvenanceAttribute =
@@ -2099,52 +2058,11 @@ LogicalResult discoverStaticDeviceResources(ModuleOp module) {
   if (debugCompilerPhases)
     module->setAttr(debugProvenanceAttribute,
                     UnitAttr::get(module.getContext()));
-  attachDeviceResourceOperandContracts(module);
-  auto run = [&](StringRef name, std::unique_ptr<Pass> pass) {
-    auto started = std::chrono::steady_clock::now();
-    if (debugCompilerPhases)
-      errs() << "udonclc-unity-prepare-pass=" << name << " state=start\n";
-    PassManager manager(module.getContext());
-    manager.addPass(std::move(pass));
-    if (failed(manager.run(module)))
-      return failure();
-    if (debugCompilerPhases) {
-      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::steady_clock::now() - started)
-                         .count();
-      errs() << "udonclc-unity-prepare-pass=" << name
-             << " state=complete elapsed_ms=" << elapsed << "\n";
-    }
-    return success();
-  };
-  if (failed(run("discover-initial",
-                 ::vrc::createDiscoverStaticDeviceResourcesPass())) ||
-      failed(run(
-          "plan-context-initial",
-          ::vrc::createPlanStaticDeviceResourceContextSpecializationPass())) ||
-      failed(run("specialize-context",
-                 ::vrc::createSpecializeStaticAllocationContextsPass())) ||
-      failed(run("discover-specialized",
-                 ::vrc::createDiscoverStaticDeviceResourcesPass())) ||
-      failed(run(
-          "plan-context-specialized",
-          ::vrc::createPlanStaticDeviceResourceContextSpecializationPass())) ||
-      failed(run("infer-requirements",
-                 ::vrc::createInferStaticDeviceResourceRequirementsPass())) ||
-      failed(run("propagate-provenance",
-                 ::vrc::createPropagateDeviceResourceProvenancePass())) ||
-      failed(run("resolve-transfers",
-                 ::vrc::createResolveStaticTransferBindingsPass())) ||
-      failed(run("classify-public",
-                 ::vrc::createClassifyStaticPublicDeviceResourcesPass())) ||
-      failed(run("analyze-persistence",
-                 ::vrc::createAnalyzeStaticDeviceResourcePersistencePass())) ||
-      failed(run("build-inventory",
-                 ::vrc::createBuildStaticDeviceResourceInventoryPass())) ||
-      failed(
-          run("allocate-textures", ::vrc::createAllocateUnityTexturesPass())) ||
-      failed(run("resolve-public-aliases",
-                 ::vrc::createResolveStaticPublicResourceAliasesPass())))
+  PassManager manager(module.getContext());
+  ::vrc::buildStaticDeviceResourceDiscoveryPipeline(manager);
+  if (debugCompilerPhases)
+    manager.addInstrumentation(std::make_unique<PhaseTimingInstrumentation>());
+  if (failed(manager.run(module)))
     return failure();
   module->removeAttr(debugProvenanceAttribute);
   return verify(module);

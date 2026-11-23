@@ -2,6 +2,7 @@
 #include "VRC/Conversion/HostStoragePipeline.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Conversion/StaticDeviceResourcePipeline.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -46,6 +47,7 @@ int main(int argc, char **argv) {
   vrc::registerVRCRecoveryPasses();
   vrc::registerHighLevelRecoveryPipeline();
   vrc::registerUdonHostStorageFinalizationPipeline();
+  vrc::registerStaticDeviceResourceDiscoveryPipeline();
   vrc::registerVRCBoundaryPasses();
   mlir::registerPass([] { return onnx_mlir::createShapeInferencePass(); });
   mlir::registerPass([] { return onnx_mlir::createConstPropONNXToONNXPass(); });

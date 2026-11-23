@@ -164,6 +164,17 @@ def AttachHostAnnotationsPass : Pass<"vrc-attach-host-annotations", "mlir::Modul
   }];
   let dependentDialects = ["mlir::func::FuncDialect", "::vrc::udonhl::UdonHLDialect"];
 }
+def AttachDeviceResourceOperandContractsPass : Pass<"vrc-attach-device-resource-operand-contracts", "mlir::ModuleOp"> {
+  let summary = "Declare the Device buffer operands of the runtime entry points";
+  let description = [{
+    Marks each external UdonBLAS/UdonDNN/UdonATen/UdonONNX
+    `__vrc_enqueue_*_device_args` entry point, and each user OpenCL C kernel
+    entry point `__vrc_enqueue_user_<id>_<buffers>_<kernel>`, with
+    `vrc.device_resource_operands`: its leading buffer arguments, the last
+    one written, so the static resource analysis follows them.
+  }];
+  let dependentDialects = ["mlir::func::FuncDialect"];
+}
 def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resources", "mlir::ModuleOp"> {
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect"];
