@@ -167,6 +167,11 @@ FailureOr<HostBufferPlan> planHostBuffers(llvm::Module &module,
   SmallVector<llvm::Function *> roots;
   for (const std::string &symbol : annotations->exports)
     roots.push_back(module.getFunction(symbol));
+  // A constructor runs as static initialization whether or not it is also
+  // an export.
+  for (const std::string &symbol : annotations->constructors)
+    if (!llvm::is_contained(roots, module.getFunction(symbol)))
+      roots.push_back(module.getFunction(symbol));
   if (roots.empty()) {
     // A generated ONNX Host can be used without a user C export layer. Its
     // complete allocation plan is already represented by baseCapacity.

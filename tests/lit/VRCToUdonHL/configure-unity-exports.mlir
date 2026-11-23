@@ -122,3 +122,26 @@ module attributes {udoncl.unity_library_config = {
 // CHECK-SAME: vrc.public_name = "ProbeInitialize"
 // CHECK-SAME: vrc.static_constructor
 // CHECK-NOT: @probe_dispose
+
+// -----
+
+// A C constructor that is not an export is configured as one, so that the
+// Host analyses see it as a root, and marked internal.
+module attributes {udoncl.unity_library_config = {
+    schema_version = 2 : i64, program = "constructor_probe"}} {
+  func.func private @initialize() -> i32 attributes {udoncl.static_constructor} {
+    %zero = arith.constant 0 : i32
+    return %zero : i32
+  }
+  func.func @run() attributes {udoncl.export} {
+    return
+  }
+}
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.static_initialization = {constructor = "initialize", omitted_exports = []}
+// CHECK: func.func @initialize
+// CHECK-SAME: vrc.internal_static_constructor
+// CHECK-SAME: vrc.public_name = "Initialize"
+// CHECK-SAME: vrc.static_constructor
+// CHECK: func.func @run

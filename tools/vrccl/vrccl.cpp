@@ -1583,6 +1583,17 @@ markRecoveredHostAnnotations(ModuleOp module,
     function->setAttr("udoncl.export_while_busy",
                       UnitAttr::get(module.getContext()));
   }
+  for (const std::string &symbol : annotations.constructors) {
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function) {
+      errs() << "__attribute__((constructor)) definition was lost while "
+                "recovering the Host: "
+             << symbol << "\n";
+      return failure();
+    }
+    function->setAttr("udoncl.static_constructor",
+                      UnitAttr::get(module.getContext()));
+  }
   // The C parameter names name the U# parameters. Recovery keeps the
   // argument list of an export; one it reshaped keeps the default names.
   Builder builder(module.getContext());
@@ -3274,15 +3285,20 @@ int main(int argc, char **argv) {
     if (auto initialization = (*module)->getAttrOfType<DictionaryAttr>(
             "vrc.static_initialization")) {
       phase("static-initialization");
+      // The evaluation is read before SymbolDCE: a constructor that is not
+      // also an export leaves the module once it has run.
       PassManager staticInitialization(&context);
       staticInitialization.addPass(::vrc::createEvaluateHostConstructorsPass());
-      staticInitialization.addPass(createSymbolDCEPass());
       if (failed(staticInitialization.run(*module)) || failed(verify(*module)))
         return 1;
       if (auto constructor = module->lookupSymbol<func::FuncOp>(
               initialization.getAs<StringAttr>("constructor").getValue()))
         evaluatedConstructor = constructor->getAttrOfType<DictionaryAttr>(
             "vrc.evaluated_static_constructor");
+      PassManager unreachable(&context);
+      unreachable.addPass(createSymbolDCEPass());
+      if (failed(unreachable.run(*module)) || failed(verify(*module)))
+        return 1;
       if (!evaluatedConstructor) {
         errs() << "static_initialization constructor was not evaluated\n";
         return 1;

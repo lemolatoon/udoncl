@@ -43,6 +43,8 @@ namespace runtime = ::vrc::vrc;
 
 constexpr StringLiteral kConstructorAttr = "vrc.static_constructor";
 constexpr StringLiteral kEvaluatedAttr = "vrc.evaluated_static_constructor";
+constexpr StringLiteral kInternalConstructorAttr =
+    "vrc.internal_static_constructor";
 
 using Value = HostEvaluator::Value;
 using Object = HostEvaluator::Object;
@@ -412,6 +414,21 @@ LogicalResult evaluateConstructor(ModuleOp module, func::FuncOp constructor,
                                evaluator.commands().size()))));
   constructor->removeAttr(kConstructorAttr);
   constructor->setAttr(kEvaluatedAttr, builder.getDictionaryAttr(summary));
+  // A constructor that is not also an export was configured as one only so
+  // the analyses saw it as a root. Having run, it leaves the exports; what
+  // it left of itself would need U# to run it.
+  if (constructor->hasAttr(kInternalConstructorAttr)) {
+    if (!evaluator.commands().empty())
+      return constructor.emitError()
+             << "the constructor leaves " << evaluator.commands().size()
+             << " Device commands to run; mark it UDONCL_EXPORT so U# runs "
+                "them";
+    for (StringRef name : {"vrc.export_id", "vrc.public_name",
+                           "vrc.parameter_names", "vrc.allowed_while_busy"})
+      constructor->removeAttr(name);
+    constructor->removeAttr(kInternalConstructorAttr);
+    constructor.setPrivate();
+  }
   return success();
 }
 

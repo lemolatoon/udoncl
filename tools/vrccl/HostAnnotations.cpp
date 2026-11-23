@@ -14,9 +14,51 @@ namespace udoncl {
 constexpr StringLiteral kExportAnnotation = "udoncl.export";
 constexpr StringLiteral kWhileBusyAnnotation = "udoncl.export_while_busy";
 
+/// Reads the functions of llvm.global_ctors or llvm.global_dtors in priority
+/// order.
+mlir::LogicalResult readStructors(const llvm::Module &module, StringRef name,
+                                  StringRef attribute,
+                                  std::vector<std::string> &functions,
+                                  raw_ostream &diagnostics) {
+  const GlobalVariable *global = module.getNamedGlobal(name);
+  if (!global || !global->hasInitializer() ||
+      isa<ConstantAggregateZero>(global->getInitializer()))
+    return mlir::success();
+  auto *entries = dyn_cast<ConstantArray>(global->getInitializer());
+  if (!entries) {
+    diagnostics << name << " has an unsupported initializer\n";
+    return mlir::failure();
+  }
+  SmallVector<std::pair<uint64_t, const Function *>> ordered;
+  for (const Use &use : entries->operands()) {
+    auto *entry = dyn_cast<ConstantStruct>(use.get());
+    auto *priority =
+        entry ? dyn_cast<ConstantInt>(entry->getOperand(0)) : nullptr;
+    auto *function =
+        entry && entry->getNumOperands() >= 2
+            ? dyn_cast<Function>(entry->getOperand(1)->stripPointerCasts())
+            : nullptr;
+    if (!priority || !function || function->isDeclaration()) {
+      diagnostics << "__attribute__((" << attribute
+                  << ")) requires a linked Host definition\n";
+      return mlir::failure();
+    }
+    ordered.emplace_back(priority->getZExtValue(), function);
+  }
+  llvm::stable_sort(ordered, [](const auto &left, const auto &right) {
+    return left.first < right.first;
+  });
+  for (const auto &[priority, function] : ordered)
+    functions.push_back(function->getName().str());
+  return mlir::success();
+}
+
 mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
                                                      raw_ostream &diagnostics) {
   HostAnnotations annotations;
+  if (failed(readStructors(module, "llvm.global_ctors", "constructor",
+                           annotations.constructors, diagnostics)))
+    return mlir::failure();
   const GlobalVariable *global =
       module.getNamedGlobal("llvm.global.annotations");
   if (!global)
@@ -94,6 +136,10 @@ void eraseHostAnnotations(llvm::Module &module) {
   if (GlobalVariable *annotations =
           module.getNamedGlobal("llvm.global.annotations"))
     annotations->eraseFromParent();
+  // So is the constructor list: the compiler runs a constructor itself
+  // (static initialization) instead of the module loader.
+  if (GlobalVariable *constructors = module.getNamedGlobal("llvm.global_ctors"))
+    constructors->eraseFromParent();
   for (GlobalVariable &global : make_early_inc_range(module.globals())) {
     if (global.getSection() != "llvm.metadata" || !global.hasLocalLinkage())
       continue;

@@ -255,8 +255,40 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
       }
     }
   }
+  // A C __attribute__((constructor)) function runs as static
+  // initialization. One that is not also an export is configured like one,
+  // so that the Host analyses see it as a root, and marked
+  // vrc.internal_static_constructor: vrc-evaluate-host-constructors removes
+  // it from the exports once it has run.
+  SmallVector<func::FuncOp> constructors;
+  for (func::FuncOp function : module.getOps<func::FuncOp>())
+    if (function->hasAttr("udoncl.static_constructor"))
+      constructors.push_back(function);
+  std::vector<std::string> published(annotatedExports.begin(),
+                                     annotatedExports.end());
+  std::string internalConstructor;
+  if (!constructors.empty()) {
+    StringRef symbol = constructors.front().getSymName();
+    if (constructors.size() > 1)
+      return error() << "a Unity library Host defines at most one "
+                        "__attribute__((constructor)) function: "
+                     << symbol << ", " << constructors[1].getSymName();
+    if (config.get("static_initialization"))
+      return error() << "static_initialization cannot be combined with the "
+                        "__attribute__((constructor)) function "
+                     << symbol;
+    if (internalExports.count(symbol.str()))
+      return error() << "a generated internal export cannot be a constructor: "
+                     << symbol;
+    staticConstructor = symbol.str();
+    if (!annotatedExports.count(staticConstructor)) {
+      internalConstructor = staticConstructor;
+      constructors.front().setPublic();
+      published.push_back(internalConstructor);
+    }
+  }
   std::map<std::string, std::string> namedExports;
-  for (const std::string &symbol : annotatedExports) {
+  for (const std::string &symbol : published) {
     if (internalExports.count(symbol) || omittedExports.count(symbol))
       continue;
     auto function = module.lookupSymbol<func::FuncOp>(symbol);
@@ -293,6 +325,9 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
                         "parameters and return void or a 32-bit status: "
                      << staticConstructor;
     constructor->setAttr("vrc.static_constructor", builder.getUnitAttr());
+    if (!internalConstructor.empty())
+      constructor->setAttr("vrc.internal_static_constructor",
+                           builder.getUnitAttr());
     SmallVector<Attribute> omitted;
     for (const std::string &symbol : omittedExports)
       omitted.push_back(builder.getStringAttr(symbol));
@@ -359,7 +394,11 @@ LogicalResult ExportConfiguration::configure(bool finalizeReachability) {
   if (*schema == 2 && annotatedExports.empty())
     return error() << "Unity library schema 2 requires at least one "
                       "UDONCL_EXPORT Host definition";
-  if (*schema == 1 && config.get("static_initialization"))
+  if (*schema == 1 &&
+      (config.get("static_initialization") ||
+       llvm::any_of(module.getOps<func::FuncOp>(), [](func::FuncOp function) {
+         return function->hasAttr("udoncl.static_constructor");
+       })))
     return error() << "static_initialization requires Unity library schema 2";
   if (*schema == 1) {
     for (Attribute value : exports) {

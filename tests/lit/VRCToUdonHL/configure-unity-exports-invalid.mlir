@@ -44,3 +44,27 @@ module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, prog
 // expected-error@below {{requires the udoncl.unity_library_config dictionary}}
 module {
 }
+
+// -----
+
+// expected-error@below {{a Unity library Host defines at most one __attribute__((constructor)) function: first, second}}
+module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, program = "two"}} {
+  func.func @first() attributes {udoncl.export, udoncl.static_constructor} { return }
+  func.func @second() attributes {udoncl.static_constructor} { return }
+}
+
+// -----
+
+// expected-error@below {{static_initialization cannot be combined with the __attribute__((constructor)) function first}}
+module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, program = "both",
+    static_initialization = {constructor = "first"}}} {
+  func.func @first() attributes {udoncl.export, udoncl.static_constructor} { return }
+}
+
+// -----
+
+// expected-error@below {{static_initialization requires Unity library schema 2}}
+module attributes {udoncl.unity_library_config = {schema_version = 1 : i64, program = "listed",
+    exports = [{symbol = "first", public_name = "First", id = 1 : i64, parameters = []}]}} {
+  func.func @first() attributes {udoncl.static_constructor} { return }
+}

@@ -8,9 +8,6 @@ import shutil
 import subprocess
 import sys
 
-CONSTRUCTOR = 'transpose_component_initialize'
-DESTRUCTOR = 'transpose_component_dispose'
-
 
 def run(command):
     subprocess.run([str(item) for item in command], check=True)
@@ -39,7 +36,9 @@ def main():
     run([args.cmake, '--install', project_build, '--prefix', install,
          '--component', 'UdonCLCompiler'])
     package_root = install / 'lib/cmake'
-    source = root / 'examples/onnx-transpose-component'
+    # tests/build/static_initialization builds the transpose component three
+    # ways from one Host C source (see its host.c).
+    source = root / 'tests/build/static_initialization'
     run([
         args.cmake, '-S', source, '-B', consumer, '-G', args.generator,
         f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
@@ -49,20 +48,30 @@ def main():
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
         f'-DUDONCL_ONNX_FRONTEND_EXECUTABLE={Path(args.onnx_frontend).resolve()}',
+        '-DUDONCL_TEST_EXAMPLE_DIRECTORY='
+        f'{root / "examples/onnx-transpose-component"}',
     ])
-    run([args.cmake, '--build', consumer, '--target', 'onnx-transpose-component'])
+    run([args.cmake, '--build', consumer, '--target', 'dynamic', 'static',
+         'hidden'])
 
-    # The dynamic artifact is the default: the same inputs compile again with
-    # only the Unity library configuration changed.
     suffix = '.exe' if sys.platform == 'win32' else ''
     compiler = install / 'bin' / f'udonclc{suffix}'
-    target = consumer / 'udoncl/onnx-transpose-component'
-    model = consumer / 'udoncl-onnx/transpose_component_model_host'
-    dynamic_config = json.loads(
+    model = consumer / 'udoncl-onnx/model_host'
+    program = json.loads(
         (source / 'unity-library.json').read_text(encoding='utf-8'))
 
-    def compile_artifact(name, initialization):
-        config = dict(dynamic_config)
+    def manifest_of(artifact):
+        return json.loads(
+            (artifact / 'manifest.json').read_text(encoding='utf-8'))
+
+    def exports_of(manifest):
+        return {item['public_name']: item for item in manifest['exports']}
+
+    def compile_artifact(name, variant, initialization):
+        """Compiles the inputs of a variant again with a static_initialization
+        configuration entry."""
+        target = consumer / 'udoncl' / variant
+        config = dict(program)
         config['static_initialization'] = initialization
         config_path = output / f'{name}.json'
         config_path.write_text(json.dumps(config, indent=2) + '\n',
@@ -81,72 +90,14 @@ def main():
         ], text=True, capture_output=True)
         return artifact, result
 
-    def rejected(name, initialization, diagnostic):
-        _, result = compile_artifact(name, initialization)
+    def rejected(name, initialization, diagnostic, variant='dynamic'):
+        _, result = compile_artifact(name, variant, initialization)
         assert result.returncode != 0, (name, result.stdout, result.stderr)
         assert diagnostic in result.stderr, (name, diagnostic, result.stderr)
-
-    dynamic = target / 'artifact'
-    dynamic_manifest = json.loads(
-        (dynamic / 'manifest.json').read_text(encoding='utf-8'))
-    assert 'static_initialization' not in dynamic_manifest
-    dynamic_exports = {
-        item['public_name']: item for item in dynamic_manifest['exports']
-    }
-    assert {'Initialize', 'Run', 'Shutdown'} <= set(dynamic_exports)
-
-    static, result = compile_artifact('static', {
-        'constructor': CONSTRUCTOR,
-        'omit_exports': [DESTRUCTOR],
-    })
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    manifest = json.loads(
-        (static / 'manifest.json').read_text(encoding='utf-8'))
-    initialization = manifest['static_initialization']
-    assert initialization['constructor'] == CONSTRUCTOR
-    assert initialization['omitted_exports'] == [DESTRUCTOR]
-    # The constructor ran in the compiler. This component primes no Device
-    # buffer, so nothing of it is left but its status.
-    assert initialization['evaluated_operations'] > 100
-    assert initialization['residual_commands'] == 0
-    exports = {item['public_name']: item for item in manifest['exports']}
-    assert set(exports) == set(dynamic_exports) - {'Shutdown'}
-    assert exports['Initialize']['c_symbol'] == CONSTRUCTOR
-    # An omitted export has no Udon event and no generated wrapper; every
-    # remaining export keeps its dynamic public ABI.
-    for name, entry in exports.items():
-        assert entry == dynamic_exports[name], name
-    binding = (static / 'binding.cs').read_text(encoding='utf-8')
-    assert 'Shutdown' not in binding
-    assert 'Shutdown' in (dynamic / 'binding.cs').read_text(encoding='utf-8')
-    assembly = (static / 'host.uasm').read_text(encoding='utf-8')
-    assert '.export Shutdown' not in assembly
-    dynamic_assembly = (dynamic / 'host.uasm').read_text(encoding='utf-8')
-    assert '.export Shutdown' in dynamic_assembly
-
-    # The session, its binding table and every Device buffer handle are
-    # initializer data: no code that creates or releases them is left, and
-    # the initial heap image holds what Initialize used to store.
-    evaluated = (static / 'host.static-initialized.mlir').read_text(
-        encoding='utf-8')
-    assert 'vrc.evaluated_static_constructor' in evaluated
-    assert 'relocations = [' in evaluated
-    recovered = (dynamic / 'frontend.recovered.mlir').read_text(
-        encoding='utf-8')
 
     def defines(module, symbol):
         return re.search(
             rf'func\.func (private )?@{re.escape(symbol)}\(', module)
-
-    for symbol in (
-        'udon_onnx_binding_create', 'udon_onnx_binding_bind_all',
-        'udon_onnx_binding_dispose', 'udononnxCreateSession',
-        'udononnxSessionDispose', 'clCreateContext', 'clCreateCommandQueue',
-        'clReleaseMemObject', 'clReleaseContext', DESTRUCTOR,
-    ):
-        assert not defines(evaluated, symbol), symbol
-        assert defines(recovered, symbol), symbol
-    assert not (dynamic / 'host.static-initialized.mlir').exists()
 
     def instructions(text):
         code = text[text.index('.code_start'):]
@@ -156,18 +107,96 @@ def main():
                 'JUMP_INDIRECT', 'NOP', 'ANNOTATION')
             for line in code.splitlines())
 
-    assert instructions(assembly) * 2 < instructions(dynamic_assembly)
-    static_heap = (static / 'raw-heap.bytes').read_bytes()
+    # The dynamic artifact is the default: `initialize` is a plain export.
+    dynamic = consumer / 'udoncl/dynamic/artifact'
+    dynamic_manifest = manifest_of(dynamic)
+    assert 'static_initialization' not in dynamic_manifest
+    dynamic_exports = exports_of(dynamic_manifest)
+    assert set(dynamic_exports) == {'Initialize', 'Run', 'Shutdown'}
+    dynamic_assembly = (dynamic / 'host.uasm').read_text(encoding='utf-8')
     dynamic_heap = (dynamic / 'raw-heap.bytes').read_bytes()
-    assert sum(map(bool, static_heap)) > sum(map(bool, dynamic_heap))
+    recovered = (dynamic / 'frontend.recovered.mlir').read_text(
+        encoding='utf-8')
+    assert not (dynamic / 'host.static-initialized.mlir').exists()
 
-    # A constructor that fails is a build error: Run before Initialize
+    def check_static(static, expected_exports):
+        manifest = manifest_of(static)
+        initialization = manifest['static_initialization']
+        assert initialization['constructor'] == 'initialize'
+        # The constructor ran in the compiler. This component primes no
+        # Device buffer, so nothing of it is left but its status.
+        assert initialization['evaluated_operations'] > 100
+        assert initialization['residual_commands'] == 0
+        exports = exports_of(manifest)
+        assert set(exports) == expected_exports, exports
+        # Every remaining export keeps its dynamic public ABI.
+        for name, entry in exports.items():
+            assert entry == dynamic_exports[name], name
+        # The session, its binding table and every Device buffer handle are
+        # initializer data: no code that creates them is left, and the
+        # initial heap image holds what initialize used to store.
+        evaluated = (static / 'host.static-initialized.mlir').read_text(
+            encoding='utf-8')
+        assert 'vrc.evaluated_static_constructor' in evaluated
+        assert 'relocations = [' in evaluated
+        for symbol in (
+            'udon_onnx_binding_create', 'udon_onnx_binding_bind_all',
+            'udononnxCreateSession', 'clCreateContext',
+            'clCreateCommandQueue',
+        ):
+            assert not defines(evaluated, symbol), symbol
+            assert defines(recovered, symbol), symbol
+        assembly = (static / 'host.uasm').read_text(encoding='utf-8')
+        assert instructions(assembly) < instructions(dynamic_assembly)
+        heap = (static / 'raw-heap.bytes').read_bytes()
+        assert sum(map(bool, heap)) > sum(map(bool, dynamic_heap))
+        return manifest, evaluated, assembly
+
+    # An __attribute__((constructor)) export runs as static initialization
+    # and stays exported, returning the status it recorded.
+    static = consumer / 'udoncl/static/artifact'
+    manifest, _, _ = check_static(static, {'Initialize', 'Run', 'Shutdown'})
+    assert manifest['static_initialization']['omitted_exports'] == []
+    assert exports_of(manifest)['Initialize']['c_symbol'] == 'initialize'
+
+    # A constructor that is not an export runs the same way and leaves the
+    # U# API once it has run.
+    hidden = consumer / 'udoncl/hidden/artifact'
+    _, evaluated, assembly = check_static(hidden, {'Run', 'Shutdown'})
+    assert re.search(r'func\.func private @initialize\(\) -> i32 attributes '
+                     r'\{udoncl\.static_constructor, [^}]*'
+                     r'vrc\.evaluated_static_constructor', evaluated)
+    assert 'vrc.export_id' not in re.search(
+        r'func\.func private @initialize\(.*', evaluated).group(0)
+    assert 'StartInitialize(' in (static / 'binding.cs').read_text(
+        encoding='utf-8')
+    assert 'StartInitialize(' not in (hidden / 'binding.cs').read_text(
+        encoding='utf-8')
+    assert '.export Initialize' not in assembly
+
+    # The static_initialization configuration key still names a constructor
+    # among the exports and omits others.
+    configured, result = compile_artifact('configured', 'dynamic', {
+        'constructor': 'initialize',
+        'omit_exports': ['shutdown'],
+    })
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    configured_manifest = manifest_of(configured)
+    assert configured_manifest['static_initialization']['omitted_exports'] == [
+        'shutdown']
+    assert set(exports_of(configured_manifest)) == {'Initialize', 'Run'}
+    configured_assembly = (configured / 'host.uasm').read_text(
+        encoding='utf-8')
+    assert '.export Shutdown' not in configured_assembly
+    assert '.export Shutdown' in dynamic_assembly
+    assert instructions(configured_assembly) * 2 < instructions(
+        dynamic_assembly)
+
+    # A constructor that fails is a build error: run before initialize
     # reports NOT_INITIALIZED.
-    rejected('failing-constructor',
-             {'constructor': 'transpose_component_run'},
+    rejected('failing-constructor', {'constructor': 'run'},
              'static constructor fails at build time with status')
-
-    rejected('missing-constructor', {'omit_exports': [DESTRUCTOR]},
+    rejected('missing-constructor', {'omit_exports': ['shutdown']},
              'static_initialization requires a constructor')
     rejected('unknown-constructor', {'constructor': 'not_an_export'},
              'static_initialization requires a constructor')
@@ -175,13 +204,18 @@ def main():
              {'constructor': 'udon_onnx_binding_create'},
              'static_initialization requires a constructor')
     rejected('omitted-constructor',
-             {'constructor': CONSTRUCTOR, 'omit_exports': [CONSTRUCTOR]},
+             {'constructor': 'initialize', 'omit_exports': ['initialize']},
              'static_initialization omit_exports must name distinct')
     rejected('duplicate-omission',
-             {'constructor': CONSTRUCTOR,
-              'omit_exports': [DESTRUCTOR, DESTRUCTOR]},
+             {'constructor': 'initialize',
+              'omit_exports': ['shutdown', 'shutdown']},
              'static_initialization omit_exports must name distinct')
-    print(f'static_initialization=passed exports={len(exports)} omitted=1')
+    # The configuration key and a C constructor do not combine.
+    rejected('constructor-and-configuration', {'constructor': 'initialize'},
+             'static_initialization cannot be combined with the '
+             '__attribute__((constructor)) function initialize',
+             variant='static')
+    print('static_initialization=passed variants=3')
 
 
 if __name__ == '__main__':
