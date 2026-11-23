@@ -33,9 +33,13 @@ struct PlanAssignedUnityBufferLayoutPass
           PlanAssignedUnityBufferLayoutPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    // The static Device resource analysis already decided.
-    if (module->hasAttr(readinessAttribute))
-      return;
+    // The static Device resource analysis already applied its own layout.
+    if (auto readiness =
+            module->getAttrOfType<DictionaryAttr>(readinessAttribute)) {
+      auto applied = readiness.getAs<BoolAttr>("applied");
+      if (applied && applied.getValue())
+        return;
+    }
     // A Host that still allocates Device buffers is not assigned yet.
     bool allocates = false;
     module.walk([&](func::CallOp call) {

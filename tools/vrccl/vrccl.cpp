@@ -3142,6 +3142,14 @@ int main(int argc, char **argv) {
     }
     if (failed(reconcileStaticUnityBuffers(module, unityBuffers)))
       return 1;
+    // A Host whose Device buffers are already assigned (hand-written Host
+    // MLIR) and whose config lists none has exactly the buffers it names.
+    if (!unityConfig->get("buffers")) {
+      PassManager assignedBuffers(&context);
+      assignedBuffers.addPass(::vrc::createPlanAssignedUnityBufferLayoutPass());
+      if (failed(assignedBuffers.run(*module)))
+        return 1;
+    }
     if (failed(materializeCanonicalUnityBufferConfig(*module, *unityConfig)))
       return 1;
     if (reportStaticResources) {

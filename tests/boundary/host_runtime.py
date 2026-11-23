@@ -312,10 +312,10 @@ run([
 ), error='may_suspend callee requires may_suspend call policy')
 
 copy_artifact = output / 'unity-buffer-copy'
-copy_config = root / 'tests/boundary/unity_buffer_copy.json'
 copy_host = root / 'tests/boundary/unity_buffer_copy.mlir'
+# The Host MLIR names its program, export and assigned buffers; no config.
 run([
-    compiler, '--emit-unity-library-bundle', copy_config,
+    compiler, '--emit-unity-library-bundle',
     '--host-mlir', copy_host, '-o', copy_artifact,
 ])
 copy_manifest = json.loads((copy_artifact / 'manifest.json').read_text())
@@ -343,7 +343,6 @@ assert '_VRC_TransferDelta' not in copy_assembly
 range_copy_artifact = output / 'unity-buffer-range-copy'
 run([
     compiler, '--emit-unity-library-bundle',
-    root / 'tests/boundary/unity_buffer_range_copy.json',
     '--host-mlir', root / 'tests/boundary/unity_buffer_range_copy.mlir',
     '-o', range_copy_artifact,
 ])
@@ -366,7 +365,6 @@ for expected in [
 static_artifact = output / 'unity-static-tensor'
 run([
     compiler, '--emit-unity-library-bundle',
-    root / 'tests/boundary/static_tensor_table.json',
     '--host-mlir', root / 'tests/boundary/static_tensor_table.mlir',
     '-o', static_artifact,
 ])

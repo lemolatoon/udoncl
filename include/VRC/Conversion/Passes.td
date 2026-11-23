@@ -225,9 +225,9 @@ def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-
 def PlanAssignedUnityBufferLayoutPass : Pass<"vrc-plan-assigned-unity-buffer-layout", "mlir::ModuleOp"> {
   let summary = "Plan the Unity buffers of a Host whose Device buffers are already assigned";
   let description = [{
-    For a module that the static Device resource analysis left undecided (no
-    `vrc.static_unity_resource_lowering_readiness`), that allocates no Device
-    buffer and that names its buffers with `vrc.assigned_buffer` (for
+    For a module whose static Device resource lowering is not applied (it
+    has no allocation to assess), that allocates no Device buffer and that
+    names its buffers with `vrc.assigned_buffer` (for
     example hand-written Host MLIR), records the textures those operations
     name as an applied static lowering: `vrc.static_unity_buffer_layout_plan`
     lists one private persistent buffer per texture, and the readiness is

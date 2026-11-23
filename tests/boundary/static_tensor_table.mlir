@@ -1,4 +1,5 @@
 module attributes {
+  udoncl.program = "static_tensor_table",
   udoncl.static_tensors = [{
     alignment = 4 : i64,
     byte_length = 4 : i64,
@@ -17,6 +18,7 @@ module attributes {
     vrc.intrinsic = "static_buffer"
   }
   func.func @read_static_tensor() -> i32 attributes {
+    udoncl.export,
     vrc.async_effect = "may_suspend"
   } {
     %zero = arith.constant 0 : i32
