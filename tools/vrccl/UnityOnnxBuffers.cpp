@@ -186,7 +186,7 @@ checkConfiguredBuffers(const json::Object &config,
                     << llvm::formatv("{0}", *declared)
                     << ", but the ONNX Host keeps buffer " << *id << " private";
         if (!exposePublicIo)
-          diagnostics << " (generate_onnx_public_buffers is not set)";
+          diagnostics << " (ONNX_PUBLIC_TENSOR_BUFFERS is not set)";
         diagnostics << "; delete the entry\n";
         return failure();
       }

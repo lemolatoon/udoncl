@@ -2818,8 +2818,15 @@ int main(int argc, char **argv) {
         if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
           return 1;
       }
+      // Unless the library exposes its ONNX tensors, the buffers of the
+      // generated ONNX binding are private Device buffers.
+      PassManager onnxResources(&context);
+      if (!unityConfig->getBoolean("generate_onnx_public_buffers")
+               .value_or(false))
+        onnxResources.addPass(::vrc::createPrivatizeONNXBindingResourcesPass());
       if (!configureUnityExports(*module, *unityConfig,
                                  /*finalizeReachability=*/false) ||
+          failed(onnxResources.run(*module)) ||
           failed(discoverStaticDeviceResources(*module)))
         return 1;
       if (!hostLibraryLLVM.empty()) {

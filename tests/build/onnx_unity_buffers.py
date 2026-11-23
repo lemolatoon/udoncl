@@ -7,6 +7,11 @@ agree with the derived buffers, so a config that lists the public buffers,
 or all of them, builds the same artifact as one that lists none; an entry
 that disagrees fails the build and names the derived value.
 
+The ONNX graph inputs and outputs are public buffers only with the
+transitional ONNX_PUBLIC_TENSOR_BUFFERS argument; without it every buffer of
+the ONNX Host is private, and the static Device resource analysis assigns
+them all.
+
 The fixture is the RMSNorm component (examples/onnx-rms-component): one
 input, one output and one private buffer.
 """
@@ -28,6 +33,8 @@ BASE = json.loads(
      / 'examples/onnx-rms-component/unity-library.json').read_text(encoding='utf-8')
 )
 assert 'buffers' not in BASE
+# The CMake argument replaces the config key.
+assert BASE.pop('generate_onnx_public_buffers') is True
 PUBLIC = [
     {'id': 1, 'name': 'input', 'byte_size': 32768, 'element_type': 'float32',
      'public_access': 'input'},
@@ -45,6 +52,8 @@ VALID = {
     'public': PUBLIC,
     'explicit': EXPLICIT,
 }
+# Libraries built without ONNX_PUBLIC_TENSOR_BUFFERS.
+PRIVATE = {'private', 'hidden-public'}
 INVALID = {
     'wrong-size': (
         PUBLIC + [{'id': 3, 'name': 'onnx_device_buffer_3', 'byte_size': 131072}],
@@ -72,7 +81,7 @@ INVALID = {
     'hidden-public': (
         PUBLIC,
         'Unity library buffer 1 (input) declares element_type "float32", but '
-        'the ONNX Host keeps buffer 1 private (generate_onnx_public_buffers '
+        'the ONNX Host keeps buffer 1 private (ONNX_PUBLIC_TENSOR_BUFFERS '
         'is not set); delete the entry',
     ),
     'texture-shape': (
@@ -127,19 +136,20 @@ def main():
     libraries = []
     for name, buffers in VALID.items():
         libraries.append((name, buffers))
+    libraries.append(('private', None))
     for name, (buffers, _) in INVALID.items():
         libraries.append((name, buffers))
     for name, buffers in libraries:
         config = dict(BASE)
-        if name == 'hidden-public':
-            config['generate_onnx_public_buffers'] = False
         if buffers is not None:
             config['buffers'] = buffers
         (source / f'{name}.json').write_text(
             json.dumps(config, indent=2) + '\n', encoding='utf-8')
+        public = '' if name in PRIVATE else '  ONNX_PUBLIC_TENSOR_BUFFERS\n'
         cmake += (
             f'udoncl_add_unity_library({name}\n'
             f'  CONFIG "${{CMAKE_CURRENT_SOURCE_DIR}}/{name}.json"\n'
+            f'{public}'
             '  HOST_LIBRARIES\n'
             '    rms_component_model_host\n'
             '    rms_component_user_host\n'
@@ -196,6 +206,24 @@ def main():
         (2, 'output', 'output', 32768),
         (3, 'private_3', None, 65536),
     ], manifest['device']['buffers']
+
+    # Without public ONNX tensors every buffer is private, and each is a
+    # buffer the static Device resource analysis assigned.
+    run([args.cmake, '--build', consumer, '--target', 'private'])
+    private = consumer / 'udoncl/private/artifact'
+    private_manifest = json.loads(
+        (private / 'manifest.json').read_text(encoding='utf-8'))
+    assert [
+        (item['id'], item['name'], item.get('public_access'),
+         item['capacity_bytes'])
+        for item in private_manifest['device']['buffers']
+    ] == [
+        (1, 'private_1', None, 32768),
+        (2, 'private_2', None, 32768),
+        (3, 'private_3', None, 65536),
+    ], private_manifest['device']['buffers']
+    assert 'vrc.assigned_buffer' in (
+        private / 'frontend.recovered.mlir').read_text(encoding='utf-8')
 
     for name, (_, message) in INVALID.items():
         result = subprocess.run(
