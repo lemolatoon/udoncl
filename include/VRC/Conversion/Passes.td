@@ -263,8 +263,15 @@ def ConfigureUnityExportsPass : Pass<"vrc-configure-unity-exports", "mlir::Modul
     after `udoncl.parameter_names` (arg<i> without one), unless an
     `export_overrides` entry names it. A function also marked
     `udoncl.internal_export` (the generated ONNX binding) is a root of the
-    Host but never a U# export; `static_initialization` names a constructor
-    and omitted exports.
+    Host but never a U# export.
+
+    The C `__attribute__((constructor))` function (`udoncl.static_constructor`,
+    at most one) becomes the static constructor; one that is not also an
+    export is configured as one marked `vrc.internal_static_constructor`, so
+    the analyses see it as a root. An export that is a C
+    `__attribute__((destructor))` function (`udoncl.static_destructor`) is
+    omitted. The `static_initialization` configuration key names a
+    constructor and omitted exports instead; the two do not combine.
 
     Each U# export receives `vrc.export_id`, `vrc.public_name`,
     `vrc.parameter_names` and, when allowed while busy,
@@ -292,6 +299,10 @@ def EvaluateHostConstructorsPass : Pass<"vrc-evaluate-host-constructors", "mlir:
 
     A constructor that cannot be evaluated, or that does not return success,
     is an error at the blocking operation; nothing is committed.
+
+    A constructor marked `vrc.internal_static_constructor` (one that is not
+    also an export) leaves the exports once it has run and becomes private;
+    a Device command it would leave behind for U# to run is an error.
   }];
   let options = [
     Option<"stepBudget", "step-budget", "uint64_t", "268435456",

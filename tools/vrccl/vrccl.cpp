@@ -1594,6 +1594,17 @@ markRecoveredHostAnnotations(ModuleOp module,
     function->setAttr("udoncl.static_constructor",
                       UnitAttr::get(module.getContext()));
   }
+  for (const std::string &symbol : annotations.destructors) {
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function) {
+      errs() << "__attribute__((destructor)) definition was lost while "
+                "recovering the Host: "
+             << symbol << "\n";
+      return failure();
+    }
+    function->setAttr("udoncl.static_destructor",
+                      UnitAttr::get(module.getContext()));
+  }
   // The C parameter names name the U# parameters. Recovery keeps the
   // argument list of an export; one it reshaped keeps the default names.
   Builder builder(module.getContext());

@@ -1,8 +1,9 @@
 // The Host of the transpose component, written to be compiled three ways:
 // by default `initialize` is a plain export; with UDONCL_TEST_CONSTRUCTOR it
 // is also an __attribute__((constructor)) function, so the compiler runs it
-// as static initialization; UDONCL_TEST_HIDDEN_CONSTRUCTOR additionally
-// takes it out of the exports.
+// as static initialization, and `shutdown` an __attribute__((destructor))
+// one, which no U# export calls; UDONCL_TEST_HIDDEN_CONSTRUCTOR additionally
+// takes `initialize` out of the exports.
 #define CL_TARGET_OPENCL_VERSION 120
 #include <CL/cl.h>
 #include <udoncl/export.h>
@@ -10,10 +11,13 @@
 
 #if defined(UDONCL_TEST_HIDDEN_CONSTRUCTOR)
 #define TEST_INITIALIZE static __attribute__((constructor))
+#define TEST_SHUTDOWN UDONCL_EXPORT __attribute__((destructor))
 #elif defined(UDONCL_TEST_CONSTRUCTOR)
 #define TEST_INITIALIZE UDONCL_EXPORT __attribute__((constructor))
+#define TEST_SHUTDOWN UDONCL_EXPORT __attribute__((destructor))
 #else
 #define TEST_INITIALIZE UDONCL_EXPORT
+#define TEST_SHUTDOWN UDONCL_EXPORT
 #endif
 
 static cl_context context;
@@ -82,7 +86,7 @@ UDONCL_EXPORT udononnxStatus_t run(void) {
   return udon_onnx_binding_enqueue_run();
 }
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+TEST_SHUTDOWN udononnxStatus_t shutdown(void) {
   udononnxStatus_t status;
   udononnxStatus_t opencl_status;
   if (!initialized)

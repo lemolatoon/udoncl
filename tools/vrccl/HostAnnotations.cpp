@@ -59,6 +59,9 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
   if (failed(readStructors(module, "llvm.global_ctors", "constructor",
                            annotations.constructors, diagnostics)))
     return mlir::failure();
+  if (failed(readStructors(module, "llvm.global_dtors", "destructor",
+                           annotations.destructors, diagnostics)))
+    return mlir::failure();
   const GlobalVariable *global =
       module.getNamedGlobal("llvm.global.annotations");
   if (!global)
@@ -136,10 +139,12 @@ void eraseHostAnnotations(llvm::Module &module) {
   if (GlobalVariable *annotations =
           module.getNamedGlobal("llvm.global.annotations"))
     annotations->eraseFromParent();
-  // So is the constructor list: the compiler runs a constructor itself
-  // (static initialization) instead of the module loader.
-  if (GlobalVariable *constructors = module.getNamedGlobal("llvm.global_ctors"))
-    constructors->eraseFromParent();
+  // So are the constructor and destructor lists: the compiler runs a
+  // constructor itself (static initialization), and a closed-world artifact
+  // never unloads.
+  for (StringRef name : {"llvm.global_ctors", "llvm.global_dtors"})
+    if (GlobalVariable *structors = module.getNamedGlobal(name))
+      structors->eraseFromParent();
   for (GlobalVariable &global : make_early_inc_range(module.globals())) {
     if (global.getSection() != "llvm.metadata" || !global.hasLocalLinkage())
       continue;

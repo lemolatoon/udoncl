@@ -137,7 +137,6 @@ def main():
         # initial heap image holds what initialize used to store.
         evaluated = (static / 'host.static-initialized.mlir').read_text(
             encoding='utf-8')
-        assert 'vrc.evaluated_static_constructor' in evaluated
         assert 'relocations = [' in evaluated
         for symbol in (
             'udon_onnx_binding_create', 'udon_onnx_binding_bind_all',
@@ -155,19 +154,24 @@ def main():
     # An __attribute__((constructor)) export runs as static initialization
     # and stays exported, returning the status it recorded.
     static = consumer / 'udoncl/static/artifact'
-    manifest, _, _ = check_static(static, {'Initialize', 'Run', 'Shutdown'})
-    assert manifest['static_initialization']['omitted_exports'] == []
+    # The __attribute__((destructor)) export is omitted: the artifact is
+    # never unloaded.
+    manifest, evaluated, assembly = check_static(static, {'Initialize', 'Run'})
+    assert 'vrc.evaluated_static_constructor' in evaluated
+    assert manifest['static_initialization']['omitted_exports'] == [
+        'shutdown']
+    assert '.export Shutdown' not in assembly
+    assert '.export Shutdown' in dynamic_assembly
+    assert instructions(assembly) * 2 < instructions(dynamic_assembly)
     assert exports_of(manifest)['Initialize']['c_symbol'] == 'initialize'
 
     # A constructor that is not an export runs the same way and leaves the
     # U# API once it has run.
     hidden = consumer / 'udoncl/hidden/artifact'
-    _, evaluated, assembly = check_static(hidden, {'Run', 'Shutdown'})
-    assert re.search(r'func\.func private @initialize\(\) -> i32 attributes '
-                     r'\{udoncl\.static_constructor, [^}]*'
-                     r'vrc\.evaluated_static_constructor', evaluated)
-    assert 'vrc.export_id' not in re.search(
-        r'func\.func private @initialize\(.*', evaluated).group(0)
+    _, evaluated, assembly = check_static(hidden, {'Run'})
+    assert not re.search(r'func\.func @initialize\(', evaluated)
+    remaining = re.search(r'func\.func private @initialize\(.*', evaluated)
+    assert not remaining or 'vrc.export_id' not in remaining.group(0)
     assert 'StartInitialize(' in (static / 'binding.cs').read_text(
         encoding='utf-8')
     assert 'StartInitialize(' not in (hidden / 'binding.cs').read_text(

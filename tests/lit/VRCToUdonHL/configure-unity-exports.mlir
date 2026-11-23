@@ -145,3 +145,22 @@ module attributes {udoncl.unity_library_config = {
 // CHECK-SAME: vrc.public_name = "Initialize"
 // CHECK-SAME: vrc.static_constructor
 // CHECK: func.func @run
+
+// -----
+
+// An export that is a C destructor is omitted: the artifact is never
+// unloaded.
+module attributes {udoncl.unity_library_config = {
+    schema_version = 2 : i64, program = "destructor_probe"}} {
+  func.func @initialize() attributes {udoncl.export, udoncl.static_constructor} {
+    return
+  }
+  func.func @shutdown() attributes {udoncl.export, udoncl.static_destructor} {
+    return
+  }
+}
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.static_initialization = {constructor = "initialize", omitted_exports = ["shutdown"]}
+// CHECK: func.func @initialize
+// CHECK-NOT: @shutdown

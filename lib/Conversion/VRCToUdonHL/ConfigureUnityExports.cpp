@@ -287,6 +287,18 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
       published.push_back(internalConstructor);
     }
   }
+  // A C __attribute__((destructor)) function is never a U# export: the
+  // artifact is never unloaded. Like an omitted export, it may keep its
+  // override.
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    std::string symbol = function.getSymName().str();
+    if (!function->hasAttr("udoncl.static_destructor") ||
+        !annotatedExports.count(symbol))
+      continue;
+    if (symbol == staticConstructor)
+      return error() << "a constructor cannot also be a destructor: " << symbol;
+    omittedExports.insert(symbol);
+  }
   std::map<std::string, std::string> namedExports;
   for (const std::string &symbol : published) {
     if (internalExports.count(symbol) || omittedExports.count(symbol))

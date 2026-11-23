@@ -68,3 +68,11 @@ module attributes {udoncl.unity_library_config = {schema_version = 1 : i64, prog
     exports = [{symbol = "first", public_name = "First", id = 1 : i64, parameters = []}]}} {
   func.func @first() attributes {udoncl.static_constructor} { return }
 }
+
+// -----
+
+// expected-error@below {{a constructor cannot also be a destructor: both}}
+module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, program = "both_ways"}} {
+  func.func @both() attributes {udoncl.export, udoncl.static_constructor, udoncl.static_destructor} { return }
+  func.func @run() attributes {udoncl.export} { return }
+}
