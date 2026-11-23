@@ -111,6 +111,41 @@ def main():
             'applied') in report.stderr, report.stderr
     assert 'blocker' not in report.stderr, report.stderr
 
+    # A constant-trip loop of clCreateBuffer calls has one allocation context
+    # per iteration: the buffers are the same three public buffers.
+    creations = '''\
+  x = create(CL_MEM_READ_ONLY, &status);
+  if (status != CL_SUCCESS)
+    return status;
+  y = create(CL_MEM_READ_ONLY, &status);
+  if (status != CL_SUCCESS)
+    return status;
+  result = create(CL_MEM_WRITE_ONLY, &status);
+  return status;'''
+    assert creations in host
+    loop = compile_variant('loop', host.replace(creations, '''\
+  for (int i = 0; i < 3; ++i) {
+    cl_mem buffer =
+        create(i == 2 ? CL_MEM_WRITE_ONLY : CL_MEM_READ_ONLY, &status);
+    if (status != CL_SUCCESS)
+      return status;
+    if (i == 0)
+      x = buffer;
+    else if (i == 1)
+      y = buffer;
+    else
+      result = buffer;
+  }
+  return status;'''), '--report-static-resources')
+    assert loop.returncode == 0, loop.stderr
+    assert ('udonclc-static-resources: static Unity resource lowering '
+            'applied') in loop.stderr, loop.stderr
+    loop_manifest = json.loads((output / 'loop-artifact/manifest.json')
+                               .read_text(encoding='utf-8'))
+    assert [(buffer['name'], buffer['public_access'])
+            for buffer in loop_manifest['device']['buffers']] == [
+        ('x', 'input'), ('y', 'input'), ('result', 'output')], loop_manifest
+
     def rejected(name, host_source, diagnostic):
         result = compile_variant(name, host_source)
         assert result.returncode != 0, (name, result.stderr)

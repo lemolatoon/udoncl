@@ -9,6 +9,8 @@ namespace vrc {
 
 void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
   manager.addPass(createAttachDeviceResourceOperandContractsPass());
+  // A constant-trip loop of allocations has one context per iteration.
+  manager.addPass(createUnrollStaticResourceLoopsPass());
   manager.addPass(createDiscoverStaticDeviceResourcesPass());
   manager.addPass(createPlanStaticDeviceResourceContextSpecializationPass());
   manager.addPass(createSpecializeStaticAllocationContextsPass());
