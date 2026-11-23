@@ -10,7 +10,7 @@ import subprocess
 HOST_FLAGS = [
     '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
     '-Xclang', '-fdefault-calling-conv=cdecl', '-O1', '-fno-inline',
-    '-fomit-frame-pointer', '-ffp-contract=off', '-emit-llvm', '-c',
+    '-fno-discard-value-names', '-fomit-frame-pointer', '-ffp-contract=off', '-emit-llvm', '-c',
 ]
 
 HOST = '''\

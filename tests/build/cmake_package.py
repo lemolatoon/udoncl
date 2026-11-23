@@ -2554,7 +2554,8 @@ def main():
     run([
         args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
         '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
-        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-Xclang', '-disable-O0-optnone', '-fno-discard-value-names',
+        '-fomit-frame-pointer',
         '-ffp-contract=off', '-emit-llvm', '-c', str(saxpy_source / 'host.c'),
         '-I' + str(install / 'include'), '-o', str(unlinked_module),
     ])
@@ -2594,7 +2595,8 @@ def main():
     run([
         args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
         '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
-        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-Xclang', '-disable-O0-optnone', '-fno-discard-value-names',
+        '-fomit-frame-pointer',
         '-ffp-contract=off', '-emit-llvm', '-c', str(unity_buffer_source),
         '-I' + str(install / 'include'), '-o', str(unity_buffer_module),
     ])

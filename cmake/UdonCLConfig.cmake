@@ -408,8 +408,9 @@ function(_udoncl_compile_source_target artifact kind unit sources dependencies
       # Promote fixed aggregates and scalar pointer wrappers while keeping a
       # stable LLVM form for recovery. Whole-program inlining runs only after
       # all Host modules have been linked and raised to MLIR, where library
-      # calls can be specialized together with the user Host.
-      set(_optimization_flags -O1 -fno-inline)
+      # calls can be specialized together with the user Host. Value names
+      # are kept so udonclc can name U# export parameters after the C ones.
+      set(_optimization_flags -O1 -fno-inline -fno-discard-value-names)
     else()
       set(_language_flags -target spir-unknown-unknown -x cl -cl-std=CL1.2
           -cl-kernel-arg-info)

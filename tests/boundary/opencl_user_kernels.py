@@ -35,7 +35,8 @@ def compile_source(name, language, text):
     source.write_text(text, encoding="utf-8", newline="\n")
     module = output / f"{name}.ll"
     flags = (
-        ["-x", "c", "-std=c11", "-O1", "-fno-inline"]
+        ["-x", "c", "-std=c11", "-O1", "-fno-inline",
+         "-fno-discard-value-names"]
         if language == "c"
         else ["-x", "cl", "-cl-std=CL1.2", "-cl-kernel-arg-info", "-O0",
               "-Xclang", "-disable-O0-optnone"]
