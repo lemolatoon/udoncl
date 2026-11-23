@@ -15,3 +15,15 @@ module attributes {udoncl.host_annotations = {constructors = ["setup"]}} {
 // expected-error@+1 {{malformed udoncl.host_annotations entry exports}}
 module attributes {udoncl.host_annotations = {exports = "run"}} {
 }
+
+// -----
+
+// expected-error@+1 {{UDONCL_PUBLIC variable was lost while recovering the Host: image}}
+module attributes {udoncl.host_annotations = {public = [{symbol = "image", element_type = "float32"}]}} {
+}
+
+// -----
+
+// expected-error@+1 {{malformed udoncl.host_annotations entry public}}
+module attributes {udoncl.host_annotations = {public = [{symbol = "image", element_type = "double"}]}} {
+}

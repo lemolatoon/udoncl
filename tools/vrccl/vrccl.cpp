@@ -1559,6 +1559,7 @@ collectUdonCLHostAnnotations(llvm::Module &module) {
   if (failed(annotations))
     return failure();
   udoncl::eraseHostAnnotations(module);
+  udoncl::internalizePublicGlobals(module, *annotations);
   return annotations;
 }
 
@@ -1572,6 +1573,13 @@ markRecoveredHostAnnotations(ModuleOp module,
     SmallVector<StringRef> list(values.begin(), values.end());
     return builder.getStrArrayAttr(list);
   };
+  SmallVector<mlir::Attribute> publicGlobals;
+  for (const udoncl::PublicGlobal &global : annotations.publicGlobals)
+    publicGlobals.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("element_type",
+                             builder.getStringAttr(global.elementType)),
+        builder.getNamedAttr("symbol", builder.getStringAttr(global.symbol)),
+    }));
   SmallVector<NamedAttribute> parameterNames;
   for (const auto &[symbol, names] : annotations.parameterNames)
     parameterNames.push_back(builder.getNamedAttr(symbol, strings(names)));
@@ -1584,6 +1592,7 @@ markRecoveredHostAnnotations(ModuleOp module,
           builder.getNamedAttr("exports", strings(annotations.exports)),
           builder.getNamedAttr("parameter_names",
                                builder.getDictionaryAttr(parameterNames)),
+          builder.getNamedAttr("public", builder.getArrayAttr(publicGlobals)),
           builder.getNamedAttr("while_busy", strings(annotations.whileBusy)),
       }));
   PassManager attach(module.getContext());

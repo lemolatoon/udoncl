@@ -6,6 +6,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 using namespace llvm;
 
@@ -13,6 +14,18 @@ namespace udoncl {
 
 constexpr StringLiteral kExportAnnotation = "udoncl.export";
 constexpr StringLiteral kWhileBusyAnnotation = "udoncl.export_while_busy";
+constexpr StringLiteral kPublicAnnotation = "udoncl.public";
+
+/// The element type a UDONCL_PUBLIC(type) annotation names.
+std::optional<StringRef> publicElementType(StringRef type) {
+  if (type == "float")
+    return StringRef("float32");
+  if (type == "int")
+    return StringRef("int32");
+  if (type == "long")
+    return StringRef("int64");
+  return std::nullopt;
+}
 
 /// Reads the functions of llvm.global_ctors or llvm.global_dtors in priority
 /// order.
@@ -77,14 +90,63 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
       diagnostics << "llvm.global.annotations has a malformed entry\n";
       return mlir::failure();
     }
-    auto *function =
-        dyn_cast<Function>(entry->getOperand(0)->stripPointerCasts());
+    const Value *target = entry->getOperand(0)->stripPointerCasts();
+    auto *function = dyn_cast<Function>(target);
     auto *annotationGlobal = dyn_cast<GlobalVariable>(
         getUnderlyingObject(entry->getOperand(1), /*MaxLookup=*/6));
     auto *annotation = annotationGlobal
                            ? dyn_cast_or_null<ConstantDataArray>(
                                  annotationGlobal->getInitializer())
                            : nullptr;
+    StringRef publicType;
+    if (annotation && annotation->isCString() &&
+        annotation->getAsCString().starts_with(kPublicAnnotation)) {
+      StringRef kind = annotation->getAsCString();
+      auto *variable = dyn_cast<GlobalVariable>(target);
+      std::string name = target->getName().str();
+      if (!variable) {
+        diagnostics << "UDONCL_PUBLIC requires a cl_mem variable: " << name
+                    << "\n";
+        return mlir::failure();
+      }
+      if (!kind.consume_front(kPublicAnnotation) || !kind.consume_front(":")) {
+        diagnostics << "UDONCL_PUBLIC requires an element type: " << name
+                    << "\n";
+        return mlir::failure();
+      }
+      std::optional<StringRef> elementType = publicElementType(kind.trim());
+      if (!elementType) {
+        diagnostics << "UDONCL_PUBLIC element type must be float, int or "
+                       "long: "
+                    << name << " has " << kind.trim() << "\n";
+        return mlir::failure();
+      }
+      if (variable->hasLocalLinkage()) {
+        diagnostics << "UDONCL_PUBLIC requires a file-scope non-static "
+                       "variable: "
+                    << name << "\n";
+        return mlir::failure();
+      }
+      if (variable->isDeclaration()) {
+        diagnostics << "UDONCL_PUBLIC requires a linked Host definition: "
+                    << name << "\n";
+        return mlir::failure();
+      }
+      if (!variable->getValueType()->isPointerTy()) {
+        diagnostics << "UDONCL_PUBLIC requires a cl_mem variable: " << name
+                    << "\n";
+        return mlir::failure();
+      }
+      if (llvm::any_of(annotations.publicGlobals,
+                       [&](const PublicGlobal &global) {
+                         return global.symbol == name;
+                       })) {
+        diagnostics << "duplicate UDONCL_PUBLIC annotation: " << name << "\n";
+        return mlir::failure();
+      }
+      annotations.publicGlobals.push_back({name, elementType->str()});
+      continue;
+    }
     if (!function || !annotation || !annotation->isCString()) {
       diagnostics
           << "llvm.global.annotations entry is not a function annotation\n";
@@ -129,6 +191,13 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
       return mlir::failure();
     }
   return annotations;
+}
+
+void internalizePublicGlobals(llvm::Module &module,
+                              const HostAnnotations &annotations) {
+  for (const PublicGlobal &global : annotations.publicGlobals)
+    if (GlobalVariable *variable = module.getNamedGlobal(global.symbol))
+      variable->setLinkage(GlobalValue::InternalLinkage);
 }
 
 void eraseHostAnnotations(llvm::Module &module) {

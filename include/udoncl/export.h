@@ -14,6 +14,16 @@
  * accepts while another export is suspended, such as a progress or streamed
  * output getter. Such an export must not suspend itself; udonclc rejects one
  * that may.
+ *
+ * UDONCL_PUBLIC(type) marks a file-scope, non-static cl_mem variable as a
+ * public Device buffer of the Unity library, named after the variable, whose
+ * elements are float, int or long (float[], int[] or long[] in U#):
+ *
+ *   UDONCL_PUBLIC(float) cl_mem x, y, result;
+ *
+ * Its clCreateBuffer flags give its direction: CL_MEM_READ_ONLY is written by
+ * U#, CL_MEM_WRITE_ONLY is read by U#. The variable must hold the buffer of
+ * exactly one allocation context.
  */
 #if defined(__clang__)
 #if defined(__has_attribute)
@@ -25,9 +35,11 @@
 #define UDONCL_EXPORT_WHILE_BUSY                                               \
   __attribute__((annotate("udoncl.export"),                                    \
                  annotate("udoncl.export_while_busy")))
+#define UDONCL_PUBLIC(type) __attribute__((annotate("udoncl.public:" #type)))
 #else
 #define UDONCL_EXPORT
 #define UDONCL_EXPORT_WHILE_BUSY
+#define UDONCL_PUBLIC(type)
 #endif
 
 #endif

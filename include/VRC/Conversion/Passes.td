@@ -158,9 +158,11 @@ def AttachHostAnnotationsPass : Pass<"vrc-attach-host-annotations", "mlir::Modul
     `constructors` -> `udoncl.static_constructor`, `destructors` ->
     `udoncl.static_destructor`, and `parameter_names` ->
     `udoncl.parameter_names` on a function whose argument count still
-    matches. A named function that recovery lost is an error.
+    matches, and `public` (UDONCL_PUBLIC variables) -> `udoncl.public` with
+    the element type ("float32", "int32" or "int64") on the `udonhl.global`.
+    A named function or variable that recovery lost is an error.
   }];
-  let dependentDialects = ["mlir::func::FuncDialect"];
+  let dependentDialects = ["mlir::func::FuncDialect", "::vrc::udonhl::UdonHLDialect"];
 }
 def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resources", "mlir::ModuleOp"> {
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";

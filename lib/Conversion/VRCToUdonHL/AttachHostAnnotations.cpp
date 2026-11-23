@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -61,6 +62,37 @@ struct AttachHostAnnotationsPass
                     "recovering the Host: "))) {
       signalPassFailure();
       return;
+    }
+
+    // A UDONCL_PUBLIC variable records the element type of its buffer.
+    if (Attribute value = annotations.get("public")) {
+      auto globals = dyn_cast<ArrayAttr>(value);
+      for (Attribute attribute :
+           globals ? globals.getValue() : ArrayRef<Attribute>()) {
+        auto entry = dyn_cast<DictionaryAttr>(attribute);
+        auto symbol = entry ? entry.getAs<StringAttr>("symbol") : nullptr;
+        auto type = entry ? entry.getAs<StringAttr>("element_type") : nullptr;
+        if (!symbol || !type ||
+            (type != "float32" && type != "int32" && type != "int64")) {
+          globals = nullptr;
+          break;
+        }
+        auto global = module.lookupSymbol<::vrc::udonhl::GlobalOp>(symbol);
+        if (!global) {
+          module.emitError("UDONCL_PUBLIC variable was lost while recovering "
+                           "the Host: ")
+              << symbol.getValue();
+          signalPassFailure();
+          return;
+        }
+        global->setAttr("udoncl.public", type);
+      }
+      if (!globals) {
+        module.emitError("malformed ")
+            << annotationsAttribute << " entry public";
+        signalPassFailure();
+        return;
+      }
     }
 
     // The C parameter names name the U# parameters. Recovery keeps the

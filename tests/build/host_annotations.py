@@ -203,6 +203,51 @@ UDONCL_EXPORT int read__text(void) { return 1; }
             'of UDONCL_EXPORT scale cannot name a U# parameter; rename the C '
             'parameter', '--host-llvm', module)
 
+    # UDONCL_PUBLIC(type) names a file-scope cl_mem variable as a public
+    # Device buffer whose elements have that type.
+    public = harness.host('public', '''\
+#include <udoncl/export.h>
+typedef struct _cl_mem *cl_mem;
+UDONCL_PUBLIC(float) cl_mem image;
+UDONCL_PUBLIC(long) cl_mem tokens;
+UDONCL_EXPORT int clear(void) {
+  image = 0;
+  tokens = 0;
+  return 0;
+}
+''')
+    public_artifact, public_result = harness.compile(
+        'public', program, '--host-llvm', public)
+    assert public_result.returncode == 0, public_result.stderr
+    recovered = (public_artifact / 'frontend.recovered.mlir').read_text(
+        encoding='utf-8')
+    for symbol, element_type in [('image', 'float32'), ('tokens', 'int64')]:
+        line = next(line for line in recovered.splitlines()
+                    if f'sym_name = "{symbol}"' in line)
+        assert f'udoncl.public = "{element_type}"' in line, line
+    for name, source, diagnostic in [
+        ('public-static', '''\
+static UDONCL_PUBLIC(float) cl_mem image;
+UDONCL_EXPORT int clear(void) { image = 0; return 0; }
+''', 'UDONCL_PUBLIC requires a file-scope non-static variable: image'),
+        ('public-int', '''\
+UDONCL_PUBLIC(float) int count;
+UDONCL_EXPORT int clear(void) { count = 0; return 0; }
+''', 'UDONCL_PUBLIC requires a cl_mem variable: count'),
+        ('public-function', '''\
+UDONCL_PUBLIC(float) int clear(void) { return 0; }
+UDONCL_EXPORT int run(void) { return clear(); }
+''', 'UDONCL_PUBLIC requires a cl_mem variable: clear'),
+        ('public-double', '''\
+UDONCL_PUBLIC(double) cl_mem image;
+UDONCL_EXPORT int clear(void) { image = 0; return 0; }
+''', 'UDONCL_PUBLIC element type must be float, int or long: image has '
+         'double'),
+    ]:
+        module = harness.host(name, '#include <udoncl/export.h>\n'
+                              'typedef struct _cl_mem *cl_mem;\n' + source)
+        harness.rejected(name, program, diagnostic, '--host-llvm', module)
+
     # --report-static-resources says whether static Unity resource lowering
     # applies; a Host without Device resources is never assessed.
     _, report = harness.compile('report', program, '--host-llvm', host,
