@@ -80,10 +80,12 @@ class Harness:
 
     def compile(self, name, config, *host_arguments):
         artifact = self.output / f'{name}-artifact'
+        # Without a config (None) the Host and the options describe the
+        # library.
+        configs = [] if config is None else [str(self.config(name, config))]
         result = subprocess.run([
-            str(self.compiler), '--emit-unity-library-bundle',
-            str(self.config(name, config)), *map(str, host_arguments),
-            '-o', str(artifact),
+            str(self.compiler), '--emit-unity-library-bundle', *configs,
+            *map(str, host_arguments), '-o', str(artifact),
         ], text=True, capture_output=True)
         return artifact, result
 
@@ -295,6 +297,42 @@ UDONCL_EXPORT int run(void) { return 0; }
         'misnamed', unnamed,
         'Unity library program name must be a C identifier: not a name',
         '--host-llvm', misnamed)
+
+    # The settings the config keys held are udonclc options; a library needs
+    # no config file at all, and may not set one both ways.
+    options = harness.manifest(
+        'options', None, '--host-llvm', declared,
+        '--binding-namespace=Custom.Bindings', '--binding-class=RunBinding',
+        '--device-texel-format=rgba32_float')
+    assert options['program']['name'] == 'declared_program', options
+    assert options['program']['binding_namespace'] == 'Custom.Bindings'
+    assert options['program']['binding_class'] == 'RunBinding'
+    assert options['program']['texel_format'] == 'rgba32_float', options
+    class_only = harness.manifest('class-option', None, '--host-llvm',
+                                  declared, '--binding-class=RunBinding')
+    assert class_only['program']['binding_namespace'] == (
+        'Lemolatoon.Udoncl.Generated')
+    for name, key, value, option in [
+        ('binding-both', 'binding', {'class_name': 'Configured'},
+         '--binding-class=RunBinding'),
+        ('texel-both', 'device_texel_format', 'rgba8_unorm',
+         '--device-texel-format=rgba32_float'),
+        ('budget-both', 'device_work_budget', {'device_cost': 1},
+         '--device-work-budget=device_cost=2'),
+        ('onnx-both', 'generate_onnx_public_buffers', False,
+         '--onnx-public-tensor-buffers'),
+    ]:
+        harness.rejected(
+            name, {**unnamed, key: value},
+            f'--{option[2:].split("=")[0]} cannot be combined with the Unity '
+            f'library config key {key}', '--host-llvm', declared, option)
+    harness.rejected(
+        'budget-malformed', None,
+        '--device-work-budget entry must be key=integer: device_cost',
+        '--host-llvm', declared, '--device-work-budget=device_cost')
+    harness.rejected(
+        'budget-unknown', None, 'unknown device_work_budget key speed',
+        '--host-llvm', declared, '--device-work-budget=speed=1')
 
     # --report-static-resources says whether static Unity resource lowering
     # applies; a Host without Device resources is never assessed.

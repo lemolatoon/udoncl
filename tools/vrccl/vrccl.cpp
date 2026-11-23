@@ -376,10 +376,91 @@ cl::opt<std::string>
     requestFilename("request", cl::desc("JSON dispatch descriptor request"));
 cl::opt<std::string>
     inputFilename(cl::Positional,
-                  cl::desc("<boundary MLIR, config.json or manifest.json>"),
-                  cl::Required);
+                  cl::desc("<boundary MLIR, config.json or manifest.json>; "
+                           "optional for a Unity library"));
 cl::opt<std::string> outputDirectory("o",
                                      cl::desc("New output bundle directory"));
+
+// Unity library settings. Each replaces the configuration key of the same
+// meaning; a library that sets both is rejected.
+cl::opt<std::string> bindingNamespace(
+    "binding-namespace",
+    cl::desc("Namespace of the generated U# binding of a Unity library "
+             "(default Lemolatoon.Udoncl.Generated)"));
+cl::opt<std::string> bindingClass(
+    "binding-class",
+    cl::desc("Class of the generated U# binding of a Unity library "
+             "(default Udoncl<PascalCase program>Binding)"));
+cl::opt<std::string> deviceTexelFormat(
+    "device-texel-format",
+    cl::desc("Texel format of the Device buffers and immutable tensor "
+             "textures of a Unity library: rgba8_unorm (default) or "
+             "rgba32_float"));
+cl::opt<std::string> deviceWorkBudget(
+    "device-work-budget",
+    cl::desc("Device work slice and frame budgets of a Unity library as "
+             "comma-separated key=value pairs (device_cost, host_cost, "
+             "fragment_weight, frame_microseconds, frame_continuations)"));
+cl::opt<bool> onnxPublicTensorBuffers(
+    "onnx-public-tensor-buffers",
+    cl::desc("Transitional: expose the ONNX graph inputs and outputs of an "
+             "ONNX Host as public Device buffers"));
+
+/// Folds the Unity library command-line settings into `config` under the
+/// configuration keys they replace. Setting one both ways is an error.
+LogicalResult applyUnityLibraryOptions(json::Object &config) {
+  auto conflict = [](StringRef option, StringRef key) {
+    errs() << "--" << option << " cannot be combined with the Unity library "
+           << "config key " << key << "\n";
+    return failure();
+  };
+  if (!bindingNamespace.empty() || !bindingClass.empty()) {
+    if (config.get("binding"))
+      return conflict(bindingNamespace.empty() ? "binding-class"
+                                               : "binding-namespace",
+                      "binding");
+    json::Object binding;
+    if (!bindingNamespace.empty())
+      binding["namespace"] = bindingNamespace;
+    if (!bindingClass.empty())
+      binding["class_name"] = bindingClass;
+    config["binding"] = std::move(binding);
+  }
+  if (!deviceTexelFormat.empty()) {
+    if (config.get("device_texel_format"))
+      return conflict("device-texel-format", "device_texel_format");
+    config["device_texel_format"] = deviceTexelFormat;
+  }
+  if (!deviceWorkBudget.empty()) {
+    if (config.get("device_work_budget"))
+      return conflict("device-work-budget", "device_work_budget");
+    json::Object budget;
+    SmallVector<StringRef> entries;
+    StringRef(deviceWorkBudget).split(entries, ',', -1, false);
+    for (StringRef entry : entries) {
+      auto [key, value] = entry.split('=');
+      int64_t number;
+      key = key.trim();
+      if (key.empty() || value.trim().getAsInteger(10, number)) {
+        errs() << "--device-work-budget entry must be key=integer: " << entry
+               << "\n";
+        return failure();
+      }
+      if (!budget.try_emplace(key, number).second) {
+        errs() << "--device-work-budget sets " << key << " twice\n";
+        return failure();
+      }
+    }
+    config["device_work_budget"] = std::move(budget);
+  }
+  if (onnxPublicTensorBuffers) {
+    if (config.get("generate_onnx_public_buffers"))
+      return conflict("onnx-public-tensor-buffers",
+                      "generate_onnx_public_buffers");
+    config["generate_onnx_public_buffers"] = true;
+  }
+  return success();
+}
 
 // Validate and generate all content before touching existing assets. A fresh
 // directory is published with one rename; identical existing bundles are
@@ -2632,6 +2713,19 @@ int main(int argc, char **argv) {
   // The texel format of every Device buffer and immutable tensor texture of
   // a Unity library (`device_texel_format`).
   std::string unityTexelFormat = "rgba8_unorm";
+  if (!emitUnityLibrary &&
+      (!bindingNamespace.empty() || !bindingClass.empty() ||
+       !deviceTexelFormat.empty() || !deviceWorkBudget.empty() ||
+       onnxPublicTensorBuffers)) {
+    errs() << "--binding-namespace, --binding-class, --device-texel-format, "
+              "--device-work-budget and --onnx-public-tensor-buffers require "
+              "--emit-unity-library-bundle\n";
+    return 1;
+  }
+  if (inputFilename.empty() && !emitUnityLibrary) {
+    errs() << "this mode requires an input file\n";
+    return 1;
+  }
   if (emitUnityLibrary) {
     phase("unity-prepare");
     // The Device libraries are imported only once the Host is recovered, so
@@ -2639,24 +2733,35 @@ int main(int argc, char **argv) {
     // builds their operations, and the Host MLIR may hold LLVM types.
     context.loadAllAvailableDialects();
     context.getOrLoadDialect<LLVM::LLVMDialect>();
-    auto input = MemoryBuffer::getFile(inputFilename);
-    if (!input || (hostLLVM.empty() && hostMLIR.empty())) {
-      errs() << "Unity library mode requires a JSON config and at least one "
-                "of --host-llvm or --host-mlir; --host-library-llvm supplies "
-                "the separately linked OpenCL AOT runtime\n";
+    if (hostLLVM.empty() && hostMLIR.empty()) {
+      errs() << "Unity library mode requires at least one of --host-llvm or "
+                "--host-mlir; --host-library-llvm supplies the separately "
+                "linked OpenCL AOT runtime\n";
       return 1;
     }
-    auto parsed = json::parse((*input)->getBuffer());
-    if (!parsed) {
-      errs() << toString(parsed.takeError()) << "\n";
-      return 1;
+    // The JSON config is optional: without one, the Host source and the
+    // command-line settings describe the library.
+    unityConfig = json::Object{{"schema_version", 2}};
+    if (!inputFilename.empty()) {
+      auto input = MemoryBuffer::getFile(inputFilename);
+      if (!input) {
+        errs() << "cannot read Unity library config " << inputFilename << "\n";
+        return 1;
+      }
+      auto parsed = json::parse((*input)->getBuffer());
+      if (!parsed) {
+        errs() << toString(parsed.takeError()) << "\n";
+        return 1;
+      }
+      auto *object = parsed->getAsObject();
+      if (!object) {
+        errs() << "config must be a JSON object\n";
+        return 1;
+      }
+      unityConfig = *object;
     }
-    auto *object = parsed->getAsObject();
-    if (!object) {
-      errs() << "config must be a JSON object\n";
+    if (failed(applyUnityLibraryOptions(*unityConfig)))
       return 1;
-    }
-    unityConfig = *object;
     if (unityConfig->getBoolean("omit_intermediate_ir").value_or(false))
       omitIntermediateIR = true;
     auto texelFormat = configTexelFormat(*unityConfig, "device_texel_format");

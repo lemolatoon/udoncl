@@ -2069,7 +2069,8 @@ def main():
     def udonblas_frame_budget_command(name, budget):
         config = output / f'udonblas-frame-budget-{name}.json'
         document = dict(udonblas_config)
-        document['device_work_budget'] = budget
+        if budget is not None:
+            document['device_work_budget'] = budget
         config.write_text(json.dumps(document), encoding='utf-8')
         return [
             installed_compiler, '--emit-unity-library-bundle', config,
@@ -2097,6 +2098,15 @@ def main():
     assert 'public const int AsyncFrameContinuationLimit = 3;' in (
         custom_budget_binding
     )
+    # --device-work-budget sets the same budgets as the config key.
+    option_budget_command = udonblas_frame_budget_command('option', None)
+    option_budget_command.insert(
+        2, '--device-work-budget=frame_microseconds=2500,frame_continuations=3'
+    )
+    run(option_budget_command)
+    assert (
+        output / 'udonblas-frame-budget-option-artifact/binding.cs'
+    ).read_text(encoding='utf-8') == custom_budget_binding
     assert (
         'private int asyncFrameBudgetMicroseconds = '
         'AsyncFrameBudgetMicroseconds;' in custom_budget_binding
