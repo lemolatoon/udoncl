@@ -2,6 +2,14 @@
 
 Status: approved implementation plan (2026-11-04)
 
+> **Removed (2026-11):** the Unity library config file (`unity-library.json`,
+> schema 1 and 2, `export_overrides`, `internal_exports`, `device_kernel(s)`,
+> `buffers`) no longer exists. The Host source declares the program,
+> exports and public buffers (`UDONCL_PROGRAM`, `UDONCL_EXPORT`,
+> `UDONCL_EXPORT_WHILE_BUSY`, `UDONCL_PUBLIC(type)`), and
+> `udoncl_add_unity_library` arguments set the rest; see README.md.
+> The config text below is history.
+
 This document is the source of truth for suspendable C host exports and their
 low-level U# bindings. It replaces the earlier plan that made a generated
 high-level ONNX Session wrapper the first implementation target. `PLAN.md`
@@ -82,6 +90,14 @@ The compiler derives whether an export may suspend. Users never write a
 `may_suspend` annotation.
 
 ### 3.2 Schema-v2 configuration
+
+> **Removed (2026-11):** the Unity library config file (`unity-library.json`,
+> schema 1 and 2, `export_overrides`, `internal_exports`, `device_kernel(s)`,
+> `buffers`) no longer exists. The Host source declares the program,
+> exports and public buffers (`UDONCL_PROGRAM`, `UDONCL_EXPORT`,
+> `UDONCL_EXPORT_WHILE_BUSY`, `UDONCL_PUBLIC(type)`), and
+> `udoncl_add_unity_library` arguments set the rest; see README.md.
+> The config text below is history.
 
 `unity-library.json` no longer duplicates the export list. It may override
 metadata for an annotated export:
@@ -336,7 +352,6 @@ find_package(UdonCL CONFIG REQUIRED)
 
 udoncl_add_host_library(my_host SOURCES host.c helpers.c)
 udoncl_add_unity_library(my_artifact
-  CONFIG unity-library.json
   HOST_LIBRARIES my_host)
 ```
 

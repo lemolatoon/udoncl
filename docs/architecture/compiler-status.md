@@ -26,7 +26,8 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   of library kernels and of the OpenCL C kernels of its own Device libraries,
   with ordinary status checks. udonclc derives each user kernel launch from the
   Host C; buffer arguments precede `int`/`uint`/`float` scalars, and the
-  global work size is one constant unless a `device_kernels` entry gives it.
+  global work size must be one constant (a run-time NDRange is a build
+  error).
   The standalone `examples/saxpy` consumer launches a three-buffer kernel with
   mixed i32/f32 scalars. A Host without the runtime may not call the OpenCL
   API: the build names the calls and asks for `UdonCL::OpenCLRuntime`.
@@ -34,16 +35,22 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   asynchronous readback.
 - `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
   packages the ShaderLab/HLSL of every kernel the Host launches, with its
-  manifest metadata, in the Unity artifact. The config does not declare those
-  kernels: udonclc derives each `device_kernels` entry from the Host's dispatch
-  sites, from the library kernel contract for UdonBLAS, UdonDNN, UdonATen and
+  manifest metadata, in the Unity artifact. Nothing declares those kernels:
+  udonclc derives each Device kernel entry from the Host's dispatch sites,
+  from the library kernel contract for UdonBLAS, UdonDNN, UdonATen and
   UdonONNXOperators kernels, and from the `clEnqueueNDRangeKernel` launches
-  for the user OpenCL C kernels the linked runtime numbers from 1024. A
-  hand-written entry replaces the derived one of its `kernel_id`. The
-  `examples/saxpy` Host C launches its OpenCL C kernel this way. For an ONNX
-  Host the config does not declare the Device buffers either: udonclc derives
-  them from the ONNX execution plan and binding, and checks any `buffers`
-  entry a config still lists against them.
+  for the user OpenCL C kernels the linked runtime numbers from 1024. The
+  `examples/saxpy` Host C launches its OpenCL C kernel this way. There is no
+  Unity library config file: the Host source names the program
+  (`UDONCL_PROGRAM`), the exports (`UDONCL_EXPORT`,
+  `UDONCL_EXPORT_WHILE_BUSY`) and the public buffers (`UDONCL_PUBLIC(type)`),
+  and `udoncl_add_unity_library` arguments set the binding names, texel
+  format and Device work budget. Every Device buffer resolves at compile time
+  to one compiler-assigned Unity Texture; for an ONNX Host udonclc derives the
+  buffers from the ONNX execution plan and binding. The stage-1 exception is
+  the ONNX bindings that bank sequence state (the real TinyLlama
+  Conversation, Chat and M1 step programs), which keep the run-time buffer
+  pool until the sequence-state banking is replaced.
 - ONNX models compile through the C++ ONNX-dialect path.
   `udoncl_add_onnx_host_library` runs `scripts/compile_onnx_mlir.py` with the
   repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model

@@ -671,8 +671,8 @@ globals:
 
 - Device cost in texel-load units: `fragment-weight` (default 16) per
   launched fragment for raster, output write and Blit overhead, plus one per
-  texel load. A kernel's `device_kernels` entry (derived from its library
-  contract, see "Library kernel entries", or hand-written) may declare
+  texel load. A kernel's Device kernel entry (derived from its library
+  contract, see "Library kernel entries") may declare
   `fragment_cost` next to its `argument_bounds`: fixed `loads` per fragment,
   `per_argument` loads per unit of a scalar argument (a loop trip count such
   as the Q4 `block_count` or the SGEMM `k`), and `active` arguments whose
@@ -821,11 +821,12 @@ ready, 4 adaptive estimate of the next slice exceeds the budget). `asyncTraceCon
 count the words written; recording stops when an array is full.
 
 While an async export is pending the binding rejects every synchronous
-`Try*` export with `StatusBusy`. A library can declare a synchronous export
-`"allowed_while_busy": true` in its export entry (recorded on the manifest
-export, outside the public ABI fingerprint) when the export neither suspends
-nor changes state the suspended export owns, for example a progress or
-streamed-text getter. The generated method then runs between continuations
+`Try*` export with `StatusBusy`. A Host can mark a synchronous export
+`UDONCL_EXPORT_WHILE_BUSY` instead of `UDONCL_EXPORT` (recorded on the
+manifest export as `allowed_while_busy`, outside the public ABI fingerprint)
+when the export neither suspends nor changes state the suspended export
+owns, for example a progress or streamed-text getter; udonclc rejects such an
+export when it may suspend. The generated method then runs between continuations
 and restores the pending export's busy state; it is still refused while a
 public buffer readback is in flight.
 
@@ -917,8 +918,9 @@ vrcgpu.kernel ... {
 `lib/Target/HLSL/Emitter.cpp` emits fragment HLSL and ShaderLab for each
 `vrcgpu.kernel`.
 
-With `"device_texel_format": "rgba32_float"` in the Unity library config
-(`vrc.texel_format` on the Device module) every buffer holds four words per
+With `DEVICE_TEXEL_FORMAT rgba32_float` on `udoncl_add_unity_library`
+(`udonclc --device-texel-format=rgba32_float`, `vrc.texel_format` on the
+Device module) every buffer holds four words per
 texel. The gather lowering then emits `vrcgpu.word_load @argN[%word]` (the
 linear word index, its row pitch and capacity) and `vrcgpu.output_word`; the
 pass still describes one word. `lib/Target/HLSL/WordTexelEmitter.cpp` emits
@@ -935,11 +937,11 @@ importer, the finalizer and the generated binding (see
 #### Library kernel entries
 
 A Unity library compiles every Device kernel its Host dispatches from one
-`device_kernels` entry each: kernel name and id, the `gather-f32` profile,
+Device kernel entry each: kernel name and id, the `gather-f32` profile,
 output `words`, `argument_kinds`, NDRange, and the access contract the gather
 proof and the Device work schedule rely on (`input_words`,
 `argument_bounds`, `fragment_cost`). `udonclc --emit-unity-library-bundle`
-derives these entries; the Unity library config does not have to list them.
+derives every entry; the entries are an internal record, not user input.
 
 - **When.** After the Host is recovered and its exports are final (ONNX Host
   MLIR, C Host LLVM and the linked OpenCL AOT runtime alike), so only the
@@ -959,20 +961,18 @@ derives these entries; the Unity library config does not have to list them.
   site argument outside the contract fails the build with the kernel,
   argument and bounds, as does a dispatched id with no contract or a missing
   Device library.
-- **Hand-written entries.** An entry in the config (`device_kernel` or
-  `device_kernels`, with the fields above) replaces the derived entry of its
-  `kernel_id` unchanged and is compiled even when no site dispatches it. It
-  is the way to describe a kernel outside the UdonCL libraries, a site
-  beyond the library contract, or a contract the sites cannot derive (a
-  Gather table shape that is not constant). Hand-written entries keep their
-  config order ahead of the derived ones, which follow in id order.
+- **No hand-written entries.** A kernel outside the UdonCL libraries is a
+  user OpenCL C kernel (below); a site beyond the library contract or a
+  contract the sites cannot derive (a Gather table shape that is not
+  constant) is a build error. The Unity library config file that could list
+  entries by hand is removed. Entries follow in id order.
 
 #### ONNX Host buffers
 
 A Unity library whose Host is an ONNX Host (`udoncl_add_onnx_host_library`,
 a Host module with `udoncl.onnx_binding`) does not list its Device buffers
-either: `udonclc --emit-unity-library-bundle` derives every `buffers` entry
-from the ONNX execution plan (`tools/vrccl/UnityOnnxBuffers.cpp`).
+either: `udonclc --emit-unity-library-bundle` derives every buffer from the
+ONNX execution plan (`tools/vrccl/UnityOnnxBuffers.cpp`).
 
 - **When.** Right after the Device kernel entries and before the Device
   libraries are imported, so the texture shape and row-pitch decisions of
@@ -982,31 +982,38 @@ from the ONNX execution plan (`tools/vrccl/UnityOnnxBuffers.cpp`).
   (`udoncl.mutable_handle_capacity`, `udoncl.mutable_buffer_bytes`); the
   Host buffer plan of the user C Host (`--host-buffer-plan`) appends the
   buffers that C allocates itself.
-- **Public buffers.** With `generate_onnx_public_buffers`, the ONNX inputs
-  and then the outputs, in graph order, are buffers 1 to P. Each takes its
-  name (the ONNX name with every character outside `[A-Za-z0-9_]` replaced
-  by `_`), element type, logical size, access and index from
-  `udoncl.onnx_binding`, and the generated U# transfer methods are named
-  after it (`TryWriteImage` and `StartReadLogits` for the MNIST example).
-  A public id therefore depends only on the graph's input and output order,
-  never on the internal buffers. Every other buffer is private and named
-  `private_<id>`; without the flag (the TinyLlama Conversation and Chat
-  Artifacts) every buffer is private. When the static Unity lowering
-  applies, the canonical layout it plans keeps these ids.
-- **Hand-written entries.** A config may still list buffers, but an entry
-  replaces nothing: it must name a buffer of the plan and agree with the
-  derived one in every field it sets (`byte_size`; for a public buffer also
-  `name`, `element_type`, `public_access`, `public_index`,
-  `logical_byte_size`). The name of a private buffer is not checked, since
-  the artifact calls it `private_<id>`. An id the plan does not have, a
-  different value, a public field on a private buffer, or a `width` or
-  `height` fails the build, naming the entry and the derived value, for
-  example `Unity library buffer 3 (onnx_device_buffer_3) declares byte_size
-  131072, but the ONNX execution plan derives 65536 for it; correct or
-  delete the entry`. The ONNX examples list only their public buffers, as a
-  checked record of their U# surface; the real TinyLlama configurations
-  drop the synthetic fixture's list, since that model has other inputs and
-  outputs.
+- **Public buffers.** With the transitional `ONNX_PUBLIC_TENSOR_BUFFERS`
+  argument (`--onnx-public-tensor-buffers`), the ONNX inputs and then the
+  outputs, in graph order, are buffers 1 to P. Each takes its name (the
+  ONNX name with every character outside `[A-Za-z0-9_]` replaced by `_`),
+  element type, logical size, access and index from `udoncl.onnx_binding`,
+  and the generated U# transfer methods are named after it (the ONNX
+  component libraries use this). A public id therefore depends only on the
+  graph's input and output order, never on the internal buffers. Every
+  other buffer is private and named `private_<id>`; without the argument
+  (the TinyLlama Conversation and Chat Artifacts) every buffer is private.
+  A Host that names its own public buffers declares them with
+  `UDONCL_PUBLIC` instead, as the MNIST example does. When the static Unity
+  lowering applies, the canonical layout it plans keeps these ids.
+- **No hand-written buffers.** The Unity library config file that could
+  list buffers is removed; nothing restates the derived ones.
+
+#### Canonical Unity buffers
+
+When the static Unity resource lowering applies (every Device buffer is a
+compiler-assigned Unity Texture), `vrc-describe-canonical-unity-buffers`
+turns the canonical layout plan into the Unity buffers of the artifact
+(`vrc.canonical_unity_buffers`): id, name and capacity, and for a public
+buffer its element type, logical size, access and index. The access is
+`input` (U# writes, `CL_MEM_READ_ONLY`), `output` (U# reads,
+`CL_MEM_WRITE_ONLY`) or `inout` (both, `CL_MEM_READ_WRITE`); an `inout`
+buffer gets both `TryWrite<Name>` and `StartRead<Name>`. A public buffer
+also states its `source` when the module says it: `{kind: host_variable,
+symbol}` for a `UDONCL_PUBLIC` variable, `{kind: onnx_tensor, tensor}` for
+an ONNX graph input or output. The manifest carries the source, and the
+generated binding turns it into the XML doc comment of the buffer methods;
+the public ABI fingerprint (udonclc and the Unity manifest validator alike)
+leaves it out.
 
 #### User OpenCL C kernels
 
@@ -1038,17 +1045,17 @@ standard `clCreateKernel`, `clSetKernelArg` and `clEnqueueNDRangeKernel`:
 - **Entry.** The NDRange is the constant global work size every
   `clEnqueueNDRangeKernel` of the kernel passes; `vrc.device_dispatch` on
   the dispatch intrinsic hands it to `LowerOpenCLAOTIntrinsics`, and the
-  derived `device_kernels` entry has the gather profile when the kernel
+  derived Device kernel entry has the gather profile when the kernel
   reads a buffer (otherwise one invocation) and no further access contract.
-  A run-time or disagreeing global work size fails the build, naming the
-  hand-written entry (`kernel`, the assigned `kernel_id`, `global_size`) that
-  replaces the derived one.
+  A run-time or disagreeing global work size fails the build ("cannot derive
+  the NDRange of OpenCL kernel ...; launch it with a constant work dimension
+  and global work size").
 
 #### Generated kernel channel
 
 Library kernels are hand-written OpenCL C with a fixed id, dispatched through
 intrinsics that `LowerOpenCLAOTIntrinsics` knows by name and described by
-derived or hand-written `device_kernels` entries. A kernel the compiler synthesizes
+derived Device kernel entries. A kernel the compiler synthesizes
 has none of these, so a Host MLIR module can carry it and dispatch it with
 nothing keyed on its name:
 
@@ -1089,15 +1096,16 @@ func.func private @__vrc_opencl_dispatch_fused(i32, i32, i32) -> i32
   fails the build.
 - **Unity bundle.** `udonclc --emit-unity-library-bundle` runs id assignment
   and the proof right after it parses `--host-mlir`, with ids starting at
-  4096 and the hand-written `device_kernels` ids reserved (derived library
-  kernel ids are all below 4096). It moves each
+  4096 (derived library and user kernel ids are all below 4096). It moves each
   `@device_gpu_<id>` module out of the Host into the Device module next to
   the library kernels, so gather lowering, shader emission
   (`kernels/kernel_<id>.shader`), the manifest `device.kernels` entry, the
   per-site dispatch materials and the Unity finalizer treat it like any other
   kernel. Its grid width and word count take part in the
   texture row-pitch and shape decisions, and the build fails if the texture
-  shape the Unity buffers share cannot hold its output. A Host module that
+  shape the final Unity buffers share cannot hold its output
+  (`vrc-check-synthesized-kernel-texture-capacity` on the Device module, with
+  the buffer shapes as options). A Host module that
   carries no synthesized kernel produces the same bundle as before.
 
 ### 7b. Per-site dispatch materials

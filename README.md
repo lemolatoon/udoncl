@@ -317,8 +317,12 @@ The three macros replace a separate API description:
   buffer of `float` elements, named after the variable: `x` → `TryWriteX`,
   `result` → `StartReadResult`. Its `clCreateBuffer` flags give its
   direction (`CL_MEM_READ_ONLY` for a buffer U# writes, `CL_MEM_WRITE_ONLY`
-  for one it reads) and size (128 bytes). The variable must hold the buffer of
-  exactly one `clCreateBuffer`; the build resolves it to its Unity texture.
+  for one it reads, `CL_MEM_READ_WRITE` for one it does both with, which
+  gets both methods) and size (128 bytes). The variable must hold the buffer
+  of exactly one `clCreateBuffer`; the build resolves it to its Unity
+  texture. Each buffer method carries an XML doc comment that names the C
+  variable, the element type and count, and the direction, so the IDE shows
+  where a method comes from.
 
 **The CMake project** ([`CMakeLists.txt`](examples/saxpy/CMakeLists.txt)) is
 an ordinary consumer of the UdonCL package. `UdonCL::OpenCLRuntime` is the
@@ -425,6 +429,11 @@ The generated binding exposes:
   `StatusBusy` (-2), `StatusInvalidArgument` (-3, for example a wrong array
   length), `StatusAbiMismatch` (-4), `StatusExecutionFailure` (-5), and
   `StatusDisposed` (-6).
+- `int TryBindProgram(UdonBehaviour program)`, `bool IsInitialized()` and
+  `int TryUnbindProgram()`: attach the binding to its raw Udon program (the
+  binding prefab does this for you), ask whether it is attached, and detach
+  it. `TryUnbindProgram` runs no Host code; a Host `dispose` export would be
+  its own method, `TryDispose`.
 
 `SaxpyCaller.cs` (identical to the **C and OpenCL SAXPY** Package Sample):
 

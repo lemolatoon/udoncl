@@ -49,7 +49,10 @@ generates a small U# controller, attaches it to the prefab, and binds
 the controller to the typed wrapper. Interact with the placed prefab to run the
 complete upload, asynchronous run and readback without writing raw
 event/slot code. Public buffer semantics generate
-named typed methods such as `TryWriteX` and `StartReadResult`; the physical
+named typed methods such as `TryWriteX` and `StartReadResult`, named after the
+`UDONCL_PUBLIC` C variable (or ONNX tensor) they transfer and documented with
+an XML comment that gives that source, the element type and count, and the
+direction; a `CL_MEM_READ_WRITE` buffer gets both methods. The physical
 buffer-ID methods remain available only as the lower-level interface. Choose
 **Add after Compile** to place that binding prefab in the active scene
 automatically after the script reload.

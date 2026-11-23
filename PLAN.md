@@ -10,6 +10,15 @@ and MNIST acceptance work are specified separately in
 the authoritative implementation order for this checkpoint; this file keeps
 the longer-term architecture and historical checkpoints.
 > Design cut-off: **2026-11-05**
+
+> **Removed since (2026-11):** the Unity library config file
+> (`unity-library.json`, its `device_kernels` and `buffers` entries and
+> schema-v2 overrides). The Host source declares the program, exports and
+> public buffers (`UDONCL_PROGRAM`, `UDONCL_EXPORT`,
+> `UDONCL_EXPORT_WHILE_BUSY`, `UDONCL_PUBLIC(type)`), udonclc derives the
+> Device kernels and buffers, and `udoncl_add_unity_library` arguments set
+> the binding names, texel format and Device work budget. Checkpoints below
+> that mention the config are history.
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  
 > Audience: Codex / compiler・runtime・Unity integration 実装担当  

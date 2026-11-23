@@ -144,7 +144,8 @@ capacity is unrelated to these blockers.
 4. Bind input IDs, attention mask, and position IDs with their declared INT64
    dtypes; do not reuse the synthetic INT32 ABI.
 5. Remove the real target's dependency on the three-input/three-output
-   `host.c` and fixed `unity-library.json` buffer list.
+   `host.c` and fixed `unity-library.json` buffer list. (Done: the Unity
+   library config file has since been removed altogether.)
 
 ### Phase D: numerical execution
 
