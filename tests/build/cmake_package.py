@@ -2515,6 +2515,23 @@ def main():
         'UdonclSaxpyDemoBinding')
     assert saxpy_manifest['public_abi_fingerprint'] == (
         public_abi_fingerprint(saxpy_manifest))
+    # Each public buffer states the Host variable it holds. The source is
+    # documentation, not public ABI: the fingerprint, here as in udonclc and
+    # the Unity manifest validator, does not cover it.
+    saxpy_sources = {
+        buffer['name']: buffer['source']
+        for buffer in saxpy_manifest['device']['buffers']
+        if 'public_access' in buffer
+    }
+    assert saxpy_sources == {
+        name: {'kind': 'host_variable', 'symbol': name}
+        for name in ['x', 'y', 'result']
+    }, saxpy_sources
+    sourceless = json.loads(json.dumps(saxpy_manifest))
+    for buffer in sourceless['device']['buffers']:
+        buffer.pop('source', None)
+    assert public_abi_fingerprint(sourceless) == (
+        saxpy_manifest['public_abi_fingerprint'])
     saxpy_binding = (saxpy_artifact / 'binding.cs').read_text(
         encoding='utf-8')
     assert_binding_identity(saxpy_manifest, saxpy_binding)

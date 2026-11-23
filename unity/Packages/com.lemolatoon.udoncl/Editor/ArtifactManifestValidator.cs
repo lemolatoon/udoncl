@@ -1120,6 +1120,9 @@ namespace Lemolatoon.Udoncl.Editor
                     && !string.IsNullOrEmpty(buffer.public_access)
             );
             Array.Sort(publicBuffers, (left, right) => left.id.CompareTo(right.id));
+            // A buffer's optional `source` (the Host variable or ONNX tensor
+            // it holds) documents the binding and is not public ABI; udonclc
+            // leaves it out of the fingerprint as well (Boundary.cpp).
             foreach (DeviceBufferInfo buffer in publicBuffers)
             {
                 canonical.Append("buffer|");

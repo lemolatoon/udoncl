@@ -555,6 +555,9 @@ void refreshPublicABIFingerprint(llvm::json::Object &manifest) {
              [](const llvm::json::Object *lhs, const llvm::json::Object *rhs) {
                return *lhs->getInteger("id") < *rhs->getInteger("id");
              });
+  // A buffer's optional `source` (the Host variable or ONNX tensor it holds)
+  // documents the binding and is not public ABI; the Unity manifest
+  // validator (ArtifactManifestValidator.cs) leaves it out as well.
   for (const llvm::json::Object *entry : publicBuffers)
     canonicalABI +=
         "buffer|" + std::to_string(*entry->getInteger("id")) + "|" +

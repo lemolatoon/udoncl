@@ -80,6 +80,10 @@ def main():
     public = {item.get('public_access'): item for item in buffers if item.get('public_access')}
     assert public['input']['logical_bytes'] == 32768
     assert public['output']['logical_bytes'] == 32768
+    # A public tensor buffer states the ONNX tensor it holds.
+    for item in public.values():
+        assert item['source'] == {
+            'kind': 'onnx_tensor', 'tensor': item['name']}, item
     static_tensors = manifest['static_tensors']
     assert [item['name'] for item in static_tensors] == ['scale', 'epsilon']
     assert static_tensors[0]['shape'] == [2048]

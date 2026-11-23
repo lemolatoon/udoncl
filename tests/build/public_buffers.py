@@ -73,6 +73,9 @@ def main():
         assert buffer['element_type'] == 'float32', buffer
         assert buffer['capacity_bytes'] == 128, buffer
         assert buffer['logical_bytes'] == 128, buffer
+        # The manifest states the Host variable a public buffer holds.
+        assert buffer['source'] == {
+            'kind': 'host_variable', 'symbol': name}, buffer
     assert len(buffers) == 3, buffers
     recovered = (artifact / 'frontend.recovered.mlir').read_text(
         encoding='utf-8')

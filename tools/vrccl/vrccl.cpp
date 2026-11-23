@@ -604,6 +604,9 @@ struct UnityBuffer {
   std::string elementType;
   std::string publicAccess;
   std::optional<int64_t> publicIndex;
+  /// Where a public buffer comes from (vrc-describe-canonical-unity-buffers);
+  /// copied into the manifest as is.
+  std::optional<json::Value> source;
 };
 
 FailureOr<SmallVector<UnityBuffer>>
@@ -671,7 +674,10 @@ parseUnityBuffers(const json::Object &config) {
     result.push_back({*id, *bytes, logicalBytes.value_or(*bytes), width, height,
                       name->str(), "__udoncl_buffer_" + std::to_string(*id),
                       elementType ? elementType->str() : "",
-                      publicAccess ? publicAccess->str() : "", publicIndex});
+                      publicAccess ? publicAccess->str() : "", publicIndex,
+                      entry->get("source")
+                          ? std::optional<json::Value>(*entry->get("source"))
+                          : std::nullopt});
   }
   return result;
 }
@@ -1360,6 +1366,8 @@ json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers,
     if (!buffer.elementType.empty()) {
       entry["element_type"] = buffer.elementType;
       entry["public_access"] = buffer.publicAccess;
+      if (buffer.source)
+        entry["source"] = *buffer.source;
     }
     result.push_back(std::move(entry));
   }
