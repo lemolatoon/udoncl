@@ -18,6 +18,7 @@
 #include "OpenCLUserKernels.h"
 #include "UnityDeviceKernels.h"
 #include "UnityOnnxBuffers.h"
+#include "VRC/Conversion/UnityBufferNames.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -844,7 +845,7 @@ LogicalResult materializeCanonicalUnityBufferConfig(ModuleOp module,
         module.emitError("invalid public canonical Unity buffer layout entry");
         return failure();
       }
-      name = udoncl::onnxPublicBufferName(
+      name = ::vrc::onnxPublicBufferName(
           publicName.getValue(), access == "output", index.getInt(), names);
       if (name.empty()) {
         module.emitError(

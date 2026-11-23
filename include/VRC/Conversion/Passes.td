@@ -362,6 +362,26 @@ def ReportStaticUnityResourceLoweringPass : Pass<"vrc-report-static-unity-resour
     resolve, transfer or unresolved Device operand. The module is unchanged.
   }];
 }
+def DescribeCanonicalUnityBuffersPass : Pass<"vrc-describe-canonical-unity-buffers", "mlir::ModuleOp"> {
+  let summary = "Describe the Unity buffers of an applied static Unity resource lowering";
+  let description = [{
+    When `vrc.static_unity_resource_lowering_readiness` says the static Unity
+    resource lowering is applied, checks the canonical layout plan
+    (`vrc.static_unity_buffer_layout_plan`) and records the Unity buffers of
+    the library in `vrc.canonical_unity_buffers`, in layout order: one
+    dictionary per assigned Unity Texture with its `id` (the texture id),
+    `name` and `byte_size` (the capacity). A public buffer also carries
+    `logical_byte_size`, `element_type`, `public_access` and `public_index`,
+    and is named after its public name, made a C# identifier (characters
+    outside `[A-Za-z0-9_]` become `_`, a leading non-letter gets the prefix
+    `tensor_`, and a taken name the suffix `_input_<index>` or
+    `_output_<index>`); a private buffer is `private_<id>`. Texture ids must
+    be dense from one, and names and public endpoints unique.
+
+    A module whose lowering is not applied gets no description. A
+    description from an earlier run is replaced.
+  }];
+}
 def RequireStaticUnityResourceLoweringPass : Pass<"vrc-require-static-unity-resource-lowering", "mlir::ModuleOp"> {
   let summary = "Require every Unity Device buffer to resolve to one assigned buffer";
   let description = [{

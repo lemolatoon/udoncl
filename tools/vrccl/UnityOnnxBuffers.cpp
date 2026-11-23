@@ -1,5 +1,7 @@
 #include "UnityOnnxBuffers.h"
 
+#include "VRC/Conversion/UnityBufferNames.h"
+
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -10,26 +12,6 @@ using namespace mlir;
 namespace json = llvm::json;
 
 namespace udoncl {
-
-std::string onnxPublicBufferName(llvm::StringRef name, bool output,
-                                 int64_t index, std::set<std::string> &used) {
-  std::string result;
-  result.reserve(name.size());
-  for (char character : name) {
-    bool valid = llvm::isAlnum(character) || character == '_';
-    result.push_back(valid ? character : '_');
-  }
-  if (result.empty() ||
-      !(llvm::isAlpha(result.front()) || result.front() == '_'))
-    result = "tensor_" + result;
-  if (used.insert(result).second)
-    return result;
-  result += output ? "_output_" : "_input_";
-  result += std::to_string(index);
-  if (!used.insert(result).second)
-    return {};
-  return result;
-}
 
 namespace {
 
@@ -66,8 +48,8 @@ derivePlanBuffers(ModuleOp module, DictionaryAttr binding,
         module.emitError("ONNX public tensor has an unsupported binding ABI");
         return failure();
       }
-      std::string bufferName =
-          onnxPublicBufferName(name.getValue(), output, index.getInt(), names);
+      std::string bufferName = vrc::onnxPublicBufferName(
+          name.getValue(), output, index.getInt(), names);
       if (bufferName.empty()) {
         module.emitError("ONNX public tensor names are not uniquely mappable");
         return failure();
