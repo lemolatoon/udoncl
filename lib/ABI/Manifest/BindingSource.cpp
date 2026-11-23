@@ -438,7 +438,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             "        {\n"
             "            return program != null && !disposed;\n"
             "        }\n\n"
-            "        public int TryDispose()\n"
+            "        public int TryUnbindProgram()\n"
             "        {\n"
             "            if (disposed)\n"
             "                return StatusSuccess;\n"
@@ -453,7 +453,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             "        }\n";
 
   std::set<std::string> methods{"IsInitialized", "TryBindProgram",
-                                "TryDispose"};
+                                "TryUnbindProgram"};
   if (hasAsync)
     methods.insert({"GetLastAsyncDiagnostic", "TrySetAsyncFrameBudget",
                     "GetAsyncFrameBudgetMicroseconds",

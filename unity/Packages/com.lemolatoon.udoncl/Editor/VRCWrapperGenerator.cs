@@ -148,7 +148,7 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("            return program != null && !disposed;");
             source.AppendLine("        }");
             source.AppendLine();
-            source.AppendLine("        public int TryDispose()");
+            source.AppendLine("        public int TryUnbindProgram()");
             source.AppendLine("        {");
             source.AppendLine("            if (disposed)");
             source.AppendLine("                return StatusSuccess;");
@@ -172,7 +172,7 @@ namespace Lemolatoon.Udoncl.Editor
                 "StartReadFloatBuffer",
                 "StartReadIntBuffer",
                 "TryBindProgram",
-                "TryDispose",
+                "TryUnbindProgram",
                 "TryWriteFloatBuffer",
                 "TryWriteIntBuffer",
             };

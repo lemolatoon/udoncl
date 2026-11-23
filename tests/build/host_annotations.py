@@ -276,6 +276,31 @@ UDONCL_EXPORT int run(void) { return 0; }
         'Lemolatoon.Udoncl.Generated'), manifest
     assert (artifact / manifest['program']['binding_source']).is_file()
     assert b'declared_program' not in (artifact / 'host.uasm').read_bytes()
+    # The binding detaches its program with TryUnbindProgram, the pair of
+    # TryBindProgram, so a Host may export its own dispose stage as
+    # TryDispose. A Host export that takes a binding method name is an error.
+    disposing = harness.host('dispose-export', '''\
+#include <udoncl/export.h>
+UDONCL_PROGRAM("disposing");
+UDONCL_EXPORT int dispose(void) { return 0; }
+''')
+    artifact, result = harness.compile('dispose-export', None, '--host-llvm',
+                                       disposing)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    manifest = json.loads((artifact / 'manifest.json').read_text(
+        encoding='utf-8'))
+    binding = (artifact / manifest['program']['binding_source']).read_text(
+        encoding='utf-8')
+    assert 'public int TryDispose(out int result)' in binding, binding
+    assert 'public int TryUnbindProgram()' in binding, binding
+    unbinding = harness.host('unbind-export', '''\
+#include <udoncl/export.h>
+UDONCL_PROGRAM("unbinding");
+UDONCL_EXPORT int unbind_program(void) { return 0; }
+''')
+    harness.rejected('unbind-export', None,
+                     'generated U# method collision: TryUnbindProgram',
+                     '--host-llvm', unbinding)
     undeclared = harness.host('undeclared', '''\
 #include <udoncl/export.h>
 UDONCL_EXPORT int run(void) { return 0; }

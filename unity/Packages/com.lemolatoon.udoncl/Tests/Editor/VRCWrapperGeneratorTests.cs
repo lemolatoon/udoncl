@@ -56,7 +56,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             StringAssert.Contains("public int TryBindProgram(UdonBehaviour value)", source);
             StringAssert.Contains("public bool IsInitialized()", source);
-            StringAssert.Contains("public int TryDispose()", source);
+            StringAssert.Contains("public int TryUnbindProgram()", source);
             StringAssert.Contains("if (disposed)", source);
             StringAssert.Contains("return StatusDisposed;", source);
             StringAssert.Contains("if (busy)", source);

@@ -42,7 +42,7 @@ namespace Lemolatoon.Udoncl.Generated
             return false;
         }
 
-        public int TryDispose()
+        public int TryUnbindProgram()
         {
             return StatusNotInitialized;
         }

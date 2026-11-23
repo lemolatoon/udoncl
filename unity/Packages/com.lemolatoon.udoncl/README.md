@@ -88,8 +88,10 @@ SetProgramVariable → SendCustomEvent → GetProgramVariable ABI. Import waits 
 the generated type instead of publishing a partly bound prefab. The generated
 UdonSharp behaviour is the public library-instance handle: `IsInitialized()`
 reports whether it is bound, nested calls return `StatusBusy`, and
-`TryDispose()` invalidates that handle without exposing its internal GPU
+`TryUnbindProgram()` invalidates that handle without exposing its internal GPU
 resources. Calling `TryBindProgram` again starts a fresh binding lifetime.
+`TryUnbindProgram` only detaches the binding and runs no Host code, so a Host
+`dispose` export keeps its own name, `TryDispose`.
 `float[]` and `int[]` parameters are assigned to the raw Udon heap without a
 wrapper-side copy, preserving the shared Udon array object required by Host
 buffer transfers. Async exports and other public types still fail explicitly.
