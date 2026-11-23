@@ -5,10 +5,5 @@
   "binding": {
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclOnnxQ4ComponentBinding"
-  },
-  "export_overrides": [
-    {"symbol": "q4_component_initialize", "public_name": "Initialize", "parameters": []},
-    {"symbol": "q4_component_run", "public_name": "Run", "parameters": []},
-    {"symbol": "q4_component_dispose", "public_name": "Shutdown", "parameters": []}
-  ]
+  }
 }

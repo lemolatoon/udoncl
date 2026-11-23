@@ -95,7 +95,7 @@ static udononnxStatus_t create_buffer(cl_mem_flags flags, size_t elements,
   return status;
 }
 
-UDONCL_EXPORT udononnxStatus_t mnist_initialize(void) {
+UDONCL_EXPORT udononnxStatus_t initialize(void) {
   const udononnxModel_t *model = 0;
   cl_platform_id platform = 0;
   cl_device_id device = 0;
@@ -149,7 +149,7 @@ fail:
   return status;
 }
 
-UDONCL_EXPORT udononnxStatus_t mnist_run(void) {
+UDONCL_EXPORT udononnxStatus_t run(void) {
   cl_event completion = 0;
   udononnxStatus_t status;
   if (!session_created)
@@ -158,7 +158,7 @@ UDONCL_EXPORT udononnxStatus_t mnist_run(void) {
   return complete(completion, status);
 }
 
-UDONCL_EXPORT udononnxStatus_t mnist_dispose(void) {
+UDONCL_EXPORT udononnxStatus_t shutdown(void) {
   if (!session_created)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return release_resources();

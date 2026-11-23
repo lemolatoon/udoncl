@@ -625,7 +625,7 @@ static udononnxStatus_t create_buffer(cl_mem_flags flags, size_t elements,
 static udononnxStatus_t complete(cl_event event,
                                  udononnxStatus_t enqueue_status);
 
-UDONCL_EXPORT udononnxStatus_t mnist_initialize(void) {
+UDONCL_EXPORT udononnxStatus_t initialize(void) {
   /* ... udononnxGetModel(0, &model), clGetPlatformIDs, clGetDeviceIDs,
      clCreateContext, clCreateCommandQueue ... */
   status = create_buffer(CL_MEM_READ_ONLY, MNIST_INPUT_ELEMENTS, &input_buffer,
@@ -642,7 +642,7 @@ UDONCL_EXPORT udononnxStatus_t mnist_initialize(void) {
   /* ... each step checks its status and releases everything on failure ... */
 }
 
-UDONCL_EXPORT udononnxStatus_t mnist_run(void) {
+UDONCL_EXPORT udononnxStatus_t run(void) {
   cl_event completion = 0;
   udononnxStatus_t status;
   if (!session_created)
@@ -651,13 +651,13 @@ UDONCL_EXPORT udononnxStatus_t mnist_run(void) {
   return complete(completion, status);
 }
 
-UDONCL_EXPORT udononnxStatus_t mnist_dispose(void) {
+UDONCL_EXPORT udononnxStatus_t shutdown(void) {
   /* ... udononnxSessionDispose, udonclDeviceBufferDestroy,
      clReleaseCommandQueue, clReleaseContext ... */
 }
 ```
 
-`mnist_initialize` and `mnist_run` launch GPU work, so they become
+`initialize` and `run` launch GPU work, so they become
 asynchronous U# methods. U# writes the image into the buffer bound as the
 model input and reads the buffer bound as the model output; the Host C never
 copies tensor data itself.
@@ -732,12 +732,7 @@ its `buffers` array (see below):
   "binding": {
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclGenericOnnxMnistBinding"
-  },
-  "export_overrides": [
-    {"symbol": "mnist_initialize", "public_name": "Initialize", "parameters": []},
-    {"symbol": "mnist_run", "public_name": "Run", "parameters": []},
-    {"symbol": "mnist_dispose", "public_name": "Shutdown", "parameters": []}
-  ]
+  }
 }
 ```
 
@@ -750,9 +745,9 @@ its `buffers` array (see below):
   `StartReadLogits`).
 - `binding`: the namespace and class name of the generated U# binding,
   `UdonclGenericOnnxMnistBinding`.
-- `export_overrides`: U# names for the three `UDONCL_EXPORT` functions:
-  `mnist_initialize` → `Initialize`, `mnist_run` → `Run`, and
-  `mnist_dispose` → `Shutdown`, none with parameters.
+- The three `UDONCL_EXPORT` functions are U# methods named after the
+  PascalCase of their C names: `initialize` → `Initialize`, `run` → `Run`,
+  and `shutdown` → `Shutdown`, none with parameters.
 - The generated ONNX Host library also defines helper functions
   (`udon_onnx_binding_*`) that your Host calls. They are never part of your
   U# API, and you do not list them.
@@ -821,10 +816,10 @@ The generated binding follows the same rules as in the SAXPY tutorial:
 
 - `int StartInitialize(UdonSharpBehaviour receiver, string completionEvent)`,
   `int GetInitializeStatus()`, and `int TryGetInitializeResult(out int result)`:
-  run `mnist_initialize` asynchronously and read its `udononnxStatus_t`.
+  run `initialize` asynchronously and read its `udononnxStatus_t`.
 - `int StartRun(...)`, `int GetRunStatus()`, and
-  `int TryGetRunResult(out int result)`: the same for `mnist_run`.
-- `int TryShutdown(out int result)`: `mnist_dispose`, which launches no GPU
+  `int TryGetRunResult(out int result)`: the same for `run`.
+- `int TryShutdown(out int result)`: `shutdown`, which launches no GPU
   work and therefore runs synchronously.
 - `int TryWriteImage(float[] source)`: upload the 784 pixels of the `image`
   input, row by row.

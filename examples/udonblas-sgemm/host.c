@@ -24,7 +24,7 @@ static float matrix_b[1440] = {
 static float matrix_c[10];
 static int last_phase;
 
-int run_udonblas_sgemm(void) {
+int run_udon_blas_sgemm(void) {
   cl_platform_id platform = 0;
   cl_device_id device = 0;
   cl_context context = 0;
@@ -92,6 +92,6 @@ cleanup:
   return status;
 }
 
-float get_udonblas_sgemm_result(int column) { return matrix_c[column]; }
+float get_udon_blas_sgemm_result(int column) { return matrix_c[column]; }
 
-int get_udonblas_sgemm_phase(void) { return last_phase; }
+int get_udon_blas_sgemm_phase(void) { return last_phase; }

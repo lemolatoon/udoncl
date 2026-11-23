@@ -32,7 +32,7 @@ static udononnxStatus_t cleanup_after_failure(udononnxStatus_t status) {
   return opencl_status == UDONONNX_STATUS_SUCCESS ? status : opencl_status;
 }
 
-UDONCL_EXPORT udononnxStatus_t rms_component_initialize(void) {
+UDONCL_EXPORT udononnxStatus_t initialize(void) {
   cl_platform_id platform = 0;
   cl_device_id device = 0;
   cl_int error = CL_SUCCESS;
@@ -63,13 +63,13 @@ UDONCL_EXPORT udononnxStatus_t rms_component_initialize(void) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t rms_component_run(void) {
+UDONCL_EXPORT udononnxStatus_t run(void) {
   if (!initialized)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return udon_onnx_binding_enqueue_run();
 }
 
-UDONCL_EXPORT udononnxStatus_t rms_component_dispose(void) {
+UDONCL_EXPORT udononnxStatus_t shutdown(void) {
   udononnxStatus_t status;
   udononnxStatus_t opencl_status;
   if (!initialized)

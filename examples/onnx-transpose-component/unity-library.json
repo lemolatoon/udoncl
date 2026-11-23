@@ -5,10 +5,5 @@
   "binding": {
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclOnnxTransposeComponentBinding"
-  },
-  "export_overrides": [
-    {"symbol": "transpose_component_initialize", "public_name": "Initialize", "parameters": []},
-    {"symbol": "transpose_component_run", "public_name": "Run", "parameters": []},
-    {"symbol": "transpose_component_dispose", "public_name": "Shutdown", "parameters": []}
-  ]
+  }
 }

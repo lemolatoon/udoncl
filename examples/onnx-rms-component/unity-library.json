@@ -5,10 +5,5 @@
   "binding": {
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclOnnxRmsComponentBinding"
-  },
-  "export_overrides": [
-    {"symbol": "rms_component_initialize", "public_name": "Initialize", "parameters": []},
-    {"symbol": "rms_component_run", "public_name": "Run", "parameters": []},
-    {"symbol": "rms_component_dispose", "public_name": "Shutdown", "parameters": []}
-  ]
+  }
 }

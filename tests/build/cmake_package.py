@@ -790,9 +790,9 @@ def main():
         item['c_symbol']: item['public_name']
         for item in onnx_mnist_manifest['exports']
     } == {
-        'mnist_initialize': 'Initialize',
-        'mnist_run': 'Run',
-        'mnist_dispose': 'Shutdown',
+        'initialize': 'Initialize',
+        'run': 'Run',
+        'shutdown': 'Shutdown',
     }
     assert onnx_mnist_manifest['program']['binding_source'] == 'binding.cs'
     mnist_binding = (onnx_mnist_artifact / 'binding.cs').read_text(

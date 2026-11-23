@@ -6,11 +6,6 @@
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclGenericOnnxMnistBinding"
   },
-  "export_overrides": [
-    {"symbol": "mnist_initialize", "public_name": "Initialize", "parameters": []},
-    {"symbol": "mnist_run", "public_name": "Run", "parameters": []},
-    {"symbol": "mnist_dispose", "public_name": "Shutdown", "parameters": []}
-  ],
   "buffers": [
     {"id": 1, "name": "image", "byte_size": 3136, "element_type": "float32", "public_access": "input"},
     {"id": 2, "name": "logits", "byte_size": 40, "element_type": "float32", "public_access": "output"}
