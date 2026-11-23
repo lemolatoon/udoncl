@@ -1121,19 +1121,19 @@ definitions on the tokenizer target. These cache variables control the build:
 - `UDONCL_TINYLLAMA_MAX_NEW_TOKENS` (default 32): the most tokens one
   generation may request.
 
-**The public API description.** CMake writes the chat config,
-`unity-library-chat.json` in the build directory, from the example's
-[`unity-library.json`](examples/onnx-transformer-tiny/unity-library.json)
-with `string(JSON ...)`. Its keys are:
+**The public API description.** No config file describes the artifact. The
+CMake project passes three `udoncl_add_unity_library` arguments:
 
-- `schema_version`: `2`.
-- `binding`: the class `UdonclTinyLlamaChatBinding` in
+- `BINDING_CLASS UdonclTinyLlamaChatBinding`; the namespace is the default
   `Lemolatoon.Udoncl.Generated`.
-- `device_texel_format`: `"rgba32_float"`, which stores four words per
-  RGBA32 float texel in the real model's Device buffers and weights (cache
-  variable `UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT`).
-- `generate_onnx_public_buffers`: `false`. No tensor is public; text goes in
-  as U# strings and comes out through `int[]` arrays of the exports.
+- `DEVICE_TEXEL_FORMAT rgba32_float`, which stores four words per RGBA32
+  float texel in the real model's Device buffers and weights (cache variable
+  `UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT`).
+- `OMIT_INTERMEDIATE_IR`.
+
+No tensor is public: text goes in as U# strings and comes out through
+`int[]` arrays of the exports, and the compiler derives the Device buffers
+from the ONNX and C Hosts.
 
 The Host C source names the rest. `UDONCL_PROGRAM("tinyllama_real_chat")`
 in [`chat_host.c`](examples/onnx-transformer-tiny/chat_host.c) names the
@@ -1143,10 +1143,6 @@ text-layer exports are U# methods named after the PascalCase of their C
 names (`continue_chat_prompt` -> `ContinueChatPrompt`), with the C parameter
 names. `streamed_text_length` and `read_streamed_text` are
 `UDONCL_EXPORT_WHILE_BUSY`, so U# can poll them while `Generate` runs.
-
-The base config's `buffers` array lists the public buffers of the synthetic
-fixture; CMake drops it for the real model, whose buffers the compiler
-derives.
 
 #### 2. Build
 

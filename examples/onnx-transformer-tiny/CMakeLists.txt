@@ -26,25 +26,14 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       past_sequence_length=0
     INPUT_SHAPES
       attention_mask=1,4)
-  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json" real_unity_config)
-  # unity-library.json lists the public buffers of the synthetic fixture.
-  # The real model has other inputs and outputs; udonclc derives its
-  # buffers from the ONNX Host as it does for the fixture.
-  string(JSON real_unity_config REMOVE "${real_unity_config}" buffers)
   # The real model stores its Device buffers and weights as four words per
   # RGBA32 float texel (see docs/architecture/
   # udon-vrchat-shader-constraints.md); rgba8_unorm restores one word per
-  # RGBA8 texel. The synthetic fixture keeps the default.
+  # RGBA8 texel. The synthetic fixture keeps the default. udonclc derives
+  # the Device buffers of every artifact from its ONNX and C Hosts, and each
+  # Host names its program (UDONCL_PROGRAM).
   set(UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT "rgba32_float" CACHE STRING
     "Device texel format of the real TinyLlama artifacts")
-  string(JSON real_unity_config SET "${real_unity_config}"
-    device_texel_format "\"${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}\"")
-  string(JSON real_unity_config SET "${real_unity_config}"
-    program "\"tinyllama_real_prefill\"")
-  string(JSON real_unity_config SET "${real_unity_config}"
-    binding class_name "\"UdonclTinyLlamaPrefillBinding\"")
-  set(unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-real.json")
-  file(WRITE "${unity_config}" "${real_unity_config}\n")
 
   # Context Capacity is a build parameter: the M=1 graph is specialized to
   # past_sequence_length = capacity - 1 and a capacity-long attention mask,
@@ -88,46 +77,20 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       "UDONCL_TINYLLAMA_SEQUENCE_ROWS must be a positive integer no larger "
       "than the Context Capacity")
   endif()
-  # The Conversation and Chat Hosts name their programs (UDONCL_PROGRAM) and
-  # U# exports themselves.
-  set(conversation_unity_config_json "${real_unity_config}")
-  string(JSON conversation_unity_config_json REMOVE
-    "${conversation_unity_config_json}" program)
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" binding class_name
-    "\"UdonclTinyLlamaConversationBinding\"")
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" generate_onnx_public_buffers false)
-  set(conversation_unity_config
-    "${CMAKE_CURRENT_BINARY_DIR}/unity-library-conversation.json")
-  file(WRITE "${conversation_unity_config}"
-    "${conversation_unity_config_json}\n")
-
   # Chat Artifact: the same token-array Conversation Host plus the optional
   # text layer (chat template, special tokens and UTF-16 decoding). The
-  # Conversation Artifact above stays free of tokenizer code. A prompt can be
+  # Conversation Artifact stays free of tokenizer code. A prompt can be
   # tokenized in bounded slices (BeginChatPrompt, then ContinueChatPrompt
   # until ChatPromptPending is 0), and the reply text is streamed: the
   # StreamedTextLength code units read by ReadStreamedText are final. After a
   # reply, BeginChatTurn/ContinueChatTurn append the next user message to the
   # same conversation and ResetChat starts a new one.
-  set(chat_unity_config_json "${conversation_unity_config_json}")
-  string(JSON chat_unity_config_json SET "${chat_unity_config_json}"
-    binding class_name "\"UdonclTinyLlamaChatBinding\"")
-  set(chat_unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-chat.json")
-  file(WRITE "${chat_unity_config}" "${chat_unity_config_json}\n")
-
-  # Acceptance-only M=1 step validation artifact: the same capacity graph
-  # as the Conversation Artifact, but with public input/output buffers and the
-  # plain initialize/run Host, so a Unity test can feed one ORT step (including
-  # its rolling past K/V) and compare every logit and present K/V output.
-  set(step_unity_config_json "${real_unity_config}")
-  string(JSON step_unity_config_json SET "${step_unity_config_json}"
-    program "\"tinyllama_real_m1_step\"")
-  string(JSON step_unity_config_json SET "${step_unity_config_json}"
-    binding class_name "\"UdonclTinyLlamaStepBinding\"")
-  set(step_unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-step.json")
-  file(WRITE "${step_unity_config}" "${step_unity_config_json}\n")
+  #
+  # The acceptance-only M=1 step validation artifact has the same capacity
+  # graph as the Conversation Artifact, but public input/output buffers and
+  # the plain initialize/run Host (step_host.c), so a Unity test can feed one
+  # ORT step (including its rolling past K/V) and compare every logit and
+  # present K/V output.
 else()
   set(model "${CMAKE_CURRENT_BINARY_DIR}/transformer.onnx")
   execute_process(
@@ -141,7 +104,6 @@ else()
     message(FATAL_ERROR "Transformer ONNX generation failed:\n${stdout}${stderr}")
   endif()
   set(model_shape_arguments DIMENSION_BOUNDS sequence=4)
-  set(unity_config "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json")
 endif()
 
 udoncl_add_onnx_host_library(transformer_host MODEL "${model}"
@@ -150,7 +112,13 @@ target_include_directories(transformer_host INTERFACE
   "${UdonBLAS_INCLUDE_DIRS}"
   "${UdonDNN_INCLUDE_DIRS}"
   "${UdonATen_INCLUDE_DIRS}")
-udoncl_add_host_library(transformer_user_host host.c)
+# The plain initialize/run Host: the synthetic transformer artifact, or under
+# the real model the prefill validation artifact.
+if(UDONCL_TINYLLAMA_ONNX_MODEL)
+  udoncl_add_host_library(transformer_user_host prefill_host.c)
+else()
+  udoncl_add_host_library(transformer_user_host host.c)
+endif()
 target_include_directories(transformer_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
 # The graph of `rows` positions per run on a past of capacity - 1 rows
@@ -215,10 +183,9 @@ endfunction()
 # udonclc compiles the library kernels the Host of that capacity dispatches,
 # such as the large strided-batched SGEMM of the 4096-token attention.
 function(tinyllama_add_conversation_artifacts suffix target_suffix)
-  set(conversation_config "${conversation_unity_config}")
-  set(chat_config "${chat_unity_config}")
   udoncl_add_unity_library(onnx-transformer-tiny-conversation${target_suffix}
-    CONFIG "${conversation_config}"
+    BINDING_CLASS UdonclTinyLlamaConversationBinding
+    DEVICE_TEXEL_FORMAT "${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}"
     OMIT_INTERMEDIATE_IR
     HOST_LIBRARIES
       transformer_conversation_model_host${suffix}
@@ -230,7 +197,8 @@ function(tinyllama_add_conversation_artifacts suffix target_suffix)
       UdonBLAS::UdonBLAS)
   if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
     udoncl_add_unity_library(onnx-transformer-tiny-chat${target_suffix}
-      CONFIG "${chat_config}"
+      BINDING_CLASS UdonclTinyLlamaChatBinding
+      DEVICE_TEXEL_FORMAT "${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}"
       OMIT_INTERMEDIATE_IR
       HOST_LIBRARIES
         transformer_conversation_model_host${suffix}
@@ -268,12 +236,18 @@ if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
     SYMBOL tinyllama_tokenizer
     SOURCES conversation_tokenizer.c)
 endif()
+# The synthetic transformer and the real prefill artifact expose the ONNX
+# graph inputs and outputs as public buffers (transitional
+# ONNX_PUBLIC_TENSOR_BUFFERS).
 set(unity_library_arguments)
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
-  list(APPEND unity_library_arguments OMIT_INTERMEDIATE_IR)
+  list(APPEND unity_library_arguments
+    BINDING_CLASS UdonclTinyLlamaPrefillBinding
+    DEVICE_TEXEL_FORMAT "${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}"
+    OMIT_INTERMEDIATE_IR)
 endif()
 udoncl_add_unity_library(onnx-transformer-tiny
-  CONFIG "${unity_config}"
+  ONNX_PUBLIC_TENSOR_BUFFERS
   ${unity_library_arguments}
   HOST_LIBRARIES
     transformer_host
@@ -297,12 +271,17 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     tinyllama_add_model_library(${step_model_host}
       ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} 1)
   endif()
+  udoncl_add_host_library(transformer_step_user_host step_host.c)
+  target_include_directories(transformer_step_user_host INTERFACE
+    "${UdonONNXRuntime_INCLUDE_DIRS}")
   udoncl_add_unity_library(onnx-transformer-tiny-m1-step
-    CONFIG "${step_unity_config}"
+    ONNX_PUBLIC_TENSOR_BUFFERS
+    BINDING_CLASS UdonclTinyLlamaStepBinding
+    DEVICE_TEXEL_FORMAT "${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}"
     OMIT_INTERMEDIATE_IR
     HOST_LIBRARIES
       ${step_model_host}
-      transformer_user_host
+      transformer_step_user_host
       UdonONNXRuntime::UdonONNXRuntime
     LIBRARIES
       UdonONNXOperators::UdonONNXOperators
@@ -316,7 +295,7 @@ endif()
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY AND
    NOT UDONCL_TINYLLAMA_ONNX_MODEL)
   udoncl_add_unity_library(onnx-transformer-conversation-input
-    CONFIG "${unity_config}"
+    ONNX_PUBLIC_TENSOR_BUFFERS
     HOST_LIBRARIES
       transformer_host
       transformer_user_host

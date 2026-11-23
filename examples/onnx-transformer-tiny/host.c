@@ -3,6 +3,14 @@
 #include <udoncl/export.h>
 #include <udoncl/onnx_generated_binding.h>
 
+/* The program of the synthetic transformer artifact (onnx-transformer-tiny).
+ * A wrapper that includes this file for a real TinyLlama artifact
+ * (prefill_host.c, step_host.c) defines its own TRANSFORMER_PROGRAM first. */
+#ifndef TRANSFORMER_PROGRAM
+#define TRANSFORMER_PROGRAM "generic_onnx_transformer_tiny"
+#endif
+UDONCL_PROGRAM(TRANSFORMER_PROGRAM);
+
 static cl_context transformer_context;
 static cl_command_queue transformer_queue;
 static int transformer_initialized;

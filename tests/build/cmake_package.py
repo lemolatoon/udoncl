@@ -1162,16 +1162,10 @@ def main():
     onnx_transformer_source = (
         args.source.resolve().parents[1] / 'examples/onnx-transformer-tiny'
     )
-    configured_transformer = json.loads(
-        (onnx_transformer_source / 'unity-library.json').read_text(
-            encoding='utf-8'
-        )
-    )
-    assert [
-        buffer['id'] for buffer in configured_transformer['buffers']
-        if 'public_access' in buffer
-    ] == list(range(1, 7))
-    assert len(configured_transformer['buffers']) == 6
+    # The synthetic transformer Host names its program, and the CMake project
+    # exposes the ONNX graph inputs and outputs with the transitional
+    # ONNX_PUBLIC_TENSOR_BUFFERS argument instead of a config.
+    assert not (onnx_transformer_source / 'unity-library.json').exists()
     run([
         args.cmake,
         '-S', onnx_transformer_source,
