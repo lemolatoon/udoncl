@@ -222,6 +222,19 @@ def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-
   }];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
 }
+def PlanAssignedUnityBufferLayoutPass : Pass<"vrc-plan-assigned-unity-buffer-layout", "mlir::ModuleOp"> {
+  let summary = "Plan the Unity buffers of a Host whose Device buffers are already assigned";
+  let description = [{
+    For a module that the static Device resource analysis left undecided (no
+    `vrc.static_unity_resource_lowering_readiness`), that allocates no Device
+    buffer and that names its buffers with `vrc.assigned_buffer` (for
+    example hand-written Host MLIR), records the textures those operations
+    name as an applied static lowering: `vrc.static_unity_buffer_layout_plan`
+    lists one private persistent buffer per texture, and the readiness is
+    applied. The textures must be numbered densely from 1 and rgba8_unorm,
+    and each must have one resource, capacity and format.
+  }];
+}
 def PrivatizeONNXBindingResourcesPass : Pass<"vrc-privatize-onnx-binding-resources", "mlir::ModuleOp"> {
   let summary = "Keep the Device buffers of a generated ONNX binding private";
   let description = [{
