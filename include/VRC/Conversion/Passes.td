@@ -302,6 +302,19 @@ def MaterializeStaticDispatchResourcesPass : Pass<"vrc-materialize-static-dispat
   let summary = "Replace proven dispatch allocation operands with assigned mutable Texture resources";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];
 }
+def MaterializeStaticTransferResourcesPass : Pass<"vrc-materialize-static-transfer-resources", "mlir::ModuleOp"> {
+  let summary = "Specialize proven OpenCL buffer transfers to their assigned mutable Texture resources";
+  let description = [{
+    An OpenCL transfer call (clEnqueueWriteBuffer, clEnqueueReadBuffer,
+    clEnqueueCopyBuffer or clEnqueueFillBuffer) whose transfer binding
+    snapshot names one allocation per buffer operand in every call context
+    calls a private specialization of the linked runtime transfer instead.
+    In it, every typed transfer reads or writes the assigned Texture of the
+    allocation its buffer argument holds rather than the run-time physical
+    token. A runtime transfer no call reaches any more is erased.
+  }];
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::func::FuncDialect"];
+}
 def MaterializeStaticLogicalBuffersPass : Pass<"vrc-materialize-static-logical-buffers", "mlir::ModuleOp"> {
   let summary = "Replace constant logical buffers with their reconciled mutable Texture resources";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect"];
