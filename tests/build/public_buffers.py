@@ -85,8 +85,6 @@ def main():
                     if f'sym_name = "{symbol}"' in line
                     and 'udonhl.global' in line)
         assert 'udoncl.public = "float32"' in line, line
-    binding = (artifact / 'binding.cs').read_text(encoding='utf-8') \
-        if (artifact / 'binding.cs').is_file() else ''
 
     def compile_variant(name, host_source, *extra):
         """Compiles a variant of host.c against the built runtime."""
@@ -143,6 +141,14 @@ UDONCL_EXPORT int shutdown(void) {'''),
                      'UDONCL_PUBLIC(float) cl_mem result;\n'
                      'UDONCL_PUBLIC(int) cl_mem unused;'),
         'UDONCL_PUBLIC variable unused holds no Device buffer')
+    # The annotation names the element type; a kernel argument of another
+    # type the variable is passed to is a conflict.
+    rejected(
+        'kernel-type',
+        host.replace('UDONCL_PUBLIC(float) cl_mem result;',
+                     'UDONCL_PUBLIC(int) cl_mem result;'),
+        'UDONCL_PUBLIC(int) variable result is passed to argument 2 of '
+        'OpenCL kernel saxpy, a float buffer')
     print(f'public_buffers=passed buffers={len(buffers)}')
 
 

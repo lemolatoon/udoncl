@@ -322,6 +322,29 @@ std::optional<ParsedDispatch> parseDispatchName(llvm::StringRef name) {
   return parsed;
 }
 
+/// The element type UDONCL_PUBLIC names for a kernel_arg_base_type pointer
+/// such as "float*", or empty.
+std::string bufferElementType(llvm::StringRef baseType) {
+  baseType = baseType.trim();
+  if (!baseType.consume_back("*"))
+    return "";
+  baseType = baseType.trim();
+  if (baseType == "float")
+    return "float32";
+  if (baseType == "int" || baseType == "uint")
+    return "int32";
+  if (baseType == "long" || baseType == "ulong")
+    return "int64";
+  return "";
+}
+
+/// The C type of a UDONCL_PUBLIC element type.
+llvm::StringRef publicTypeName(llvm::StringRef elementType) {
+  return elementType == "float32" ? "float"
+         : elementType == "int32" ? "int"
+                                  : "long";
+}
+
 std::string enqueueName(const OpenCLUserKernel &kernel) {
   return (enqueuePrefix + llvm::Twine(kernel.id) + "_" +
           llvm::Twine(kernel.bufferCount) + "_" + kernel.name)
@@ -360,12 +383,20 @@ discoverOpenCLUserKernels(const llvm::Module &host, const llvm::Module &device,
     if (isLibraryKernel(name) || !function || function->isDeclaration() ||
         function->getCallingConv() != llvm::CallingConv::SPIR_KERNEL)
       continue;
-    OpenCLUserKernel kernel{name, id, 0, ""};
+    OpenCLUserKernel kernel{name, id, 0, "", {}};
+    auto *baseTypes = function->getMetadata("kernel_arg_base_type");
     bool scalars = false;
     for (const llvm::Argument &argument : function->args()) {
       llvm::Type *type = argument.getType();
       if (type->isPointerTy() && !scalars) {
         ++kernel.bufferCount;
+        auto *baseType =
+            baseTypes && argument.getArgNo() < baseTypes->getNumOperands()
+                ? dyn_cast<llvm::MDString>(
+                      baseTypes->getOperand(argument.getArgNo()))
+                : nullptr;
+        kernel.bufferElementTypes.push_back(
+            baseType ? bufferElementType(baseType->getString()) : "");
       } else if (type->isFloatTy()) {
         scalars = true;
         kernel.scalarKinds.push_back('f');
@@ -641,6 +672,49 @@ LogicalResult bindOpenCLUserKernelLaunches(llvm::Module &host,
     llvm::CallInst *bound = builder.CreateCall(entry, operands);
     launch->replaceAllUsesWith(bound);
     launch->eraseFromParent();
+  }
+  return success();
+}
+
+LogicalResult checkPublicKernelArgumentTypes(
+    const llvm::Module &host, ArrayRef<OpenCLUserKernel> kernels,
+    const std::map<std::string, std::string> &publicGlobals,
+    llvm::raw_ostream &diagnostics) {
+  if (publicGlobals.empty())
+    return success();
+  for (const OpenCLUserKernel &kernel : kernels) {
+    const llvm::Function *entry = host.getFunction(enqueueName(kernel));
+    if (!entry)
+      continue;
+    for (const llvm::User *user : entry->users()) {
+      auto *call = dyn_cast<llvm::CallBase>(user);
+      if (!call || calledFunction(call) != entry)
+        continue;
+      // The buffer operands follow the queue; each loads the handle at the
+      // address its clSetKernelArg passed.
+      for (unsigned index = 0;
+           index < kernel.bufferCount && index + 1 < call->arg_size() &&
+           index < kernel.bufferElementTypes.size();
+           ++index) {
+        auto *load = dyn_cast<llvm::LoadInst>(call->getArgOperand(index + 1));
+        auto *global = load
+                           ? dyn_cast<llvm::GlobalVariable>(
+                                 load->getPointerOperand()->stripPointerCasts())
+                           : nullptr;
+        auto found = global ? publicGlobals.find(global->getName().str())
+                            : publicGlobals.end();
+        const std::string &expected = kernel.bufferElementTypes[index];
+        if (found == publicGlobals.end() || expected.empty() ||
+            found->second == expected)
+          continue;
+        diagnostics << "UDONCL_PUBLIC(" << publicTypeName(found->second)
+                    << ") variable " << found->first
+                    << " is passed to argument " << index
+                    << " of OpenCL kernel " << kernel.name << ", a "
+                    << publicTypeName(expected) << " buffer\n";
+        return failure();
+      }
+    }
   }
   return success();
 }

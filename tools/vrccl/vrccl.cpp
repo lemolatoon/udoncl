@@ -1817,6 +1817,12 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
     if (failed(kernels) || failed(udoncl::bindOpenCLUserKernelLaunches(
                                *inputModule, kernels->kernels, errs())))
       return failure();
+    std::map<std::string, std::string> publicGlobals;
+    for (const udoncl::PublicGlobal &global : annotations->publicGlobals)
+      publicGlobals[global.symbol] = global.elementType;
+    if (failed(udoncl::checkPublicKernelArgumentTypes(
+            *inputModule, kernels->kernels, publicGlobals, errs())))
+      return failure();
   }
   if (linkedRuntime && !hasRuntime) {
     errs() << "--host-library-llvm requires the linked OpenCL AOT runtime\n";

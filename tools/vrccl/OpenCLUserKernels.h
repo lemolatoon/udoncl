@@ -30,6 +30,10 @@ struct OpenCLUserKernel {
   unsigned bufferCount;
   /// 'i' (int or uint) or 'f' (float) for every scalar after the buffers.
   std::string scalarKinds;
+  /// The element type of every buffer argument from its
+  /// kernel_arg_base_type: "float32", "int32", "int64", or empty when the
+  /// Device module does not name a type UDONCL_PUBLIC can declare.
+  std::vector<std::string> bufferElementTypes;
 };
 
 /// User kernels take the ids from here up, in name order; library kernels
@@ -72,6 +76,15 @@ mlir::LogicalResult
 bindOpenCLUserKernelLaunches(llvm::Module &host,
                              llvm::ArrayRef<OpenCLUserKernel> kernels,
                              llvm::raw_ostream &diagnostics);
+
+/// Rejects a UDONCL_PUBLIC variable a bound user kernel launch of `host`
+/// (bindOpenCLUserKernelLaunches) passes, by its address, to a buffer argument
+/// whose element type differs from the annotated one. `publicGlobals` maps a
+/// variable to its element type ("float32", "int32" or "int64").
+mlir::LogicalResult checkPublicKernelArgumentTypes(
+    const llvm::Module &host, llvm::ArrayRef<OpenCLUserKernel> kernels,
+    const std::map<std::string, std::string> &publicGlobals,
+    llvm::raw_ostream &diagnostics);
 
 /// Describes every user kernel dispatch intrinsic of the linked Unity Host
 /// `host` with `vrc.device_dispatch`, so LowerOpenCLAOTIntrinsics lowers it
