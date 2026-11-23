@@ -637,6 +637,20 @@ add_test(NAME static-device-resource-global-cell-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_global_cells_invalid.mlir"
 )
+add_test(NAME static-annotated-public-resources
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_annotated_public_resources.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_annotated_public_resources.mlir"
+)
+add_test(NAME static-annotated-public-resources-diagnostics
+  COMMAND vrc-opt --vrc-discover-static-device-resources
+    --vrc-infer-static-device-resource-requirements
+    --vrc-propagate-device-resource-provenance
+    --vrc-classify-annotated-public-device-resources --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_annotated_public_resources_invalid.mlir"
+)
 add_test(NAME static-device-resource-device-memory
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_device_memory.py"

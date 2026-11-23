@@ -204,6 +204,24 @@ def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-devic
   let summary = "Classify static allocation identities bound to public ONNX inputs and outputs";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def ClassifyAnnotatedPublicDeviceResourcesPass : Pass<"vrc-classify-annotated-public-device-resources", "mlir::ModuleOp"> {
+  let summary = "Classify the Device buffers of UDONCL_PUBLIC Host variables";
+  let description = [{
+    Resolves every `udonhl.global` marked `udoncl.public` (a UDONCL_PUBLIC
+    variable) at compile time to the one allocation context it holds,
+    from `vrc.static_device_global_cell_provenance`; the variable may also be
+    null. Its clCreateBuffer flags give its direction: CL_MEM_READ_ONLY is an
+    input U# writes, CL_MEM_WRITE_ONLY an output U# reads, and the public
+    index is the ordinal of the variable among those of its direction in
+    declaration order. A variable that holds no tracked buffer, one of
+    unknown origin, the buffers of several allocation contexts or the buffer
+    of another public variable, and a CL_MEM_READ_WRITE buffer (not
+    supported yet), are errors. The bindings are appended to
+    `vrc.static_device_resource_public_bindings`, and their resources listed
+    in `vrc.static_declared_public_resources`: they need no configured Unity
+    buffer.
+  }];
+}
 def ClassifyStaticPublicDeviceResourcesPass : Pass<"vrc-classify-static-public-device-resources", "mlir::ModuleOp"> {
   let summary = "Classify frontend-declared public resources from generic allocation provenance";
 }
