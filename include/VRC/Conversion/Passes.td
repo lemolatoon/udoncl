@@ -222,6 +222,17 @@ def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-
   }];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
 }
+def PrivatizeONNXBindingResourcesPass : Pass<"vrc-privatize-onnx-binding-resources", "mlir::ModuleOp"> {
+  let summary = "Keep the Device buffers of a generated ONNX binding private";
+  let description = [{
+    Erases `vrc.static_public_resource_binding`, which the ONNX Host
+    finalizer puts on every buffer its generated binding allocates for a
+    graph input or output. Run before the static Device resource analysis of
+    a Unity library that does not expose its ONNX tensors (the transitional
+    `--onnx-public-tensor-buffers` option is off), the buffers are private
+    Device buffers rather than public ones no Unity buffer backs.
+  }];
+}
 def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-device-resources", "mlir::ModuleOp"> {
   let summary = "Classify static allocation identities bound to public ONNX inputs and outputs";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
