@@ -175,6 +175,27 @@ def AttachDeviceResourceOperandContractsPass : Pass<"vrc-attach-device-resource-
   }];
   let dependentDialects = ["mlir::func::FuncDialect"];
 }
+def UnrollStaticResourceLoopsPass : Pass<"vrc-unroll-static-resource-loops", "mlir::ModuleOp"> {
+  let summary = "Fully unroll constant-trip CFG loops that create Device resources";
+  let description = [{
+    A loop that creates a Device resource on every iteration
+    (clCreateBuffer, udonclCreateBufferForQueue, udonclDeviceBufferCreate,
+    or a call to a function that may) has one allocation context per
+    iteration. When it is a natural single-latch CFG loop entered from one
+    preheader whose exit is decided by an integer induction variable with a
+    constant start, a constant step and a comparison against constants, and
+    no value of it is used outside it except through its exit edges, this
+    pass replaces it by one copy of its blocks per iteration with the
+    induction variable a constant, innermost loops first, and canonicalizes
+    the function. A loop of more than `maximum-trip-count` iterations, or
+    any other loop, is left for static Device resource discovery to reject.
+  }];
+  let options = [
+    Option<"maximumTripCount", "maximum-trip-count", "int64_t", /*default=*/"64",
+           "Largest iteration count a loop is unrolled for">
+  ];
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
+}
 def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resources", "mlir::ModuleOp"> {
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect"];
