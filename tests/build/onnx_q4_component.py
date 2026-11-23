@@ -76,6 +76,10 @@ def main():
     recovered = (artifact / 'frontend.recovered.mlir').read_text(encoding='utf-8')
     udon_async = (artifact / 'host.udon-async.mlir').read_text(encoding='utf-8')
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
+    # The Host C names the program (UDONCL_PROGRAM) and CMake passes
+    # ONNX_PUBLIC_TENSOR_BUFFERS; the binding class is the default one.
+    assert manifest['program']['name'] == 'onnx_q4_component'
+    assert manifest['program']['binding_class'] == 'UdonclOnnxQ4ComponentBinding'
     assert 'vrc.assigned_buffer' in recovered
     assert 'vrc.buffer_alloc' not in recovered
     assert 'vrc.buffer_release' not in recovered

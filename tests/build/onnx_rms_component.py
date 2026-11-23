@@ -58,6 +58,10 @@ def main():
     artifact = consumer / 'udoncl/onnx-rms-component/artifact'
     recovered = (artifact / 'frontend.recovered.mlir').read_text(encoding='utf-8')
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
+    # The Host C names the program (UDONCL_PROGRAM) and CMake passes
+    # ONNX_PUBLIC_TENSOR_BUFFERS; the binding class is the default one.
+    assert manifest['program']['name'] == 'onnx_rms_component'
+    assert manifest['program']['binding_class'] == 'UdonclOnnxRmsComponentBinding'
     assert 'vrc.assigned_buffer' in recovered
     assert 'vrc.buffer_alloc' not in recovered
     assert 'vrc.buffer_release' not in recovered

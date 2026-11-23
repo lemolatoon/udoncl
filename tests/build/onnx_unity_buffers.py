@@ -28,13 +28,11 @@ def run(command, **kwargs):
     return subprocess.run([str(item) for item in command], check=True, **kwargs)
 
 
-BASE = json.loads(
-    (Path(__file__).resolve().parents[2]
-     / 'examples/onnx-rms-component/unity-library.json').read_text(encoding='utf-8')
-)
-assert 'buffers' not in BASE
-# The CMake argument replaces the config key.
-assert BASE.pop('generate_onnx_public_buffers') is True
+# The component's Host C names the program; a config here only lists
+# buffers.
+BASE = {'schema_version': 2}
+assert not (Path(__file__).resolve().parents[2]
+            / 'examples/onnx-rms-component/unity-library.json').exists()
 PUBLIC = [
     {'id': 1, 'name': 'input', 'byte_size': 32768, 'element_type': 'float32',
      'public_access': 'input'},

@@ -1,9 +1,0 @@
-{
-  "schema_version": 2,
-  "program": "onnx_q4_component",
-  "generate_onnx_public_buffers": true,
-  "binding": {
-    "namespace": "Lemolatoon.Udoncl.Generated",
-    "class_name": "UdonclOnnxQ4ComponentBinding"
-  }
-}

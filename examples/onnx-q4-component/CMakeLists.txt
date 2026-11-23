@@ -30,7 +30,7 @@ udoncl_add_host_library(q4_component_user_host host.c)
 target_include_directories(q4_component_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
 udoncl_add_unity_library(onnx-q4-component
-  CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
+  ONNX_PUBLIC_TENSOR_BUFFERS
   HOST_LIBRARIES
     q4_component_model_host
     q4_component_user_host

@@ -3,6 +3,10 @@
 #include <udoncl/export.h>
 #include <udoncl/onnx_generated_binding.h>
 
+/* Unity imports the component under
+ * Assets/udoncl-generated/onnx_rms_component. */
+UDONCL_PROGRAM("onnx_rms_component");
+
 static cl_context context;
 static cl_command_queue queue;
 static int initialized;
