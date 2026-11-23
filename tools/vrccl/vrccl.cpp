@@ -3063,29 +3063,13 @@ int main(int argc, char **argv) {
           commonKernelWidthValid = false;
       }
       // A synthesized kernel states its own launch shape. It takes part in
-      // the same shape decisions, and the texture shape the buffers share
-      // must hold its output.
-      bool sharedBufferShape =
-          !unityBuffers.empty() &&
-          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
-            return buffer.width == unityBuffers.front().width &&
-                   buffer.height == unityBuffers.front().height;
-          });
+      // the same shape decisions.
       for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels) {
         maximumKernelWords = std::max(maximumKernelWords, kernel.words);
         if (!commonKernelWidth)
           commonKernelWidth = kernel.width;
         else if (*commonKernelWidth != kernel.width)
           commonKernelWidthValid = false;
-        if (sharedBufferShape &&
-            unityBuffers.front().width * unityBuffers.front().height <
-                kernel.words) {
-          errs() << "synthesized kernel @" << kernel.name << " writes "
-                 << kernel.words << " words but the Unity buffers are "
-                 << unityBuffers.front().width << "x"
-                 << unityBuffers.front().height << " textures\n";
-          return 1;
-        }
       }
       if (!unityBuffers.empty() && commonKernelWidthValid &&
           commonKernelWidth &&
@@ -3157,6 +3141,22 @@ int main(int argc, char **argv) {
     if (failed(generatedBuffers))
       return 1;
     unityBuffers = std::move(*generatedBuffers);
+    // The texture shape the Unity buffers share must hold the output of a
+    // synthesized kernel.
+    if (!unityBuffers.empty() &&
+        llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
+          return buffer.width == unityBuffers.front().width &&
+                 buffer.height == unityBuffers.front().height;
+        }))
+      for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
+        if (unityBuffers.front().width * unityBuffers.front().height <
+            kernel.words) {
+          errs() << "synthesized kernel @" << kernel.name << " writes "
+                 << kernel.words << " words but the Unity buffers are "
+                 << unityBuffers.front().width << "x"
+                 << unityBuffers.front().height << " textures\n";
+          return 1;
+        }
     if (unityTexelFormat != "rgba8_unorm") {
       int64_t texelWords = ::vrc::vrcgpu::gatherTexelWords(unityTexelFormat);
       for (const UnityBuffer &buffer : unityBuffers)
