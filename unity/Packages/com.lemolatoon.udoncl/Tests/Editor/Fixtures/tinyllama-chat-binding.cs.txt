@@ -1,6 +1,6 @@
 // Compile-only stand-in for the U# binding that udonclc generates for the
-// TinyLlama Chat Artifact (program tinyllama_real_chat, the 512- and
-// 4096-token targets of examples/onnx-transformer-tiny). The Editor gate
+// TinyLlama Chat Artifacts (programs tinyllama_real_chat and
+// tinyllama_real_chat_4k of examples/onnx-transformer-tiny). The Editor gate
 // compiles the TinyLlama Chat Package Sample against this public API
 // without the real model; the real-TinyLlama gate compiles the sample
 // against the generated binding itself. Every call reports
@@ -53,7 +53,7 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int StartGenerate(int maxNewTokens, UdonSharpBehaviour receiver, string completionEvent)
+        public int StartGenerate(int max_new_tokens, UdonSharpBehaviour receiver, string completionEvent)
         {
             return StatusNotInitialized;
         }
@@ -69,7 +69,7 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int TryContinueChatTurn(string userText, int maxWork, out int result)
+        public int TryContinueChatTurn(string user_text, int max_work, out int result)
         {
             result = 0;
             return StatusNotInitialized;
@@ -93,7 +93,7 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int TrySetChatPrompt(string systemText, string userText, out int result)
+        public int TrySetChatPrompt(string system_text, string user_text, out int result)
         {
             result = 0;
             return StatusNotInitialized;
@@ -201,13 +201,13 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int TryContinueChatPrompt(string systemText, string userText, int maxWork, out int result)
+        public int TryContinueChatPrompt(string system_text, string user_text, int max_work, out int result)
         {
             result = 0;
             return StatusNotInitialized;
         }
 
-        public int TrySetPromptTokens(int[] tokenIds, int tokenCount, out int result)
+        public int TrySetPromptTokens(int[] token_ids, int token_count, out int result)
         {
             result = 0;
             return StatusNotInitialized;
