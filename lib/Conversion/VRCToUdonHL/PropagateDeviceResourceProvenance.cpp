@@ -1981,6 +1981,11 @@ struct PropagateDeviceResourceProvenancePass
               }
             }
             globalWrites[name] = joinFacts(globalWrites[name], stored);
+            // Until the invocation leaves this path, the cell holds exactly
+            // the stored handle; later loads on it read that fact instead of
+            // the summary of every write.
+            if (classified && exactCell && canHoldResourceCell(*exactCell))
+              localResourceCells[*exactCell] = {true, true, stored};
           } else if (eligibleCells.contains(cell)) {
             if (resourceCells.contains(cell) && !stored.resource) {
               if (stored.zero) {
@@ -2020,8 +2025,18 @@ struct PropagateDeviceResourceProvenancePass
                                ? std::nullopt
                                : exactObject(cellObjects->second);
           if (auto global = globalCell(cell)) {
-            updateFact(load.getResult(), globalFacts[global.getSymName()],
-                       facts, worklist, queued, reached);
+            // A store of this invocation on every path to the load decides
+            // the handle; otherwise the cell holds any handle a write of any
+            // export left in it.
+            Fact loaded = globalFacts[global.getSymName()];
+            if (exactCell) {
+              auto state = localResourceCells.find(*exactCell);
+              if (state != localResourceCells.end() &&
+                  state->second.initializedOnAllPaths)
+                loaded = state->second.fact;
+            }
+            updateFact(load.getResult(), loaded, facts, worklist, queued,
+                       reached);
           } else if (exactCell && canHoldResourceCell(*exactCell) &&
                      localResourceCells.count(*exactCell)) {
             CellState state = localResourceCells[*exactCell];
