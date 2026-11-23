@@ -4,12 +4,11 @@ project(udoncl_opencl_user_kernel LANGUAGES NONE)
 find_package(UdonCL 0.1 REQUIRED CONFIG)
 
 # A Host C written against the standard OpenCL API and the OpenCL AOT
-# runtime, with OpenCL C kernels of its own: the Unity library config holds
-# only public names and buffers.
+# runtime, with OpenCL C kernels of its own and private Device buffers: the
+# Host source names the program and the exports, and no config is needed.
 udoncl_add_host_library(user_kernel_host host.c)
 udoncl_add_device_library(user_kernel_device kernels.cl)
 udoncl_add_unity_library(opencl-user-kernel
-  CONFIG unity-library.json
   HOST_LIBRARIES user_kernel_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES user_kernel_device)
 
@@ -17,6 +16,5 @@ udoncl_add_unity_library(opencl-user-kernel
 # cannot derive.
 udoncl_add_host_library(user_kernel_dynamic_host dynamic.c)
 udoncl_add_unity_library(opencl-user-kernel-dynamic
-  CONFIG dynamic-library.json
   HOST_LIBRARIES user_kernel_dynamic_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES user_kernel_device)

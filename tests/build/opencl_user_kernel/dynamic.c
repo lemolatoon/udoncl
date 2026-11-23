@@ -2,13 +2,15 @@
 #include <CL/cl.h>
 #include <udoncl/export.h>
 
+UDONCL_PROGRAM("opencl_user_kernel_dynamic");
+
 static const char kernel_source[] = "user kernels of the Device library";
 static float result[32];
 static cl_mem input;
 static cl_mem output;
 
 /* Launches user_scale over a run-time number of work items: its NDRange
- * cannot be derived, so the build must ask for a device_kernels entry. */
+ * cannot be derived, so the build fails. */
 UDONCL_EXPORT int run_dynamic_scale(int words, float factor) {
   cl_platform_id platform;
   cl_device_id device;

@@ -831,9 +831,8 @@ FailureOr<std::map<int64_t, std::string>> describeOpenCLUserDispatches(
                                              unresolvedKernel +
                                              " is not a known clCreateKernel "
                                              "result)"))
-                    << "; declare its device_kernels entry (kernel \""
-                    << parsed.kernel << "\", kernel_id " << parsed.id
-                    << ", global_size) by hand\n";
+                    << "; launch it with a constant work dimension and "
+                       "global work size\n";
         return failure();
       }
       global = found->second;

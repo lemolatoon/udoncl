@@ -1694,9 +1694,10 @@ def main():
         '--target', 'tinyllama-tokenizer-unity-library',
     ])
 
-    # A Host C on the standard OpenCL API with OpenCL C kernels of its own:
-    # the config names the exports and buffers, and the linked runtime
-    # dispatches the kernels through entry points udonclc declares.
+    # A Host C on the standard OpenCL API with OpenCL C kernels of its own
+    # and private Device buffers: the Host source names the program and the
+    # exports, and the linked runtime dispatches the kernels through entry
+    # points udonclc declares.
     user_kernel_source = Path(__file__).resolve().parent / 'opencl_user_kernel'
     run([
         args.cmake,
@@ -1749,13 +1750,37 @@ def main():
         assert (
             user_kernel_root / f'artifact/kernels/kernel_{kernel_id}.shader'
         ).is_file()
+    assert not (user_kernel_source / 'unity-library.json').exists()
+    assert user_kernel_manifest['program']['name'] == 'opencl_user_kernel'
+    assert user_kernel_manifest['program']['binding_class'] == (
+        'UdonclOpenclUserKernelBinding')
+    assert sorted(
+        (export['public_name'],
+         [parameter['name'] for parameter in export['parameters']])
+        for export in user_kernel_manifest['exports']
+    ) == [
+        ('RunUserKernels', ['n', 'alpha', 'factor']),
+        ('UserKernelResult', ['index']),
+    ]
+    # The four private buffers, their two uploads and the readback resolve
+    # at compile time to assigned Textures.
+    assert [
+        ('public_access' in buffer, buffer['logical_bytes'])
+        for buffer in user_kernel_manifest['device']['buffers']
+    ] == [(False, 128)] * 4
+    user_kernel_readiness = mlir_module_attribute(
+        (user_kernel_root / 'artifact/frontend.recovered.mlir').read_text(
+            encoding='utf-8'),
+        'vrc.static_unity_resource_lowering_readiness')
+    assert 'applied = true' in user_kernel_readiness, user_kernel_readiness
+    assert 'typed_upload_count = 2 : i32' in user_kernel_readiness
+    assert 'typed_readback_count = 1 : i32' in user_kernel_readiness
     # The strings of the UDONCL_EXPORT annotations, among them the path of
     # the Host C source, do not reach the Host raw heap.
     user_kernel_heap = (user_kernel_root / 'artifact/raw-heap.bytes').read_bytes()
     assert b'host.c' not in user_kernel_heap
     assert b'udoncl.export' not in user_kernel_heap
-    # A run-time global work size cannot be derived: the build names the
-    # entry to write, and a hand-written entry builds the same Host.
+    # A run-time global work size cannot be derived, and the build says so.
     dynamic_build = subprocess.run(
         [args.cmake, '--build', str(user_kernel_consumer), '--target',
          'opencl-user-kernel-dynamic'],
@@ -1765,14 +1790,13 @@ def main():
     assert (
         'cannot derive the NDRange of OpenCL kernel user_scale: the '
         'clEnqueueNDRangeKernel in run_dynamic_scale passes a work dimension '
-        'or global work size that is not a compile-time constant; declare '
-        'its device_kernels entry (kernel "user_scale", kernel_id 1024, '
-        'global_size) by hand'
+        'or global work size that is not a compile-time constant; launch it '
+        'with a constant work dimension and global work size'
     ) in dynamic_diagnostic, dynamic_diagnostic
+    # Until the Unity library config is removed, a hand-written
+    # device_kernels entry still builds the same Host.
     dynamic_root = user_kernel_consumer / 'udoncl/opencl-user-kernel-dynamic'
-    dynamic_config = json.loads(
-        (user_kernel_source / 'dynamic-library.json').read_text(encoding='utf-8')
-    )
+    dynamic_config = {'schema_version': 2}
     dynamic_entry = {
         'schema_version': 1, 'profile': 'gather-f32', 'words': 32,
         'kernel': 'user_scale', 'kernel_id': 1024,

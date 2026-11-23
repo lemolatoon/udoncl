@@ -4,12 +4,15 @@
 
 #define USER_WORDS 32
 
+UDONCL_PROGRAM("opencl_user_kernel");
+
 static const char kernel_source[] = "user kernels of the Device library";
 static float x_values[USER_WORDS];
 static float y_values[USER_WORDS];
 static float result[USER_WORDS];
-/* Device buffers live in Host globals, as the static Device resource
- * analysis requires of a handle whose address is passed to the runtime. */
+/* Private Device buffers: they live in Host globals, as the static Device
+ * resource analysis requires of a handle whose address is passed to the
+ * runtime, and each resolves at compile time to its own Unity Texture. */
 static cl_mem x;
 static cl_mem y;
 static cl_mem sum;
