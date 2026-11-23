@@ -10,9 +10,7 @@ UDONCL_PROGRAM("public_buffers");
 static const char kernel_source[] = "saxpy.cl";
 
 /* U# writes x and y and reads result: their buffers are created once, with
- * CL_MEM_READ_ONLY and CL_MEM_WRITE_ONLY, and live until shutdown. (An
- * export named dispose would collide with the TryDispose method of the
- * generated binding.) */
+ * CL_MEM_READ_ONLY and CL_MEM_WRITE_ONLY, and live until shutdown. */
 UDONCL_PUBLIC(float) cl_mem x, y;
 UDONCL_PUBLIC(float) cl_mem result;
 
