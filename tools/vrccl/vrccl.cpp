@@ -1562,65 +1562,33 @@ collectUdonCLHostAnnotations(llvm::Module &module) {
   return annotations;
 }
 
-/// Re-attaches the per-function UdonCL annotations to the recovered Host.
+/// Re-attaches the per-function UdonCL annotations to the recovered Host
+/// (vrc-attach-host-annotations).
 LogicalResult
 markRecoveredHostAnnotations(ModuleOp module,
                              const udoncl::HostAnnotations &annotations) {
-  for (const std::string &symbol : annotations.exports) {
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function) {
-      errs() << "UDONCL_EXPORT definition was lost while recovering Host "
-                "library: "
-             << symbol << "\n";
-      return failure();
-    }
-    function->setAttr("udoncl.export", UnitAttr::get(module.getContext()));
-  }
-  for (const std::string &symbol : annotations.whileBusy) {
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function) {
-      errs() << "UDONCL_EXPORT_WHILE_BUSY definition was lost while "
-                "recovering the Host: "
-             << symbol << "\n";
-      return failure();
-    }
-    function->setAttr("udoncl.export_while_busy",
-                      UnitAttr::get(module.getContext()));
-  }
-  for (const std::string &symbol : annotations.constructors) {
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function) {
-      errs() << "__attribute__((constructor)) definition was lost while "
-                "recovering the Host: "
-             << symbol << "\n";
-      return failure();
-    }
-    function->setAttr("udoncl.static_constructor",
-                      UnitAttr::get(module.getContext()));
-  }
-  for (const std::string &symbol : annotations.destructors) {
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function) {
-      errs() << "__attribute__((destructor)) definition was lost while "
-                "recovering the Host: "
-             << symbol << "\n";
-      return failure();
-    }
-    function->setAttr("udoncl.static_destructor",
-                      UnitAttr::get(module.getContext()));
-  }
-  // The C parameter names name the U# parameters. Recovery keeps the
-  // argument list of an export; one it reshaped keeps the default names.
   Builder builder(module.getContext());
-  for (const auto &[symbol, names] : annotations.parameterNames) {
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function || function.getNumArguments() != names.size())
-      continue;
-    SmallVector<StringRef> attributes(names.begin(), names.end());
-    function->setAttr("udoncl.parameter_names",
-                      builder.getStrArrayAttr(attributes));
-  }
-  return success();
+  auto strings = [&](auto &&values) {
+    SmallVector<StringRef> list(values.begin(), values.end());
+    return builder.getStrArrayAttr(list);
+  };
+  SmallVector<NamedAttribute> parameterNames;
+  for (const auto &[symbol, names] : annotations.parameterNames)
+    parameterNames.push_back(builder.getNamedAttr(symbol, strings(names)));
+  module->setAttr(
+      "udoncl.host_annotations",
+      builder.getDictionaryAttr({
+          builder.getNamedAttr("constructors",
+                               strings(annotations.constructors)),
+          builder.getNamedAttr("destructors", strings(annotations.destructors)),
+          builder.getNamedAttr("exports", strings(annotations.exports)),
+          builder.getNamedAttr("parameter_names",
+                               builder.getDictionaryAttr(parameterNames)),
+          builder.getNamedAttr("while_busy", strings(annotations.whileBusy)),
+      }));
+  PassManager attach(module.getContext());
+  attach.addPass(::vrc::createAttachHostAnnotationsPass());
+  return attach.run(module);
 }
 
 /// The Unity library configuration as an MLIR attribute, key by key.

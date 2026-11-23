@@ -148,6 +148,20 @@ def LowerOpenCLAOTIntrinsicsPass : Pass<"vrc-lower-opencl-aot-intrinsics", "mlir
   let summary = "Recover the linked OpenCL AOT runtime backend ABI as typed VRC operations";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::arith::ArithDialect"];
 }
+def AttachHostAnnotationsPass : Pass<"vrc-attach-host-annotations", "mlir::ModuleOp"> {
+  let summary = "Attach the UdonCL source annotations of a recovered Host to its symbols";
+  let description = [{
+    Consumes the `udoncl.host_annotations` module attribute, which udonclc
+    builds from the annotations of the linked Host LLVM module before it is
+    imported (<udoncl/export.h>), and marks the recovered symbols:
+    `exports` -> `udoncl.export`, `while_busy` -> `udoncl.export_while_busy`,
+    `constructors` -> `udoncl.static_constructor`, `destructors` ->
+    `udoncl.static_destructor`, and `parameter_names` ->
+    `udoncl.parameter_names` on a function whose argument count still
+    matches. A named function that recovery lost is an error.
+  }];
+  let dependentDialects = ["mlir::func::FuncDialect"];
+}
 def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resources", "mlir::ModuleOp"> {
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect"];
