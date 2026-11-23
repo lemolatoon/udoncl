@@ -922,6 +922,30 @@ bool isExactCellAccess(OpOperand &use, Value cell) {
   return false;
 }
 
+/// Whether every use of `cell` reads or writes the 4-byte handle it points
+/// to, either directly or through a parameter of a defined function it is
+/// passed to whose own uses do the same. `visited` holds the parameters
+/// already accepted, so recursive helpers terminate.
+bool isExactCellPointer(Value cell, ModuleOp module,
+                        llvm::DenseSet<Value> &visited) {
+  return llvm::all_of(cell.getUses(), [&](OpOperand &use) {
+    if (isExactCellAccess(use, cell))
+      return true;
+    auto call = dyn_cast<func::CallOp>(use.getOwner());
+    auto callee = call ? module.lookupSymbol<func::FuncOp>(call.getCallee())
+                       : func::FuncOp();
+    if (!callee || callee.isExternal() ||
+        use.getOperandNumber() >= callee.getNumArguments())
+      return false;
+    Value parameter = callee.getArgument(use.getOperandNumber());
+    if (!isHandleType(parameter.getType()))
+      return false;
+    if (!visited.insert(parameter).second)
+      return true;
+    return isExactCellPointer(parameter, module, visited);
+  });
+}
+
 bool isSingletonCell(::vrc::udonhl::AllocaOp allocation) {
   auto pointer = dyn_cast<::vrc::udonhl::PtrType>(allocation.getType());
   return pointer && pointer.getAddressSpace() == 0 &&
@@ -1014,6 +1038,8 @@ struct PropagateDeviceResourceProvenancePass
   llvm::StringSet<> resourceGlobals;
   llvm::StringMap<::vrc::udonhl::GlobalOp> eligibleHandleGlobals;
   llvm::StringMap<ObjectId> globalObjects;
+  /// The tracked global cells by the object id of their storage.
+  llvm::DenseMap<ObjectId, ::vrc::udonhl::GlobalOp> eligibleGlobalObjects;
   llvm::StringMap<ObjectId> globalHandleObjects;
   llvm::DenseSet<ObjectId> globalObjectIds;
   llvm::DenseSet<ObjectId> globalHandleObjectIds;
@@ -1414,6 +1440,23 @@ struct PropagateDeviceResourceProvenancePass
     auto found = eligibleGlobals.find(address.getGlobalAttr().getValue());
     return found == eligibleGlobals.end() ? ::vrc::udonhl::GlobalOp()
                                           : found->getValue();
+  }
+
+  /// The tracked global cell `pointer` addresses: its address, or a pointer
+  /// parameter the address was passed to in this invocation.
+  ::vrc::udonhl::GlobalOp
+  globalCell(Value pointer,
+             const llvm::DenseMap<Value, ObjectRefSet> &objectValues) {
+    if (auto global = globalCell(pointer))
+      return global;
+    if (!isa<BlockArgument>(pointer))
+      return {};
+    auto objects = objectValues.find(pointer);
+    auto object = objects == objectValues.end() ? std::nullopt
+                                                : exactObject(objects->second);
+    if (!object || object->offset != 0)
+      return {};
+    return eligibleGlobalObjects.lookup(object->base);
   }
 
   Fact valueFact(Value value, llvm::DenseMap<Value, Fact> &facts) {
@@ -1964,7 +2007,7 @@ struct PropagateDeviceResourceProvenancePass
             }
             localResourceCells[*exactCell] = {true, true, resourceValue};
           }
-          if (auto global = globalCell(cell)) {
+          if (auto global = globalCell(cell, objectValues)) {
             StringRef name = global.getSymName();
             bool classified = resourceGlobals.contains(name);
             if (!classified && stored.resource) {
@@ -2024,7 +2067,7 @@ struct PropagateDeviceResourceProvenancePass
           auto exactCell = cellObjects == objectValues.end()
                                ? std::nullopt
                                : exactObject(cellObjects->second);
-          if (auto global = globalCell(cell)) {
+          if (auto global = globalCell(cell, objectValues)) {
             // A store of this invocation on every path to the load decides
             // the handle; otherwise the cell holds any handle a write of any
             // export left in it.
@@ -3911,6 +3954,7 @@ struct PropagateDeviceResourceProvenancePass
     module->removeAttr(globalCellAttribute);
     functions.clear();
     eligibleGlobals.clear();
+    eligibleGlobalObjects.clear();
     eligibleHandleGlobals.clear();
     globalObjects.clear();
     globalHandleObjects.clear();
@@ -4050,15 +4094,22 @@ struct PropagateDeviceResourceProvenancePass
         objectSizes[object] = static_cast<uint32_t>(handleBytes);
       }
     }
+    // A global stays a tracked cell when its address is only accessed
+    // exactly, also through the out-parameter of a helper such as
+    // create(&buffer) that stores `*buffer = clCreateBuffer(...)`.
     module.walk([&](::vrc::udonhl::AddressOfOp address) {
       StringRef name = address.getGlobalAttr().getValue();
       if (!eligibleGlobals.contains(name))
         return;
-      if (!llvm::all_of(address.getResult().getUses(), [&](OpOperand &use) {
-            return isExactCellAccess(use, address.getResult());
-          }))
+      llvm::DenseSet<Value> visited;
+      if (!isExactCellPointer(address.getResult(), module, visited))
         eligibleGlobals.erase(name);
     });
+    for (const auto &entry : eligibleGlobals) {
+      auto object = globalObjects.find(entry.getKey());
+      if (object != globalObjects.end())
+        eligibleGlobalObjects[object->getValue()] = entry.getValue();
+    }
     for (auto &[name, global] : eligibleGlobals)
       globalFacts[name] = Fact::scalar();
     SmallVector<func::FuncOp> roots;
