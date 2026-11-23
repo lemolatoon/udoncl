@@ -751,18 +751,7 @@ LogicalResult reconcileStaticUnityBuffers(OwningOpRef<ModuleOp> &ownedModule,
 
   OwningOpRef<ModuleOp> preview = cast<ModuleOp>(module.clone());
   PassManager readiness(module.getContext());
-  readiness.addPass(::vrc::createMaterializeStaticLogicalBuffersPass());
-  readiness.addPass(::vrc::createMaterializeStaticDispatchResourcesPass());
-  readiness.addPass(
-      ::vrc::createPlanStaticPhysicalAllocationSpecializationPass());
-  readiness.addPass(::vrc::createSpecializeStaticPhysicalAllocationPathsPass());
-  readiness.addPass(::vrc::createMaterializeStaticPhysicalAllocationsPass());
-  readiness.addPass(::vrc::createMaterializeStaticPhysicalResolvesPass());
-  readiness.addPass(::vrc::createLowerCheckedAssignedBufferResolvesPass());
-  readiness.addPass(::vrc::createMaterializeFixedPhysicalReleasesPass());
-  readiness.addPass(
-      ::vrc::createEliminateDeadPhysicalAllocationFallbacksPass());
-  readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
+  ::vrc::buildStaticUnityResourceReadinessPipeline(readiness);
   if (failed(readiness.run(*preview)))
     return failure();
   auto physicalPlan =

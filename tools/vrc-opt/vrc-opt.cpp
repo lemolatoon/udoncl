@@ -48,6 +48,7 @@ int main(int argc, char **argv) {
   vrc::registerHighLevelRecoveryPipeline();
   vrc::registerUdonHostStorageFinalizationPipeline();
   vrc::registerStaticDeviceResourceDiscoveryPipeline();
+  vrc::registerStaticUnityResourceReadinessPipeline();
   vrc::registerVRCBoundaryPasses();
   mlir::registerPass([] { return onnx_mlir::createShapeInferencePass(); });
   mlir::registerPass([] { return onnx_mlir::createConstPropONNXToONNXPass(); });

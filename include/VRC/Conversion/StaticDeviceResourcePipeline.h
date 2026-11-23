@@ -13,6 +13,13 @@ namespace vrc {
 void buildStaticDeviceResourceDiscoveryPipeline(mlir::OpPassManager &manager);
 void registerStaticDeviceResourceDiscoveryPipeline();
 
+/// The static Unity resource lowering of a Host whose Unity buffers are
+/// reconciled and laid out: materializes the assigned Unity Textures of its
+/// logical buffers, dispatches and physical allocations, and assesses whether
+/// every Device resource then resolves to one.
+void buildStaticUnityResourceReadinessPipeline(mlir::OpPassManager &manager);
+void registerStaticUnityResourceReadinessPipeline();
+
 } // namespace vrc
 
 #endif

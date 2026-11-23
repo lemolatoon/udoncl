@@ -39,4 +39,26 @@ void registerStaticDeviceResourceDiscoveryPipeline() {
       buildStaticDeviceResourceDiscoveryPipeline);
 }
 
+void buildStaticUnityResourceReadinessPipeline(OpPassManager &manager) {
+  manager.addPass(createMaterializeStaticLogicalBuffersPass());
+  manager.addPass(createMaterializeStaticDispatchResourcesPass());
+  manager.addPass(createPlanStaticPhysicalAllocationSpecializationPass());
+  manager.addPass(createSpecializeStaticPhysicalAllocationPathsPass());
+  manager.addPass(createMaterializeStaticPhysicalAllocationsPass());
+  manager.addPass(createMaterializeStaticPhysicalResolvesPass());
+  manager.addPass(createLowerCheckedAssignedBufferResolvesPass());
+  manager.addPass(createMaterializeFixedPhysicalReleasesPass());
+  manager.addPass(createEliminateDeadPhysicalAllocationFallbacksPass());
+  manager.addPass(createAssessStaticUnityResourceLoweringPass());
+}
+
+void registerStaticUnityResourceReadinessPipeline() {
+  PassPipelineRegistration<>(
+      "vrc-static-unity-resource-readiness-pipeline",
+      "Materialize the assigned Unity Textures of a reconciled Unity Host's "
+      "Device resources and assess whether the static Unity resource "
+      "lowering applies",
+      buildStaticUnityResourceReadinessPipeline);
+}
+
 } // namespace vrc
