@@ -1489,6 +1489,9 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
     return source;
   if (*texelFormat != "rgba32_float")
     return invalid("binding source requires a supported Device texel format");
+  // Without a Device buffer the binding moves no texels.
+  if (!hasBuffers)
+    return source;
   return adaptWordTexelTransfers(std::move(source));
 }
 
