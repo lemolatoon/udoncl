@@ -252,6 +252,31 @@ def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-che
   let summary = "Split long Udon-only synchronous Host regions with static cooperative checkpoints";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def ConfigureUnityExportsPass : Pass<"vrc-configure-unity-exports", "mlir::ModuleOp"> {
+  let summary = "Select and name the U# exports of a Unity library Host";
+  let description = [{
+    Consumes the Unity library configuration that udonclc attaches as the
+    `udoncl.unity_library_config` module dictionary (the JSON configuration
+    file converted key by key). Schema 1 lists every export with its id,
+    public name and parameter names. Schema 2 publishes every function marked
+    `udoncl.export` under the PascalCase of its symbol, with parameters named
+    after `udoncl.parameter_names` (arg<i> without one), unless an
+    `export_overrides` entry names it; `internal_exports` hides definitions
+    and `static_initialization` names a constructor and omitted exports.
+
+    Each U# export receives `vrc.export_id`, `vrc.public_name`,
+    `vrc.parameter_names` and, when allowed while busy,
+    `vrc.allowed_while_busy`; the module receives `vrc.binding_namespace`,
+    `vrc.binding_class` and `vrc.static_initialization`. With
+    `finalize-reachability`, functions no export reaches are erased, reached
+    helpers become private and the module is marked `vrc.target = "vrc-pc"`.
+  }];
+  let options = [
+    Option<"finalizeReachability", "finalize-reachability", "bool", "true",
+           "Erase unreachable functions and privatize reached helpers">
+  ];
+  let dependentDialects = ["mlir::func::FuncDialect"];
+}
 def EvaluateHostConstructorsPass : Pass<"vrc-evaluate-host-constructors", "mlir::ModuleOp"> {
   let summary = "Evaluate static Host constructors at build time and commit their memory as initializers";
   let description = [{

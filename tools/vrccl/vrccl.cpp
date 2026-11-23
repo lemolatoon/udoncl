@@ -1562,6 +1562,16 @@ collectUdonCLHostAnnotations(llvm::Module &module) {
 LogicalResult
 markRecoveredHostAnnotations(ModuleOp module,
                              const udoncl::HostAnnotations &annotations) {
+  for (const std::string &symbol : annotations.exports) {
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function) {
+      errs() << "UDONCL_EXPORT definition was lost while recovering Host "
+                "library: "
+             << symbol << "\n";
+      return failure();
+    }
+    function->setAttr("udoncl.export", UnitAttr::get(module.getContext()));
+  }
   for (const std::string &symbol : annotations.whileBusy) {
     auto function = module.lookupSymbol<func::FuncOp>(symbol);
     if (!function) {
@@ -1587,344 +1597,44 @@ markRecoveredHostAnnotations(ModuleOp module,
   return success();
 }
 
-/// The U# name of an export: the PascalCase of its C symbol. Each segment
-/// between underscores starts with a capital letter and keeps the rest of
-/// its spelling (`read_streamed_text` -> `ReadStreamedText`).
-std::string pascalCaseExportName(StringRef symbol) {
-  SmallVector<StringRef> segments;
-  symbol.split(segments, '_', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-  std::string name;
-  for (StringRef segment : segments)
-    name += (Twine(toUpper(segment.front())) + segment.drop_front()).str();
-  return name;
-}
-
-/// C# keywords: valid C identifiers that cannot name a U# parameter.
-bool isCSharpKeyword(StringRef name) {
-  static const llvm::StringSet<> keywords = {
-      "abstract", "as",       "base",       "bool",      "break",
-      "byte",     "case",     "catch",      "char",      "checked",
-      "class",    "const",    "continue",   "decimal",   "default",
-      "delegate", "do",       "double",     "else",      "enum",
-      "event",    "explicit", "extern",     "false",     "finally",
-      "fixed",    "float",    "for",        "foreach",   "goto",
-      "if",       "implicit", "in",         "int",       "interface",
-      "internal", "is",       "lock",       "long",      "namespace",
-      "new",      "null",     "object",     "operator",  "out",
-      "override", "params",   "private",    "protected", "public",
-      "readonly", "ref",      "return",     "sbyte",     "sealed",
-      "short",    "sizeof",   "stackalloc", "static",    "string",
-      "struct",   "switch",   "this",       "throw",     "true",
-      "try",      "typeof",   "uint",       "ulong",     "unchecked",
-      "unsafe",   "ushort",   "using",      "virtual",   "void",
-      "volatile", "while"};
-  return keywords.contains(name);
-}
-
-/// The U# parameter names of an export without configured names: the C
-/// parameter names recovered from the Host, or arg<i> where there is none.
-FailureOr<SmallVector<std::string>>
-defaultParameterNames(func::FuncOp function) {
-  auto recovered = function->getAttrOfType<ArrayAttr>("udoncl.parameter_names");
-  SmallVector<std::string> names;
-  for (unsigned index = 0; index < function.getNumArguments(); ++index) {
-    StringRef name =
-        recovered ? cast<StringAttr>(recovered[index]).getValue() : "";
-    if (!identifier(name)) {
-      names.push_back(::vrc::defaultUdonSharpParameterName(index));
-      continue;
-    }
-    // The generated binding returns an export's result through `result`.
-    if (isCSharpKeyword(name) ||
-        (name == "result" && function.getNumResults() != 0)) {
-      errs() << "parameter '" << name << "' of UDONCL_EXPORT "
-             << function.getSymName()
-             << " cannot name a U# parameter; rename the C parameter\n";
-      return failure();
-    }
-    names.push_back(name.str());
+/// The Unity library configuration as an MLIR attribute, key by key.
+mlir::Attribute jsonAttribute(Builder &builder, const json::Value &value) {
+  if (auto object = value.getAsObject()) {
+    SmallVector<mlir::NamedAttribute> entries;
+    for (const auto &[key, entry] : *object)
+      entries.push_back(
+          builder.getNamedAttr(key.str(), jsonAttribute(builder, entry)));
+    return builder.getDictionaryAttr(entries);
   }
-  return names;
-}
-
-int32_t stableExportId(StringRef publicName, mlir::FunctionType type) {
-  std::string canonical;
-  raw_string_ostream stream(canonical);
-  stream << publicName << ':';
-  type.print(stream);
-  uint32_t hash = 2166136261u;
-  for (unsigned char byte : canonical) {
-    hash ^= byte;
-    hash *= 16777619u;
+  if (auto array = value.getAsArray()) {
+    SmallVector<mlir::Attribute> elements;
+    for (const json::Value &element : *array)
+      elements.push_back(jsonAttribute(builder, element));
+    return builder.getArrayAttr(elements);
   }
-  int32_t id = static_cast<int32_t>(hash & 0x7fffffffu);
-  return id == 0 ? 1 : id;
+  if (auto string = value.getAsString())
+    return builder.getStringAttr(*string);
+  if (auto boolean = value.getAsBoolean())
+    return builder.getBoolAttr(*boolean);
+  if (auto integer = value.getAsInteger())
+    return builder.getI64IntegerAttr(*integer);
+  if (auto number = value.getAsNumber())
+    return builder.getF64FloatAttr(*number);
+  return builder.getUnitAttr();
 }
 
+/// Selects and names the U# exports of the recovered Host
+/// (vrc-configure-unity-exports) from the Unity library configuration.
 bool configureUnityExports(ModuleOp module, const json::Object &config,
-                           const std::set<std::string> &annotatedExports = {},
                            bool finalizeReachability = true) {
-  auto program = config.getString("program");
-  auto schema = config.getInteger("schema_version");
-  if (!schema || (*schema != 1 && *schema != 2) || !program ||
-      !identifier(*program)) {
-    errs() << "Unity library config requires schema_version 1 or 2 and a "
-              "safe program name\n";
-    return false;
-  }
-  auto *exports =
-      config.getArray(*schema == 1 ? "exports" : "export_overrides");
-  if (*schema == 1 && (!exports || exports->empty())) {
-    errs() << "Unity library schema 1 requires non-empty exports\n";
-    return false;
-  }
-  if (*schema == 2 && annotatedExports.empty()) {
-    errs() << "Unity library schema 2 requires at least one UDONCL_EXPORT "
-              "Host definition\n";
-    return false;
-  }
-  std::set<std::string> selected, publicNames;
-  std::set<int64_t> ids;
-  OpBuilder builder(module.getContext());
-  auto configure = [&](StringRef symbol, StringRef publicName, int64_t id,
-                       const json::Array *parameters,
-                       bool allowedWhileBusy) -> bool {
-    if (!identifier(symbol) || !identifier(publicName) || id <= 0 ||
-        id > INT32_MAX || !selected.insert(symbol.str()).second ||
-        !publicNames.insert(publicName.str()).second ||
-        !ids.insert(id).second) {
-      errs() << "invalid or duplicate Unity library export\n";
-      return false;
-    }
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function || function.isExternal() || function.isPrivate() ||
-        (parameters && parameters->size() != function.getNumArguments())) {
-      errs() << "Unity library export does not resolve to a public definition: "
-             << symbol << "\n";
-      return false;
-    }
-    SmallVector<mlir::Attribute> names;
-    if (parameters) {
-      for (const json::Value &parameter : *parameters) {
-        auto configured = parameter.getAsString();
-        if (!configured || !identifier(*configured)) {
-          errs() << "invalid Unity library parameter name\n";
-          return false;
-        }
-        names.push_back(builder.getStringAttr(*configured));
-      }
-    } else {
-      auto recovered = defaultParameterNames(function);
-      if (failed(recovered))
-        return false;
-      for (const std::string &name : *recovered)
-        names.push_back(builder.getStringAttr(name));
-    }
-    function->setAttr("vrc.export_id", builder.getI32IntegerAttr(id));
-    function->setAttr("vrc.public_name", builder.getStringAttr(publicName));
-    function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
-    // "allowed_while_busy" or UDONCL_EXPORT_WHILE_BUSY: the generated binding
-    // does not reject this synchronous export while an async export is
-    // suspended.
-    if (allowedWhileBusy || function->hasAttr("udoncl.export_while_busy"))
-      function->setAttr("vrc.allowed_while_busy", builder.getUnitAttr());
-    return true;
-  };
-  if (*schema == 1 && config.get("static_initialization")) {
-    errs() << "static_initialization requires Unity library schema 2\n";
-    return false;
-  }
-  if (*schema == 1) {
-    for (const json::Value &value : *exports) {
-      auto *entry = value.getAsObject();
-      auto symbol = entry ? entry->getString("symbol") : std::nullopt;
-      auto publicName = entry ? entry->getString("public_name") : std::nullopt;
-      auto id = entry ? entry->getInteger("id") : std::nullopt;
-      auto *parameters = entry ? entry->getArray("parameters") : nullptr;
-      if (!symbol || !publicName || !id || !parameters ||
-          !configure(*symbol, *publicName, *id, parameters,
-                     entry->getBoolean("allowed_while_busy").value_or(false))) {
-        errs() << "invalid or duplicate Unity library export\n";
-        return false;
-      }
-    }
-  } else {
-    std::map<std::string, const json::Object *> overrides;
-    std::set<std::string> internalExports;
-    if (exports)
-      for (const json::Value &value : *exports) {
-        auto *entry = value.getAsObject();
-        auto symbol = entry ? entry->getString("symbol") : std::nullopt;
-        if (!symbol || !identifier(*symbol) ||
-            !overrides.emplace(symbol->str(), entry).second ||
-            !annotatedExports.count(symbol->str())) {
-          errs() << "schema 2 export override must name one annotated Host "
-                    "definition\n";
-          return false;
-        }
-      }
-    if (auto *internal = config.getArray("internal_exports"))
-      for (const json::Value &value : *internal) {
-        auto symbol = value.getAsString();
-        if (!symbol || !identifier(*symbol) ||
-            !internalExports.insert(symbol->str()).second ||
-            !annotatedExports.count(symbol->str()) ||
-            overrides.count(symbol->str())) {
-          errs() << "schema 2 internal export must name one non-overridden "
-                    "annotated Host definition\n";
-          return false;
-        }
-      }
-    // A static-initialization artifact is a closed world: the constructor has
-    // run before any other export, and an omitted export (a destructor) is
-    // not part of the artifact at all. Unlike an internal export, an omitted
-    // one may keep its override so one configuration serves both modes.
-    std::set<std::string> omittedExports;
-    std::string staticConstructor;
-    if (const json::Value *value = config.get("static_initialization")) {
-      auto *initialization = value->getAsObject();
-      auto constructor = initialization
-                             ? initialization->getString("constructor")
-                             : std::nullopt;
-      if (!constructor || !annotatedExports.count(constructor->str()) ||
-          internalExports.count(constructor->str())) {
-        errs() << "static_initialization requires a constructor naming one "
-                  "exported annotated Host definition\n";
-        return false;
-      }
-      staticConstructor = constructor->str();
-      if (const json::Value *omitted = initialization->get("omit_exports")) {
-        auto *symbols = omitted->getAsArray();
-        if (!symbols) {
-          errs() << "static_initialization omit_exports must be an array\n";
-          return false;
-        }
-        for (const json::Value &entry : *symbols) {
-          auto symbol = entry.getAsString();
-          if (!symbol || !annotatedExports.count(symbol->str()) ||
-              internalExports.count(symbol->str()) ||
-              *symbol == staticConstructor ||
-              !omittedExports.insert(symbol->str()).second) {
-            errs() << "static_initialization omit_exports must name distinct "
-                      "exported annotated Host definitions other than the "
-                      "constructor\n";
-            return false;
-          }
-        }
-      }
-    }
-    std::map<std::string, std::string> namedExports;
-    for (const std::string &symbol : annotatedExports) {
-      if (internalExports.count(symbol) || omittedExports.count(symbol))
-        continue;
-      auto function = module.lookupSymbol<func::FuncOp>(symbol);
-      if (!function || function.isExternal() || function.isPrivate()) {
-        errs() << "UDONCL_EXPORT does not resolve after Host recovery: "
-               << symbol << "\n";
-        return false;
-      }
-      const json::Object *entry =
-          overrides.count(symbol) ? overrides.at(symbol) : nullptr;
-      auto publicName = entry ? entry->getString("public_name") : std::nullopt;
-      std::string resolvedName =
-          publicName ? publicName->str() : pascalCaseExportName(symbol);
-      if (!identifier(resolvedName)) {
-        errs() << "UDONCL_EXPORT " << symbol << " has no valid U# name\n";
-        return false;
-      }
-      if (auto [named, inserted] = namedExports.emplace(resolvedName, symbol);
-          !inserted) {
-        errs() << "UDONCL_EXPORT " << named->second << " and " << symbol
-               << " both name the U# export " << resolvedName << "\n";
-        return false;
-      }
-      auto *parameters = entry ? entry->getArray("parameters") : nullptr;
-      if (!configure(
-              symbol, resolvedName,
-              stableExportId(resolvedName, function.getFunctionType()),
-              parameters,
-              entry && entry->getBoolean("allowed_while_busy").value_or(false)))
-        return false;
-    }
-    if (selected.empty()) {
-      errs() << "Unity library schema 2 cannot hide every UDONCL_EXPORT "
-                "definition\n";
-      return false;
-    }
-    if (!staticConstructor.empty()) {
-      auto constructor = module.lookupSymbol<func::FuncOp>(staticConstructor);
-      if (constructor.getNumArguments() != 0 ||
-          constructor.getNumResults() > 1 ||
-          (constructor.getNumResults() == 1 &&
-           !constructor.getResultTypes().front().isInteger(32))) {
-        errs() << "static_initialization constructor must take no parameters "
-                  "and return void or a 32-bit status: "
-               << staticConstructor << "\n";
-        return false;
-      }
-      constructor->setAttr("vrc.static_constructor",
-                           UnitAttr::get(module.getContext()));
-      SmallVector<mlir::Attribute> omitted;
-      for (const std::string &symbol : omittedExports)
-        omitted.push_back(builder.getStringAttr(symbol));
-      module->setAttr(
-          "vrc.static_initialization",
-          builder.getDictionaryAttr(
-              {builder.getNamedAttr("constructor",
-                                    builder.getStringAttr(staticConstructor)),
-               builder.getNamedAttr("omitted_exports",
-                                    builder.getArrayAttr(omitted))}));
-    }
-  }
-  if (auto *binding = config.getObject("binding")) {
-    auto nameSpace = binding->getString("namespace");
-    auto className = binding->getString("class_name");
-    if (!nameSpace || !dottedIdentifier(*nameSpace) || !className ||
-        !identifier(*className)) {
-      errs() << "binding requires namespace and safe class_name\n";
-      return false;
-    }
-    module->setAttr("vrc.binding_namespace", builder.getStringAttr(*nameSpace));
-    module->setAttr("vrc.binding_class", builder.getStringAttr(*className));
-  }
-  if (!finalizeReachability)
-    return true;
-  std::set<std::string> reachable = selected;
-  SmallVector<std::string> worklist(selected.begin(), selected.end());
-  while (!worklist.empty()) {
-    std::string symbol = std::move(worklist.pop_back_val());
-    auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function)
-      continue;
-    for (func::CallOp call : function.getOps<func::CallOp>()) {
-      auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
-      if (!callee) {
-        call.emitError("Unity library helper does not resolve in the linked "
-                       "Host module");
-        return false;
-      }
-      if (callee->hasAttr("vrc.intrinsic"))
-        continue;
-      if (callee.isExternal()) {
-        call.emitError("Unity library helper requires a definition: ")
-            << call.getCallee();
-        return false;
-      }
-      if (reachable.insert(call.getCallee().str()).second)
-        worklist.push_back(call.getCallee().str());
-    }
-  }
-  for (func::FuncOp function :
-       llvm::make_early_inc_range(module.getOps<func::FuncOp>()))
-    if (!reachable.count(function.getSymName().str()) &&
-        !function->hasAttr("vrc.intrinsic"))
-      function.erase();
-    else if (reachable.count(function.getSymName().str()) &&
-             !selected.count(function.getSymName().str()) &&
-             !function.isExternal())
-      function.setPrivate();
-  module->setAttr("vrc.target", builder.getStringAttr("vrc-pc"));
-  return true;
+  Builder builder(module.getContext());
+  module->setAttr("udoncl.unity_library_config",
+                  jsonAttribute(builder, json::Value(json::Object(config))));
+  PassManager manager(module.getContext());
+  ::vrc::ConfigureUnityExportsPassOptions options;
+  options.finalizeReachability = finalizeReachability;
+  manager.addPass(::vrc::createConfigureUnityExportsPass(options));
+  return succeeded(manager.run(module));
 }
 
 LogicalResult optimizeUnityHostStorage(ModuleOp module) {
@@ -2145,16 +1855,6 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
     recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
   if (failed(recovery.run(*library)) || failed(verify(*library)))
     return failure();
-  for (const std::string &symbol : annotations->exports) {
-    auto function = library->lookupSymbol<func::FuncOp>(symbol);
-    if (!function) {
-      errs() << "UDONCL_EXPORT definition was lost while recovering Host "
-                "library: "
-             << symbol << "\n";
-      return failure();
-    }
-    function->setAttr("udoncl.export", UnitAttr::get(&context));
-  }
   if (failed(markRecoveredHostAnnotations(*library, *annotations)))
     return failure();
   return library;
@@ -3028,7 +2728,6 @@ int main(int argc, char **argv) {
   // The texel format of every Device buffer and immutable tensor texture of
   // a Unity library (`device_texel_format`).
   std::string unityTexelFormat = "rgba8_unorm";
-  std::set<std::string> annotatedHostExports;
   if (emitUnityLibrary) {
     phase("unity-prepare");
     // The Device libraries are imported only once the Host is recovered, so
@@ -3110,10 +2809,7 @@ int main(int argc, char **argv) {
         if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
           return 1;
       }
-      for (func::FuncOp function : module->getOps<func::FuncOp>())
-        if (function->hasAttr("udoncl.export"))
-          annotatedHostExports.insert(function.getSymName().str());
-      if (!configureUnityExports(*module, *unityConfig, annotatedHostExports,
+      if (!configureUnityExports(*module, *unityConfig,
                                  /*finalizeReachability=*/false) ||
           failed(discoverStaticDeviceResources(*module)))
         return 1;
@@ -3136,21 +2832,15 @@ int main(int argc, char **argv) {
         if (failed(linkedHostRecovery.run(*module)) || failed(verify(*module)))
           return 1;
       }
-      for (func::FuncOp function : module->getOps<func::FuncOp>())
-        if (function->hasAttr("udoncl.export"))
-          annotatedHostExports.insert(function.getSymName().str());
       if (failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
-          !configureUnityExports(*module, *unityConfig, annotatedHostExports))
+          !configureUnityExports(*module, *unityConfig))
         return 1;
     } else if (!hostLibraryLLVM.empty()) {
       auto program = recoverRuntimeFreeUnityHost(hostLLVM, context);
       if (failed(program))
         return 1;
       module = std::move(*program);
-      for (func::FuncOp function : module->getOps<func::FuncOp>())
-        if (function->hasAttr("udoncl.export"))
-          annotatedHostExports.insert(function.getSymName().str());
-      if (!configureUnityExports(*module, *unityConfig, annotatedHostExports,
+      if (!configureUnityExports(*module, *unityConfig,
                                  /*finalizeReachability=*/false) ||
           failed(discoverStaticDeviceResources(*module)))
         return 1;
@@ -3171,11 +2861,8 @@ int main(int argc, char **argv) {
         if (failed(linkedHostRecovery.run(*module)) || failed(verify(*module)))
           return 1;
       }
-      for (func::FuncOp function : module->getOps<func::FuncOp>())
-        if (function->hasAttr("udoncl.export"))
-          annotatedHostExports.insert(function.getSymName().str());
       if (failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
-          !configureUnityExports(*module, *unityConfig, annotatedHostExports))
+          !configureUnityExports(*module, *unityConfig))
         return 1;
     } else {
       LLVMContext llvmContext;
@@ -3189,8 +2876,6 @@ int main(int argc, char **argv) {
       auto annotations = collectUdonCLHostAnnotations(*inputModule);
       if (failed(annotations))
         return 1;
-      annotatedHostExports.insert(annotations->exports.begin(),
-                                  annotations->exports.end());
       if (inputModule->getTargetTriple().str() != "spir-unknown-unknown" ||
           !inputModule->getDataLayout().isLittleEndian() ||
           inputModule->getDataLayout().getPointerSizeInBits() != 32) {
@@ -3226,7 +2911,7 @@ int main(int argc, char **argv) {
       if (failed(recovery.run(*module)) ||
           failed(markRecoveredHostAnnotations(*module, *annotations)) ||
           failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
-          !configureUnityExports(*module, *unityConfig, annotatedHostExports))
+          !configureUnityExports(*module, *unityConfig))
         return 1;
     }
     // Every Device kernel the Host dispatches is known once the Host has
