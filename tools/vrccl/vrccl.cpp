@@ -644,11 +644,12 @@ parseUnityBuffers(const json::Object &config) {
         entry ? entry->getString("public_access") : std::nullopt;
     auto publicIndex = entry ? entry->getInteger("public_index") : std::nullopt;
     constexpr int64_t maximumBytes = 8192LL * 8192LL * 4LL;
-    bool semanticBinding =
-        elementType && publicAccess &&
-        (*elementType == "float32" || *elementType == "int32" ||
-         *elementType == "int64") &&
-        (*publicAccess == "input" || *publicAccess == "output");
+    // The access of a public buffer is checked where the buffer is
+    // described (vrc-describe-canonical-unity-buffers, or the ONNX plan
+    // buffers derived with a fixed access).
+    bool semanticBinding = elementType && publicAccess &&
+                           (*elementType == "float32" ||
+                            *elementType == "int32" || *elementType == "int64");
     if (!id || *id <= 0 || *id > INT32_MAX || !name || !identifier(*name) ||
         !bytes || *bytes <= 0 || *bytes > maximumBytes ||
         (logicalBytes && (*logicalBytes < 0 || *logicalBytes > *bytes)) ||
