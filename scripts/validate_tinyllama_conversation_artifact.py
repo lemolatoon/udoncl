@@ -181,8 +181,8 @@ def validate_artifact(
     required_methods = (
         "StartInitialize(", "GetInitializeStatus(", "TryGetInitializeResult(",
         "StartReset(", "GetResetStatus(", "TryGetResetResult(",
-        "TrySetPromptTokens(int[] tokenIds, int tokenCount, out int result)",
-        "StartGenerate(int maxNewTokens, UdonSharpBehaviour receiver,",
+        "TrySetPromptTokens(int[] token_ids, int token_count, out int result)",
+        "StartGenerate(int max_new_tokens, UdonSharpBehaviour receiver,",
         "GetGenerateStatus(", "TryGetGenerateResult(",
         "TryGeneratedTokenCount(out int result)",
         "TryReadGeneratedTokens(int[] destination, out int result)",
@@ -190,13 +190,13 @@ def validate_artifact(
     )
     if profile == "chat":
         required_methods += (
-            "TrySetChatPrompt(string systemText, string userText, out int result)",
+            "TrySetChatPrompt(string system_text, string user_text, out int result)",
             "TryBeginChatPrompt(out int result)",
-            "TryContinueChatPrompt(string systemText, string userText, "
-            "int maxWork, out int result)",
+            "TryContinueChatPrompt(string system_text, string user_text, "
+            "int max_work, out int result)",
             "TryChatPromptPending(out int result)",
             "TryBeginChatTurn(out int result)",
-            "TryContinueChatTurn(string userText, int maxWork, out int result)",
+            "TryContinueChatTurn(string user_text, int max_work, out int result)",
             "StartResetChat(", "GetResetChatStatus(", "TryGetResetChatResult(",
             "TryPromptTokenCount(out int result)",
             "TryReadPromptTokens(int[] destination, out int result)",
