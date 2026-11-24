@@ -162,10 +162,10 @@ def validate_artifact(
 
     physical = binding.get("physical", {})
     require(physical.get("enqueue_advance_sequence_state_symbol") ==
-            "udon_onnx_binding_enqueue_advance_sequence_state",
+            "__udononnx_transitional_advance_sequence_state",
             "artifact has no generated sequence-state advance helper")
     require(physical.get("enqueue_reset_sequence_state_symbol") ==
-            "udon_onnx_binding_enqueue_reset_sequence_state",
+            "__udononnx_transitional_reset_sequence_state",
             "artifact has no generated sequence-state reset helper")
     buffers = manifest.get("device", {}).get("buffers")
     mutable_capacity = manifest.get("device", {}).get("mutable_handle_capacity")

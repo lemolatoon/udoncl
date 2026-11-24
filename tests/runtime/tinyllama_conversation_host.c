@@ -2,8 +2,10 @@
 #include <stdint.h>
 #include <string.h>
 #include <udoncl/array.h>
-#include <udoncl/onnx_generated_binding.h>
+#include <udoncl/onnx_types.h>
 #include <VRC/Runtime/OpenCL/Backend.h>
+
+#include "transitional_sequence_state.h"
 
 #define EXPECT(x)                                                              \
   do {                                                                         \
@@ -111,7 +113,8 @@ int udoncl_cl_draw(uint32_t b, uint32_t g, const unsigned char s[4],
   return 0;
 }
 
-udononnxStatus_t udon_onnx_binding_create(cl_context c, cl_command_queue q) {
+udononnxStatus_t __udononnx_transitional_create(cl_context c,
+                                                cl_command_queue q) {
   cl_int e;
   binding_context = c;
   binding_queue = q;
@@ -123,10 +126,10 @@ udononnxStatus_t udon_onnx_binding_create(cl_context c, cl_command_queue q) {
              ? UDONONNX_STATUS_SUCCESS
              : UDONONNX_STATUS_OPENCL_ERROR;
 }
-udononnxStatus_t udon_onnx_binding_enqueue_initialize(void) { return 0; }
-udononnxStatus_t udon_onnx_binding_bind_all(void) { return 0; }
-udononnxStatus_t udon_onnx_binding_resolve_input(uint32_t i, cl_mem *m,
-                                                 size_t *o, size_t *n) {
+udononnxStatus_t __udononnx_transitional_enqueue_initialize(void) { return 0; }
+udononnxStatus_t __udononnx_transitional_bind_all(void) { return 0; }
+udononnxStatus_t __udononnx_transitional_resolve_input(uint32_t i, cl_mem *m,
+                                                       size_t *o, size_t *n) {
   static const size_t lengths[] = {8 * ROWS, 8 * WINDOW, 8 * ROWS};
   if (i >= 3)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -135,8 +138,8 @@ udononnxStatus_t udon_onnx_binding_resolve_input(uint32_t i, cl_mem *m,
   *n = lengths[i];
   return 0;
 }
-udononnxStatus_t udon_onnx_binding_resolve_output(uint32_t i, cl_mem *m,
-                                                  size_t *o, size_t *n) {
+udononnxStatus_t __udononnx_transitional_resolve_output(uint32_t i, cl_mem *m,
+                                                        size_t *o, size_t *n) {
   if (i)
     return UDONONNX_STATUS_INVALID_VALUE;
   *m = output;
@@ -144,7 +147,7 @@ udononnxStatus_t udon_onnx_binding_resolve_output(uint32_t i, cl_mem *m,
   *n = 128000 * ROWS;
   return 0;
 }
-udononnxStatus_t udon_onnx_binding_enqueue_reset_sequence_state(void) {
+udononnxStatus_t __udononnx_transitional_reset_sequence_state(void) {
   ++resets;
   pending = 0;
   committed_count = 0;
@@ -157,7 +160,7 @@ static void commit_rows(int rows) {
     committed_positions[committed_count++] = pending_positions[row];
   }
 }
-udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void) {
+udononnxStatus_t __udononnx_transitional_advance_sequence_state(void) {
   record('A');
   if (advances == fail_advance_call)
     return UDONONNX_STATUS_EXECUTION_FAILURE;
@@ -170,7 +173,7 @@ udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void) {
 }
 #if TINYLLAMA_SEQUENCE_ROWS > 1u
 udononnxStatus_t
-udon_onnx_binding_enqueue_advance_sequence_state_rows(uint32_t rows) {
+__udononnx_transitional_advance_sequence_state_rows(uint32_t rows) {
   record('P');
   if (advances == fail_advance_call)
     return UDONONNX_STATUS_EXECUTION_FAILURE;
@@ -185,7 +188,7 @@ udon_onnx_binding_enqueue_advance_sequence_state_rows(uint32_t rows) {
   return 0;
 }
 #endif
-udononnxStatus_t udon_onnx_binding_enqueue_run(void) {
+udononnxStatus_t __udononnx_transitional_enqueue_run(void) {
   int64_t mask[WINDOW];
   int index;
   record('R');
@@ -214,7 +217,7 @@ udononnxStatus_t udon_onnx_binding_enqueue_run(void) {
   ++runs;
   return 0;
 }
-udononnxStatus_t udon_onnx_binding_dispose(void) {
+udononnxStatus_t __udononnx_transitional_dispose(void) {
   int i;
   for (i = 0; i < 3; ++i)
     if (input[i])

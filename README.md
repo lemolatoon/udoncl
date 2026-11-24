@@ -953,8 +953,11 @@ CMake derive the chat configuration:
 **The token-array Conversation Host**
 ([`conversation_host.c`](examples/onnx-transformer-tiny/conversation_host.c),
 with [`conversation_host.h`](examples/onnx-transformer-tiny/conversation_host.h)).
-It owns the OpenCL context and queue, drives the model through the generated
-ONNX binding of `<udoncl/onnx_generated_binding.h>` (`udon_onnx_binding_*`),
+It owns the OpenCL context and queue, drives the model through a private,
+transitional binding the compiler generates for this example's model libraries
+([`transitional_sequence_state.h`](examples/onnx-transformer-tiny/transitional_sequence_state.h),
+`__udononnx_transitional_*`, built with `TRANSITIONAL_SEQUENCE_STATE`; it is
+not public API and will be replaced by the UdonONNX session API),
 keeps the key/value cache on the GPU between positions, and selects each next
 token with an argmax on the GPU (greedy decoding). Its exports are
 `initialize`, `reset`, `set_prompt_tokens`,
@@ -965,11 +968,11 @@ token with an argmax on the GPU (greedy decoding). Its exports are
 UDONCL_EXPORT udononnxStatus_t initialize(void) {
   /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
      clCreateCommandQueue ... */
-  status = udon_onnx_binding_create(context, queue);
+  status = __udononnx_transitional_create(context, queue);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = udon_onnx_binding_enqueue_initialize();
+    status = __udononnx_transitional_enqueue_initialize();
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = udon_onnx_binding_bind_all();
+    status = __udononnx_transitional_bind_all();
   /* ... resolve the input_ids, attention_mask, position_ids and logits
      buffers, create the argmax buffers, clear the sequence state ... */
 }

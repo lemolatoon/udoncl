@@ -3,9 +3,9 @@
 #include <stdint.h>
 #include <udoncl/array.h>
 #include <udoncl/export.h>
-#include <udoncl/onnx_generated_binding.h>
 
 #include "conversation_host.h"
+#include "transitional_sequence_state.h"
 
 /* The program of the Conversation Artifact. A wrapper that includes this
  * file for another artifact (conversation_host_4k.c, chat_host.c) defines
@@ -107,7 +107,7 @@ static udononnxStatus_t release_opencl(void) {
 }
 
 static udononnxStatus_t cleanup(udononnxStatus_t status) {
-  udononnxStatus_t binding = udon_onnx_binding_dispose();
+  udononnxStatus_t binding = __udononnx_transitional_dispose();
   udononnxStatus_t opencl = release_opencl();
   initialized = 0;
   if (binding != UDONONNX_STATUS_SUCCESS &&
@@ -123,7 +123,7 @@ static udononnxStatus_t resolve_input(uint32_t index, size_t expected_length,
                                       cl_mem *memory, size_t *offset) {
   size_t length = 0;
   udononnxStatus_t status =
-      udon_onnx_binding_resolve_input(index, memory, offset, &length);
+      __udononnx_transitional_resolve_input(index, memory, offset, &length);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   return *memory && length == expected_length ? UDONONNX_STATUS_SUCCESS
@@ -132,7 +132,7 @@ static udononnxStatus_t resolve_input(uint32_t index, size_t expected_length,
 
 static udononnxStatus_t resolve_logits(cl_mem *memory, size_t *offset) {
   size_t length = 0;
-  udononnxStatus_t status = udon_onnx_binding_resolve_output(
+  udononnxStatus_t status = __udononnx_transitional_resolve_output(
       TINYLLAMA_LOGITS, memory, offset, &length);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
@@ -163,7 +163,7 @@ static udononnxStatus_t resolve_buffers(void) {
 static udononnxStatus_t enqueue_clear_sequence_state(void) {
   cl_mem mask = 0;
   size_t mask_offset = 0;
-  udononnxStatus_t status = udon_onnx_binding_enqueue_reset_sequence_state();
+  udononnxStatus_t status = __udononnx_transitional_reset_sequence_state();
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_ATTENTION_MASK,
                            TINYLLAMA_ATTENTION_MASK_BYTES, &mask, &mask_offset);
@@ -200,11 +200,11 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
     release_opencl();
     return UDONONNX_STATUS_OPENCL_ERROR;
   }
-  status = udon_onnx_binding_create(context, queue);
+  status = __udononnx_transitional_create(context, queue);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = udon_onnx_binding_enqueue_initialize();
+    status = __udononnx_transitional_enqueue_initialize();
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = udon_onnx_binding_bind_all();
+    status = __udononnx_transitional_bind_all();
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_buffers();
   if (status != UDONONNX_STATUS_SUCCESS)
@@ -517,16 +517,16 @@ static udononnxStatus_t enqueue_chunk(const int32_t *tokens, uint32_t rows,
                            TINYLLAMA_ROW_BYTES, &staged_positions[position], 0,
                            0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
-  return udon_onnx_binding_enqueue_run();
+  return __udononnx_transitional_enqueue_run();
 }
 
 /* Advances the sequence state past the pending run, committing only its real
  * rows: a run that filled fewer than k rows leaves its padded rows behind. */
 static udononnxStatus_t enqueue_advance(void) {
   if (pending_rows == TINYLLAMA_SEQUENCE_ROWS)
-    return udon_onnx_binding_enqueue_advance_sequence_state();
+    return __udononnx_transitional_advance_sequence_state();
 #if TINYLLAMA_SEQUENCE_ROWS > 1u
-  return udon_onnx_binding_enqueue_advance_sequence_state_rows(pending_rows);
+  return __udononnx_transitional_advance_sequence_state_rows(pending_rows);
 #else
   return UDONONNX_STATUS_INVALID_STATE;
 #endif
@@ -615,7 +615,7 @@ static udononnxStatus_t decode_token(uint32_t position, int last,
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   if (!last) {
-    status = udon_onnx_binding_enqueue_run();
+    status = __udononnx_transitional_enqueue_run();
     pending_rows = 1u;
   }
   waited = wait_selected_token(token);
@@ -729,7 +729,7 @@ UDONCL_EXPORT udononnxStatus_t shutdown(void) {
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (busy)
     return UDONONNX_STATUS_BUSY;
-  status = udon_onnx_binding_dispose();
+  status = __udononnx_transitional_dispose();
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   opencl = release_opencl();

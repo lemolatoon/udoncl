@@ -73,7 +73,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "RenderTexture",
             "__vrc_",
             "__udoncl_",
-            "udon_onnx_binding_",
+            "__udononnx_transitional_",
         ):
             self.assertNotIn(forbidden, source)
 
@@ -225,9 +225,9 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 "outputs": outputs,
                 "physical": {
                     "enqueue_advance_sequence_state_symbol":
-                        "udon_onnx_binding_enqueue_advance_sequence_state",
+                        "__udononnx_transitional_advance_sequence_state",
                     "enqueue_reset_sequence_state_symbol":
-                        "udon_onnx_binding_enqueue_reset_sequence_state",
+                        "__udononnx_transitional_reset_sequence_state",
                 },
             },
             "device": {
@@ -482,7 +482,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         ):
             self.assertIn(required, controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
-                          "__udoncl_", "udon_onnx_binding_", "1701", "29871"):
+                          "__udoncl_", "__udononnx_transitional_", "1701", "29871"):
             self.assertNotIn(forbidden, controller)
         for required in (
             "UDONCL_PUBLIC_TINYLLAMA_CHAT_UNITY_BUNDLE",
@@ -547,7 +547,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         ):
             self.assertIn(required, controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
-                          "__udoncl_", "udon_onnx_binding_", "TrySetPromptTokens",
+                          "__udoncl_", "__udononnx_transitional_", "TrySetPromptTokens",
                           "StartReset(", "29871"):
             self.assertNotIn(forbidden, controller)
         for required in (

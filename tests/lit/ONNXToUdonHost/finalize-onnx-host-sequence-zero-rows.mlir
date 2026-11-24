@@ -124,34 +124,34 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK-DAG: sym_name = "__udon_onnx_sequence_state_exposed"
 
 // create: nothing is filled and nobody holds a past input.
-// CHECK-LABEL: func.func @udon_onnx_binding_create
+// CHECK-LABEL: func.func @__udononnx_transitional_create
 // CHECK: %[[CREATE_AGE:.*]] = udonhl.address_of @__udon_onnx_sequence_state_fill_age
 // CHECK-NEXT: "udonhl.store"(%c0_i32, %[[CREATE_AGE]])
 // CHECK: %[[CREATE_EXPOSED:.*]] = udonhl.address_of @__udon_onnx_sequence_state_exposed
 // CHECK-NEXT: "udonhl.store"(%c0_i32, %[[CREATE_EXPOSED]])
 
 // Binding a state tensor forgets the fill.
-// CHECK-LABEL: func.func @udon_onnx_binding_bind_tensor
+// CHECK-LABEL: func.func @__udononnx_transitional_bind_tensor
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_fill_age
 
 // bind-all forgets the fill.
-// CHECK-LABEL: func.func @udon_onnx_binding_bind_all
+// CHECK-LABEL: func.func @__udononnx_transitional_bind_all
 // CHECK: %[[BIND_AGE:.*]] = udonhl.address_of @__udon_onnx_sequence_state_fill_age
 // CHECK-NEXT: "udonhl.store"(%c0_i32, %[[BIND_AGE]])
 
 // Resolving input 1 or 2 (a past input) exposes the states for good.
-// CHECK-LABEL: func.func @udon_onnx_binding_resolve_input
+// CHECK-LABEL: func.func @__udononnx_transitional_resolve_input
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_exposed
 // CHECK: arith.cmpi eq, %arg0, %c1_i32
 // CHECK: arith.cmpi eq, %arg0, %c2_i32
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_fill_age
 // CHECK: call @udononnxBindingStateResolveInput
-// CHECK-LABEL: func.func @udon_onnx_binding_resolve_output
+// CHECK-LABEL: func.func @__udononnx_transitional_resolve_output
 // CHECK-NOT: sequence_state_exposed
 // CHECK: call @udononnxBindingStateResolveOutput
 
 // Reset fills the past inputs; the age becomes 1 unless they are exposed.
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_reset_sequence_state
+// CHECK-LABEL: func.func @__udononnx_transitional_reset_sequence_state
 // CHECK: call @__vrc_opencl_buffer_fill
 // CHECK: call @__vrc_opencl_buffer_fill
 // CHECK: %[[EXPOSED:.*]] = "udonhl.load"(%{{.*}}) {{.*}} -> i32
@@ -161,7 +161,7 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK-NEXT: "udonhl.store"(%[[AGE]], %[[RESET_AGE]])
 
 // Each advance counts, up to 16 (15 carried rows, step 1, plus one).
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state
+// CHECK-LABEL: func.func @__udononnx_transitional_advance_sequence_state
 // CHECK: %[[OLD_ADDRESS:.*]] = udonhl.address_of @__udon_onnx_sequence_state_fill_age
 // CHECK-NEXT: %[[OLD:.*]] = "udonhl.load"(%[[OLD_ADDRESS]])
 // CHECK-DAG: arith.cmpi slt, %[[OLD]], %c16_i32

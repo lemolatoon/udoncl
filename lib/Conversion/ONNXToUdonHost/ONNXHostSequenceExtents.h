@@ -2,7 +2,7 @@
 // binding's reset, and the Device work a run may skip because of them.
 //
 // After the binding fills every past input with zeros
-// (udon_onnx_binding_enqueue_reset_sequence_state), each run of a state s
+// (__udononnx_transitional_reset_sequence_state), each run of a state s
 // concatenates its past (carried_s rows) with step_s new rows along the state
 // axis, and each advance drops the first step_s rows. Before the run that
 // follows n advances, the first max(0, carried_s - n * step_s) rows of the
@@ -84,7 +84,7 @@ DeviceSequenceExtents deviceSequenceExtents(const GraphRecord &graph);
 
 /// The rows every sequence state appends in one run when the binding may
 /// commit only some of them
-/// (udon_onnx_binding_enqueue_advance_sequence_state_rows): all states of the
+/// (__udononnx_transitional_advance_sequence_state_rows): all states of the
 /// graph append the same number of rows, and more than one. 0 otherwise.
 ///
 /// A graph specialized to a sequence of k rows runs a chunk of up to k new

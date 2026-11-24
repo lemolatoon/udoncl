@@ -1,4 +1,4 @@
-// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry %s | %FileCheck --implicit-check-not='@udon_onnx_binding_create' --implicit-check-not='udoncl.onnx_binding =' --implicit-check-not='@clEnqueue' %s
+// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry %s | %FileCheck --implicit-check-not='@__udononnx_transitional_create' --implicit-check-not='udoncl.onnx_binding =' --implicit-check-not='@clEnqueue' %s
 
 func.func private @__udon_onnx_add(
     tensor<1x4xf32>, tensor<1x4xf32>) -> tensor<1x4xf32>

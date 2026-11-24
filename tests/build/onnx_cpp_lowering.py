@@ -209,10 +209,10 @@ assert "func.func private @udononnxBindingInitializeTensorMetadata" not in host.
 assert "func.func private @udononnxBindingInitializeModel" not in host.stdout
 assert "udonhl.store" in host.stdout
 assert "arith.cmpi ne" in host.stdout
-assert "func.func @udon_onnx_binding_create" in host.stdout
-assert "func.func @udon_onnx_binding_bind_tensor" in host.stdout
-assert "func.func @udon_onnx_binding_bind_all" in host.stdout
-bind_all_start = host.stdout.index("func.func @udon_onnx_binding_bind_all")
+assert "func.func @__udononnx_transitional_create" in host.stdout
+assert "func.func @__udononnx_transitional_bind_tensor" in host.stdout
+assert "func.func @__udononnx_transitional_bind_all" in host.stdout
+bind_all_start = host.stdout.index("func.func @__udononnx_transitional_bind_all")
 bind_all_end = host.stdout.index("func.func", bind_all_start + 10)
 bind_all = host.stdout[bind_all_start:bind_all_end]
 assert "call @udononnxBindingStateBindTensor" not in bind_all
@@ -224,10 +224,10 @@ assert host.stdout.count("vrc.static_public_resource_binding") == 3
 assert host.stdout.count('public_access = "input"') >= 2
 assert host.stdout.count('public_access = "output"') >= 1
 assert host.stdout.count('resource_source = "call_allocation"') == 3
-assert "func.func @udon_onnx_binding_enqueue_initialize" in host.stdout
-assert "func.func @udon_onnx_binding_enqueue_run" in host.stdout
+assert "func.func @__udononnx_transitional_enqueue_initialize" in host.stdout
+assert "func.func @__udononnx_transitional_enqueue_run" in host.stdout
 assert "func.func @udon_onnx_binding_wait_active_event" not in host.stdout
-assert "func.func @udon_onnx_binding_dispose" in host.stdout
+assert "func.func @__udononnx_transitional_dispose" in host.stdout
 assert "call @udononnxSessionResolveInput" in host.stdout
 assert "call @udononnxSessionResolveOutput" in host.stdout
 assert "call @clEnqueueMarkerWithWaitList" in host.stdout
@@ -359,12 +359,12 @@ def sequence_state_finalize(*plan_options):
 # nothing, and every past input holds a whole present (8192 bytes).
 sequence_state_banked = sequence_state_finalize()
 banked_advance_body = sequence_state_banked.stdout.split(
-    "func.func @udon_onnx_binding_enqueue_advance_sequence_state", 1
+    "func.func @__udononnx_transitional_advance_sequence_state", 1
 )[1].split("func.func", 1)[0]
 assert "call @__vrc_opencl_" not in banked_advance_body
 assert "__udon_onnx_sequence_state_bank" in banked_advance_body
 assert (
-    "func.func @udon_onnx_binding_enqueue_materialize_sequence_state"
+    "func.func @__udononnx_transitional_materialize_sequence_state"
     in sequence_state_banked.stdout
 )
 assert (
@@ -374,14 +374,14 @@ assert (
 # Without banks the advance copies the carried rows of each state.
 sequence_state_host = sequence_state_finalize("bank-sequence-state=false")
 assert "__udon_onnx_sequence_state_bank" not in sequence_state_host.stdout
-assert "func.func @udon_onnx_binding_enqueue_advance_sequence_state" in (
+assert "func.func @__udononnx_transitional_advance_sequence_state" in (
     sequence_state_host.stdout
 )
-assert "func.func @udon_onnx_binding_enqueue_reset_sequence_state" in (
+assert "func.func @__udononnx_transitional_reset_sequence_state" in (
     sequence_state_host.stdout
 )
 reset_body = sequence_state_host.stdout.split(
-    "func.func @udon_onnx_binding_enqueue_reset_sequence_state", 1
+    "func.func @__udononnx_transitional_reset_sequence_state", 1
 )[1].split("func.func", 1)[0]
 # The queue is drained once, then each state is cleared by one word-fill
 # command with the 4-byte zero pattern; nothing is uploaded.
@@ -400,7 +400,7 @@ assert "arith.constant 7168 : i32" in reset_body
 assert "arith.constant 7 : i32" in reset_body
 assert "arith.constant 12 : i32" in reset_body
 advance_body = sequence_state_host.stdout.split(
-    "func.func @udon_onnx_binding_enqueue_advance_sequence_state", 1
+    "func.func @__udononnx_transitional_advance_sequence_state", 1
 )[1].split("func.func", 1)[0]
 assert advance_body.count("call @__vrc_opencl_dispatch_udononnx_slice_f32") == 2
 assert advance_body.count("call @__vrc_opencl_await") == 2

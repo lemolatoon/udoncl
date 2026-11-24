@@ -27,4 +27,4 @@ func.func @main_graph(
 // CHECK: sym_name = "__udon_onnx_input_binding_1"
 // CHECK: sym_name = "__udon_onnx_has_run"
 // CHECK-NOT: func.func @udononnxGeneratedGetModelCount
-// CHECK-NOT: func.func @udon_onnx_binding_create
+// CHECK-NOT: func.func @__udononnx_transitional_create

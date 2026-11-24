@@ -56,8 +56,9 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model
   to its `DIMENSION_BOUNDS` and `INPUT_SHAPES`, and lowers it to Host MLIR that
   calls UdonBLAS, UdonDNN, UdonATen and UdonONNXOperators. A user C Host
-  drives that model through `UdonONNXRuntime` (sessions of
-  `<udononnxruntime.h>` or the generated `udon_onnx_binding_*` functions) and
+  drives that model through the `UdonONNXRuntime` session API of
+  `<udononnxruntime.h>` (the TinyLlama Conversation and Chat Hosts still use
+  the private transitional `__udononnx_transitional_*` binding) and
   is linked into an ordinary Unity library with a generated U# binding.
   `examples/onnx-mnist` and `examples/onnx-transformer-tiny`, up to the real
   TinyLlama-1.1B with 512- and 4096-token contexts, use this path. The Python

@@ -173,7 +173,7 @@ assert generated_tokens == [1701, 29916, 432, 17204], generated_tokens
 # window of capacity + rows - 1, the prompt in chunks of `rows` and every
 # decode step a run of one real row. A run of fewer real rows repeats its
 # last token at its position in the rest, and only the real rows are carried
-# (udon_onnx_binding_enqueue_advance_sequence_state_rows). Greedy tokens must
+# (__udononnx_transitional_advance_sequence_state_rows). Greedy tokens must
 # equal the M=1 ones.
 def chunked_generation(rows: int) -> tuple[list[int], float]:
     window = capacity + rows - 1

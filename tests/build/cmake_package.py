@@ -544,15 +544,15 @@ def main():
     # Every binding function is a root of the Host, never a U# export.
     assert generated_onnx_host_text.count('udoncl.internal_export') == 9
     for symbol in [
-        'udon_onnx_binding_create',
-        'udon_onnx_binding_bind_tensor',
-        'udon_onnx_binding_bind_all',
-        'udon_onnx_binding_resolve_input',
-        'udon_onnx_binding_resolve_output',
-        'udon_onnx_binding_enqueue_initialize',
-        'udon_onnx_binding_enqueue_run',
-        'udon_onnx_binding_enqueue_copy_output_to_input',
-        'udon_onnx_binding_dispose',
+        '__udononnx_transitional_create',
+        '__udononnx_transitional_bind_tensor',
+        '__udononnx_transitional_bind_all',
+        '__udononnx_transitional_resolve_input',
+        '__udononnx_transitional_resolve_output',
+        '__udononnx_transitional_enqueue_initialize',
+        '__udononnx_transitional_enqueue_run',
+        '__udononnx_transitional_copy_output_to_input',
+        '__udononnx_transitional_dispose',
     ]:
         assert f'func.func @{symbol}' in generated_onnx_host_text
     assert not list(onnx_consumer.rglob('execution-plan.json'))
@@ -1105,7 +1105,7 @@ def main():
         assert cleanup in complete_readback
     assert 'public int TryShutdown(out int result)' in mnist_binding
     assert 'BindOnnxTensorPhysical' not in mnist_binding
-    assert 'udon_onnx_binding_bind_tensor' not in mnist_binding
+    assert '__udononnx_transitional_bind_tensor' not in mnist_binding
     assert 'public void _ContinueAsyncCommand()' in mnist_binding
     assert 'int physicalBufferToken = (int)rawBuffer;' in mnist_binding
     assert 'int index = physicalBufferToken - 1;' in mnist_binding
@@ -1375,16 +1375,16 @@ def main():
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])
     assert (
-        'func.func @udon_onnx_binding_create(%arg0: !udonhl.ptr<0>, '
+        'func.func @__udononnx_transitional_create(%arg0: !udonhl.ptr<0>, '
         '%arg1: !udonhl.ptr<0>)' in transformer_source
     )
-    assert 'func.func @udon_onnx_binding_bind_tensor(' in transformer_source
-    assert 'func.func @udon_onnx_binding_bind_all()' in transformer_source
-    assert 'func.func @udon_onnx_binding_resolve_input(' in transformer_source
-    assert 'func.func @udon_onnx_binding_resolve_output(' in transformer_source
-    assert 'func.func @udon_onnx_binding_enqueue_run()' in transformer_source
+    assert 'func.func @__udononnx_transitional_bind_tensor(' in transformer_source
+    assert 'func.func @__udononnx_transitional_bind_all()' in transformer_source
+    assert 'func.func @__udononnx_transitional_resolve_input(' in transformer_source
+    assert 'func.func @__udononnx_transitional_resolve_output(' in transformer_source
+    assert 'func.func @__udononnx_transitional_enqueue_run()' in transformer_source
     assert (
-        'func.func @udon_onnx_binding_enqueue_copy_output_to_input('
+        'func.func @__udononnx_transitional_copy_output_to_input('
         in transformer_source
     )
     assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source

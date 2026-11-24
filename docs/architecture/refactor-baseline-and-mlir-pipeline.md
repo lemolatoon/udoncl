@@ -439,7 +439,7 @@ read it, and in banks 1 and 2 the Concat is a view kernel
 (`DeviceFusionKernels::dispatch(root, DeviceFusionLeafView)`) that reads the
 past leaf at row r + step of the other bank. The advance only maps the bank
 to 2 after a run from bank 1 and to 1 otherwise; it copies nothing.
-`udon_onnx_binding_enqueue_materialize_sequence_state` copies a present left
+`__udononnx_transitional_materialize_sequence_state` copies a present left
 in the past input into its output for a caller that reads it. A banked state
 is bounded by its view kernel (a gather surface per present), not by the
 16384 words of the Slice that a copying advance still uses.
@@ -447,12 +447,12 @@ is bounded by its view kernel (a gather surface per present), not by the
 Representative output:
 
 ```mlir
-func.func @udon_onnx_binding_create(...)
-func.func @udon_onnx_binding_bind_tensor(...)
-func.func @udon_onnx_binding_bind_all(...)
-func.func @udon_onnx_binding_enqueue_initialize(...)
-func.func @udon_onnx_binding_enqueue_run(...)
-func.func @udon_onnx_binding_dispose(...)
+func.func @__udononnx_transitional_create(...)
+func.func @__udononnx_transitional_bind_tensor(...)
+func.func @__udononnx_transitional_bind_all(...)
+func.func @__udononnx_transitional_enqueue_initialize(...)
+func.func @__udononnx_transitional_enqueue_run(...)
+func.func @__udononnx_transitional_dispose(...)
 
 %input = func.call @clCreateBuffer(...)
   {vrc.static_public_resource_binding = {

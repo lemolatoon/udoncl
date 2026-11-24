@@ -61,15 +61,15 @@ module attributes {udoncl.program = "probe",
 module attributes {udoncl.program = "onnx_probe",
     udoncl.unity_library_config = {}} {
   func.func @component_run() -> i32 attributes {udoncl.export} {
-    %status = func.call @udon_onnx_binding_enqueue_run() : () -> i32
+    %status = func.call @__udononnx_transitional_enqueue_run() : () -> i32
     return %status : i32
   }
-  func.func @udon_onnx_binding_enqueue_run() -> i32 attributes {
+  func.func @__udononnx_transitional_enqueue_run() -> i32 attributes {
       udoncl.export, udoncl.internal_export} {
     %zero = arith.constant 0 : i32
     return %zero : i32
   }
-  func.func @udon_onnx_binding_dispose() -> i32 attributes {
+  func.func @__udononnx_transitional_dispose() -> i32 attributes {
       udoncl.export, udoncl.internal_export} {
     %zero = arith.constant 0 : i32
     return %zero : i32
@@ -79,9 +79,9 @@ module attributes {udoncl.program = "onnx_probe",
 // CHECK-LABEL: module attributes
 // CHECK: func.func @component_run
 // CHECK-SAME: vrc.public_name = "ComponentRun"
-// CHECK: func.func private @udon_onnx_binding_enqueue_run
+// CHECK: func.func private @__udononnx_transitional_enqueue_run
 // CHECK-NOT: vrc.export_id
-// CHECK-NOT: @udon_onnx_binding_dispose
+// CHECK-NOT: @__udononnx_transitional_dispose
 
 // -----
 

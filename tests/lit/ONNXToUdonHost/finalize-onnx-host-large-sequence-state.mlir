@@ -32,7 +32,7 @@ module attributes {udoncl.onnx_sequence_states = [
   }
 }
 
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state
+// CHECK-LABEL: func.func @__udononnx_transitional_advance_sequence_state
 // CHECK-NOT: call @__vrc_opencl_
 // CHECK: return
 // CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun

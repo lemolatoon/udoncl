@@ -22,7 +22,7 @@ module {
 // keeps the run-time buffer pool.
 
 // CHECK-LABEL: module attributes {udoncl.onnx_binding
-module attributes {udoncl.onnx_binding = {physical = {enqueue_advance_sequence_state_symbol = "udon_onnx_binding_enqueue_advance_sequence_state"}}, vrc.static_unity_resource_lowering_readiness = {applied = false, dynamic_allocation_count = 2 : i32, pool_replacement_ready = false, schema_version = 1 : i32}} {
+module attributes {udoncl.onnx_binding = {physical = {enqueue_advance_sequence_state_symbol = "__udononnx_transitional_advance_sequence_state"}}, vrc.static_unity_resource_lowering_readiness = {applied = false, dynamic_allocation_count = 2 : i32, pool_replacement_ready = false, schema_version = 1 : i32}} {
 }
 
 // -----

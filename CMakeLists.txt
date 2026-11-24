@@ -100,7 +100,6 @@ install(FILES
   include/udoncl/udon_abi_layout.h
   include/udoncl/device_memory.h
   include/udoncl/onnx_binding_abi.h
-  include/udoncl/onnx_generated_binding.h
   include/udoncl/onnx_types.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)

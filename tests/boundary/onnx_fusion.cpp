@@ -462,7 +462,7 @@ int main(int argc, char **argv) {
       bank = presentReference;
     }
     // The same cache with two new rows per run, of which an advance may
-    // commit fewer (udon_onnx_binding_enqueue_advance_sequence_state_rows):
+    // commit fewer (__udononnx_transitional_advance_sequence_state_rows):
     // the next run's carried rows are rows [committed, committed + 6) of the
     // previous present, so the uncommitted rows are never carried. The view
     // kernel takes the committed rows after the zero rows; the bank-0 kernel

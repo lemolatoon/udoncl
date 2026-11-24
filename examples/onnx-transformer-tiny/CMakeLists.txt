@@ -67,7 +67,7 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # The graph is specialized to sequence_length = rows on top of the same
   # past, so a prompt runs in chunks of this many positions; a run that fills
   # fewer rows (the last chunk, and every decode step) pads the rest and
-  # commits only its real rows (udon_onnx_binding_enqueue_advance_sequence_state_rows).
+  # commits only its real rows (__udononnx_transitional_advance_sequence_state_rows).
   # 1 runs every position on its own.
   set(UDONCL_TINYLLAMA_SEQUENCE_ROWS 1 CACHE STRING
     "Positions one TinyLlama Conversation/Chat model run covers")

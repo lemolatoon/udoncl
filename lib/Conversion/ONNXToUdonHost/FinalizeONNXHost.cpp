@@ -1557,7 +1557,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
 
   builder.setInsertionPointToEnd(module.getBody());
   auto create = func::FuncOp::create(
-      builder, location, "udon_onnx_binding_create",
+      builder, location, "__udononnx_transitional_create",
       FunctionType::get(module.getContext(), {pointer, pointer}, {i32}));
   markExport(create);
   Block *entry = create.addEntryBlock();
@@ -1629,7 +1629,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   builder.setInsertionPointToEnd(module.getBody());
   SmallVector<Type> bindArguments(16, i32);
   auto bind = func::FuncOp::create(
-      builder, location, "udon_onnx_binding_bind_tensor",
+      builder, location, "__udononnx_transitional_bind_tensor",
       FunctionType::get(module.getContext(), bindArguments, {i32}));
   markExport(bind);
   Block *bindEntry = bind.addEntryBlock();
@@ -1694,9 +1694,9 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   func::ReturnOp::create(builder, location, bindCall.getResult(0));
 
   builder.setInsertionPointToEnd(module.getBody());
-  auto bindAll =
-      func::FuncOp::create(builder, location, "udon_onnx_binding_bind_all",
-                           FunctionType::get(module.getContext(), {}, {i32}));
+  auto bindAll = func::FuncOp::create(
+      builder, location, "__udononnx_transitional_bind_all",
+      FunctionType::get(module.getContext(), {}, {i32}));
   markExport(bindAll);
   entry = bindAll.addEntryBlock();
   builder.setInsertionPointToEnd(entry);
@@ -1804,9 +1804,9 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                    resolveEntry->getArgument(3)});
     func::ReturnOp::create(builder, location, resolved.getResult(0));
   };
-  createResolve("udon_onnx_binding_resolve_input",
+  createResolve("__udononnx_transitional_resolve_input",
                 "udononnxBindingStateResolveInput", true);
-  createResolve("udon_onnx_binding_resolve_output",
+  createResolve("__udononnx_transitional_resolve_output",
                 "udononnxBindingStateResolveOutput", false);
 
   auto createEnqueue = [&](StringRef name, StringRef callee, bool run) {
@@ -1924,14 +1924,14 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     }
     func::ReturnOp::create(builder, location, finalStatus);
   };
-  createEnqueue("udon_onnx_binding_enqueue_initialize",
+  createEnqueue("__udononnx_transitional_enqueue_initialize",
                 "udononnxBindingStateEnqueueInitialize", false);
-  createEnqueue("udon_onnx_binding_enqueue_run",
+  createEnqueue("__udononnx_transitional_enqueue_run",
                 "udononnxBindingStateEnqueueRun", true);
 
   builder.setInsertionPointToEnd(module.getBody());
   auto copyOutputToInput = func::FuncOp::create(
-      builder, location, "udon_onnx_binding_enqueue_copy_output_to_input",
+      builder, location, "__udononnx_transitional_copy_output_to_input",
       FunctionType::get(module.getContext(), {i32, i32}, {i32}));
   markExport(copyOutputToInput);
   Block *copyEntry = copyOutputToInput.addEntryBlock();
@@ -2017,7 +2017,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   if (!graph.sequenceStates.empty()) {
     builder.setInsertionPointToEnd(module.getBody());
     auto reset = func::FuncOp::create(
-        builder, location, "udon_onnx_binding_enqueue_reset_sequence_state",
+        builder, location, "__udononnx_transitional_reset_sequence_state",
         FunctionType::get(module.getContext(), {}, {i32}));
     markExport(reset);
     reset->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
@@ -2345,12 +2345,12 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
       func::ReturnOp::create(builder, location, constant(0));
       return success();
     };
-    if (failed(emitAdvance("udon_onnx_binding_enqueue_advance_sequence_state",
+    if (failed(emitAdvance("__udononnx_transitional_advance_sequence_state",
                            /*rowsArgument=*/false)))
       return failure();
     if (partialStep &&
         failed(
-            emitAdvance("udon_onnx_binding_enqueue_advance_sequence_state_rows",
+            emitAdvance("__udononnx_transitional_advance_sequence_state_rows",
                         /*rowsArgument=*/true)))
       return failure();
   }
@@ -2363,8 +2363,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     // its output. The bank and the carried rows stay as they are.
     builder.setInsertionPointToEnd(module.getBody());
     auto materialize = func::FuncOp::create(
-        builder, location,
-        "udon_onnx_binding_enqueue_materialize_sequence_state",
+        builder, location, "__udononnx_transitional_materialize_sequence_state",
         FunctionType::get(module.getContext(), {}, {i32}));
     // Only a C Host that reads presents calls it, so it is not a Udon export
     // and an artifact that never calls it does not keep it.
@@ -2450,7 +2449,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
 
   builder.setInsertionPointToEnd(module.getBody());
   auto dispose =
-      func::FuncOp::create(builder, location, "udon_onnx_binding_dispose",
+      func::FuncOp::create(builder, location, "__udononnx_transitional_dispose",
                            FunctionType::get(module.getContext(), {}, {i32}));
   markExport(dispose);
   entry = dispose.addEntryBlock();

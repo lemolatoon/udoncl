@@ -164,7 +164,7 @@ struct ReportStaticUnityResourceLoweringPass
 };
 
 /// Whether the module's generated ONNX binding banks sequence state
-/// (udon_onnx_binding_enqueue_advance_sequence_state): the transitional
+/// (__udononnx_transitional_advance_sequence_state): the transitional
 /// exception to the required static Unity resource lowering.
 bool banksOnnxSequenceState(ModuleOp module) {
   auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");

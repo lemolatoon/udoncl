@@ -195,7 +195,8 @@ if(TARGET VRCOpenCLRuntime)
   target_compile_features(tinyllama-conversation-host PRIVATE c_std_11)
   target_include_directories(tinyllama-conversation-host PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
-    "${PROJECT_SOURCE_DIR}/include")
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny")
   target_compile_definitions(tinyllama-conversation-host PRIVATE
     CL_TARGET_OPENCL_VERSION=120)
   target_link_libraries(tinyllama-conversation-host PRIVATE VRCOpenCLRuntime)
@@ -208,7 +209,8 @@ if(TARGET VRCOpenCLRuntime)
   target_compile_features(tinyllama-conversation-host-chunked PRIVATE c_std_11)
   target_include_directories(tinyllama-conversation-host-chunked PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
-    "${PROJECT_SOURCE_DIR}/include")
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny")
   target_compile_definitions(tinyllama-conversation-host-chunked PRIVATE
     CL_TARGET_OPENCL_VERSION=120 TINYLLAMA_SEQUENCE_ROWS=4u)
   target_link_libraries(tinyllama-conversation-host-chunked PRIVATE

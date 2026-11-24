@@ -48,43 +48,45 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
     return builder.getArrayAttr(entries);
   };
   auto physical = builder.getDictionaryAttr({
-      builder.getNamedAttr("create_symbol",
-                           builder.getStringAttr("udon_onnx_binding_create")),
+      builder.getNamedAttr(
+          "create_symbol",
+          builder.getStringAttr("__udononnx_transitional_create")),
       builder.getNamedAttr(
           "bind_tensor_symbol",
-          builder.getStringAttr("udon_onnx_binding_bind_tensor")),
-      builder.getNamedAttr("bind_all_symbol",
-                           builder.getStringAttr("udon_onnx_binding_bind_all")),
+          builder.getStringAttr("__udononnx_transitional_bind_tensor")),
+      builder.getNamedAttr(
+          "bind_all_symbol",
+          builder.getStringAttr("__udononnx_transitional_bind_all")),
       builder.getNamedAttr(
           "resolve_input_symbol",
-          builder.getStringAttr("udon_onnx_binding_resolve_input")),
+          builder.getStringAttr("__udononnx_transitional_resolve_input")),
       builder.getNamedAttr(
           "resolve_output_symbol",
-          builder.getStringAttr("udon_onnx_binding_resolve_output")),
+          builder.getStringAttr("__udononnx_transitional_resolve_output")),
       builder.getNamedAttr(
           "enqueue_initialize_symbol",
-          builder.getStringAttr("udon_onnx_binding_enqueue_initialize")),
+          builder.getStringAttr("__udononnx_transitional_enqueue_initialize")),
       builder.getNamedAttr(
           "enqueue_run_symbol",
-          builder.getStringAttr("udon_onnx_binding_enqueue_run")),
-      builder.getNamedAttr(
-          "enqueue_copy_output_to_input_symbol",
-          builder.getStringAttr(
-              "udon_onnx_binding_enqueue_copy_output_to_input")),
+          builder.getStringAttr("__udononnx_transitional_enqueue_run")),
+      builder.getNamedAttr("enqueue_copy_output_to_input_symbol",
+                           builder.getStringAttr(
+                               "__udononnx_transitional_copy_output_to_input")),
       builder.getNamedAttr(
           "enqueue_advance_sequence_state_symbol",
           builder.getStringAttr(
               graph.sequenceStates.empty()
                   ? ""
-                  : "udon_onnx_binding_enqueue_advance_sequence_state")),
+                  : "__udononnx_transitional_advance_sequence_state")),
       builder.getNamedAttr(
           "enqueue_reset_sequence_state_symbol",
           builder.getStringAttr(
               graph.sequenceStates.empty()
                   ? ""
-                  : "udon_onnx_binding_enqueue_reset_sequence_state")),
-      builder.getNamedAttr("dispose_symbol",
-                           builder.getStringAttr("udon_onnx_binding_dispose")),
+                  : "__udononnx_transitional_reset_sequence_state")),
+      builder.getNamedAttr(
+          "dispose_symbol",
+          builder.getStringAttr("__udononnx_transitional_dispose")),
   });
   module->setAttr(
       "udoncl.onnx_binding",

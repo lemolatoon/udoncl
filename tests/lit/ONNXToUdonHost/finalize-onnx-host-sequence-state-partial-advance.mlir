@@ -7,7 +7,7 @@
 // a sequence of two rows: every run appends two rows to both states of
 // capacity 4. A caller that ran only one real position (the other computed
 // from padding) commits just that row with
-// udon_onnx_binding_enqueue_advance_sequence_state_rows(1), and the next run
+// __udononnx_transitional_advance_sequence_state_rows(1), and the next run
 // reads its carried rows one row, not two, into the previous present; the
 // padded row is never carried (sequenceStatePartialAdvanceStep in
 // ONNXHostSequenceExtents.h).
@@ -87,7 +87,7 @@ module attributes {udoncl.onnx_sequence_states = [
 // The plain advance commits a whole step: the next run reads two rows into
 // the previous present, and the fill age, which counts committed rows, grows
 // by two up to its limit carried + 1 = 3.
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state()
+// CHECK-LABEL: func.func @__udononnx_transitional_advance_sequence_state()
 // CHECK-SAME: attributes {udoncl.export, udoncl.internal_export}
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_bank
 // CHECK: %[[ROWS_ADDRESS:.*]] = udonhl.address_of @__udon_onnx_sequence_state_advanced_rows
@@ -104,7 +104,7 @@ module attributes {udoncl.onnx_sequence_states = [
 // INVALID_VALUE after the busy (7) and state (12) checks, flips the bank
 // like the plain advance and records the rows it committed. It is not a
 // Udon export, and it issues no Device command.
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state_rows(
+// CHECK-LABEL: func.func @__udononnx_transitional_advance_sequence_state_rows(
 // CHECK-SAME: %[[REQUESTED:[^:]*]]: i32) -> i32 {
 // CHECK-NOT: call @__vrc_opencl_
 // CHECK: arith.cmpi ule, %[[REQUESTED]], %c2_i32 : i32
@@ -160,9 +160,9 @@ module attributes {udoncl.onnx_sequence_states = [
 // starts the requested rows into the present: the start word of axes 2 and 3
 // is the run-time row count.
 // COPIED-NOT: __udon_onnx_sequence_state_advanced_rows
-// COPIED-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state()
+// COPIED-LABEL: func.func @__udononnx_transitional_advance_sequence_state()
 // COPIED: call @__vrc_opencl_dispatch_udononnx_slice_f32({{.*}}, %c0_i32, %c2_i32, %c0_i32, %c65537_i32, %c65537_i32, %c65537_i32)
-// COPIED-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state_rows(
+// COPIED-LABEL: func.func @__udononnx_transitional_advance_sequence_state_rows(
 // COPIED-SAME: %[[COPIED_ROWS:[^:]*]]: i32) -> i32
 // COPIED-SAME: vrc.async_effect = "may_suspend"
 // COPIED: call @__vrc_opencl_dispatch_udononnx_slice_f32({{.*}}, %c0_i32, %[[COPIED_ROWS]], %c0_i32, %c65537_i32, %c65537_i32, %c65537_i32)

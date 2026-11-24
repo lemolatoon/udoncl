@@ -164,14 +164,14 @@ tensor stays on the execution provider's device across `Run`, and nothing is
 copied to the CPU unless the caller asks for it. The UdonONNX counterpart is
 the session binding (`udononnxLegacySessionBindInput`, `udononnxLegacySessionBindOutput`,
 `udononnxSessionResolveInput`, `udononnxSessionResolveOutput`) and the
-generated physical helpers in `udoncl/onnx_generated_binding.h`; every bound
+transitional physical helpers of `examples/onnx-transformer-tiny/transitional_sequence_state.h`; every bound
 tensor is a borrowed `cl_mem` range. There is no UdonONNX read, write or
 feedback facade and no `Ext` entry point: moving bytes between bound tensors,
 or between the Device and the Host, is owned by OpenCL 1.2 and uses its
 signatures and ordering rules unchanged.
 
 - Output-to-input feedback is `clEnqueueCopyBuffer` between the two resolved
-  ranges (or `udon_onnx_binding_enqueue_copy_output_to_input` for whole
+  ranges (or `__udononnx_transitional_copy_output_to_input` for whole
   tensors, and the generated sequence-state advance for K/V). It is one
   Device Blit and never reaches the Host.
 - Host-known input updates are `clEnqueueWriteBuffer` / `clEnqueueFillBuffer`
@@ -265,7 +265,7 @@ public past input buffer is allocated with the size of the present, and the
 two buffers alternate: one run writes the present into the present output and
 the next run writes it into the past input, each reading the carried rows of
 the other through a static view (row r of the past is row r + step of the
-previous present). The generated `udon_onnx_binding_enqueue_advance_sequence_state`
+previous present). The generated `__udononnx_transitional_advance_sequence_state`
 then only flips a bank counter instead of copying `present[step:]` into the
 past. The view is read by a synthesized kernel of the `Concat` (section
 "Synthesized Device kernels"), so it is held to the same bit-identity bar:
@@ -273,7 +273,7 @@ past. The view is read by a synthesized kernel of the `Concat` (section
 copying advance built from the library kernels.
 
 The present of a run from bank 1 is in the past input. A caller that reads a
-present output calls `udon_onnx_binding_enqueue_materialize_sequence_state`
+present output calls `__udononnx_transitional_materialize_sequence_state`
 first, which copies such presents into their outputs (one Device copy each)
 and leaves the bank unchanged; the first run after create, bind-all or reset
 needs no materialization. Writing the past input directly is only meaningful
@@ -293,7 +293,7 @@ specialized to a sequence of k > 1 positions (every state appends the same k
 rows per run; `sequenceStatePartialAdvanceStep` in
 `ONNXHostSequenceExtents.h`) lets a Host run fewer than k real positions in
 one run: it fills the rest with padding, and
-`udon_onnx_binding_enqueue_advance_sequence_state_rows(rows)` commits only
+`__udononnx_transitional_advance_sequence_state_rows(rows)` commits only
 the first `rows` rows of the pending run, as if the run had appended those
 alone. The next run's carried rows then start `rows` rows into the previous
 present instead of k, so the padded rows are never carried; the dropped

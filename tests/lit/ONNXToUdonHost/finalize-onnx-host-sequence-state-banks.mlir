@@ -84,13 +84,13 @@ module attributes {udoncl.onnx_sequence_states = [
 // PLAN-SAME: sequence_state_banks = array<i64: 0, 1>
 
 // create and bind-all return the carried rows to the past input.
-// CHECK-LABEL: func.func @udon_onnx_binding_create
+// CHECK-LABEL: func.func @__udononnx_transitional_create
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_bank
-// CHECK-LABEL: func.func @udon_onnx_binding_bind_all
+// CHECK-LABEL: func.func @__udononnx_transitional_bind_all
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_bank
 
 // Reset clears the past inputs and returns to bank 0.
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_reset_sequence_state
+// CHECK-LABEL: func.func @__udononnx_transitional_reset_sequence_state
 // CHECK: call @__vrc_opencl_buffer_fill
 // CHECK: call @__vrc_opencl_buffer_fill
 // CHECK: %[[RESET_BANK:.*]] = udonhl.address_of @__udon_onnx_sequence_state_bank
@@ -98,7 +98,7 @@ module attributes {udoncl.onnx_sequence_states = [
 
 // The advance only flips the bank: 2 after a run from bank 1, 1 after a run
 // from bank 0 or 2.
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state
+// CHECK-LABEL: func.func @__udononnx_transitional_advance_sequence_state
 // CHECK-NOT: call @__vrc_opencl_
 // CHECK: %[[BANK_ADDRESS:.*]] = udonhl.address_of @__udon_onnx_sequence_state_bank
 // CHECK: %[[BANK:.*]] = "udonhl.load"(%[[BANK_ADDRESS]])
@@ -111,7 +111,7 @@ module attributes {udoncl.onnx_sequence_states = [
 // Materializing copies each present from its past input (logical buffers 2
 // and 3) into its present output (5 and 6) only when a run from bank 1 left
 // it there.
-// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_materialize_sequence_state
+// CHECK-LABEL: func.func @__udononnx_transitional_materialize_sequence_state
 // CHECK: %[[KEY_BANK:.*]] = call @__vrc_opencl_buffer_alloc(%c2_i32, %c256_i32)
 // CHECK: %[[KEY_OUTPUT:.*]] = call @__vrc_opencl_buffer_alloc(%c5_i32, %c256_i32)
 // CHECK: call @__vrc_opencl_buffer_copy(%[[KEY_BANK]], %[[KEY_OUTPUT]], %c0_i32, %c0_i32, %c256_i32)
@@ -180,10 +180,10 @@ module attributes {udoncl.onnx_sequence_states = [
 // Without banks every advance copies the carried rows with a Slice, and
 // nothing needs materializing.
 // COPIED-NOT: __udon_onnx_sequence_state_bank
-// COPIED-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state
+// COPIED-LABEL: func.func @__udononnx_transitional_advance_sequence_state
 // COPIED: call @__vrc_opencl_dispatch_udononnx_slice_f32
 // COPIED: call @__vrc_opencl_dispatch_udononnx_slice_f32
-// COPIED-NOT: udon_onnx_binding_enqueue_materialize_sequence_state
+// COPIED-NOT: __udononnx_transitional_materialize_sequence_state
 // COPIED-LABEL: func.func @udononnxGeneratedEnqueueRun
 // COPIED: call @__vrc_opencl_dispatch_udononnx_fused_0(
 // COPIED: call @__vrc_opencl_dispatch_udononnx_concat2_f32(
