@@ -53,9 +53,8 @@ udononnxStatus_t udononnxGeneratedGetModel(size_t index,
 }
 
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxTransitionalSession_t *session,
                                          cl_command_queue queue) {
-  if (graph_id != active_model->graph_id || session || !queue)
+  if (graph_id != active_model->graph_id || !queue)
     return UDONONNX_STATUS_INVALID_VALUE;
   ++creates;
   return UDONONNX_STATUS_SUCCESS;
@@ -87,10 +86,8 @@ udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
              : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
-udononnxStatus_t
-udononnxGeneratedDispose(uint32_t graph_id,
-                         udononnxTransitionalSession_t *session) {
-  if (graph_id != active_model->graph_id || session)
+udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id) {
+  if (graph_id != active_model->graph_id)
     return UDONONNX_STATUS_INVALID_VALUE;
   ++disposes;
   bound_input = 0;

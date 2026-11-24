@@ -234,7 +234,7 @@ func.func @main_graph(
 // PLAN-SAME: device_fusion_roots = array<i64: 7, 7, 7, 7, 7, 7, 7, 7, 15, 15, 15, 15, 15, 15, 15, 15, 18, 18, 18, 22, 22, 22, 22, 23>
 // PLAN-SAME: owned_device_buffers = array<i64: 35>
 
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK-NOT: call @__vrc_opencl_dispatch_{{(udondnn|udonblas|udononnx_[^f])}}
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[X:[^,]*]], %[[COS:[^,]*]], %[[SIN:[^,]*]], %{{[^,]*}}) : (i32, i32, i32, i32) -> i32
 // CHECK-NEXT: call @__vrc_opencl_await(
@@ -366,7 +366,7 @@ func.func @main_graph(
 
 // With fusion off every node dispatches its library kernel as before and the
 // module carries no kernel.
-// UNFUSED-LABEL: func.func @udononnxGeneratedEnqueueRun
+// UNFUSED-LABEL: func.func @udononnxGeneratedRun(
 // UNFUSED: call @__vrc_opencl_dispatch_udondnn_large_op_tensor
 // UNFUSED: call @__vrc_opencl_dispatch_udononnx_slice_f32
 // UNFUSED: call @__vrc_opencl_dispatch_udononnx_slice_f32

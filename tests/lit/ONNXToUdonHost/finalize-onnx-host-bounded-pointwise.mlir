@@ -42,7 +42,8 @@ module attributes {udoncl.dimension_bounds = {past = 7 : i64}} {
   }
 }
 
-// CHECK-LABEL: func.func private @__udononnx_enqueue_resolved_run(%arg0
+// CHECK-LABEL: func.func @udononnxGeneratedRun(%arg0
+// CHECK: call @clFlush
 // CHECK: udonhl.address_of @__udon_onnx_dimension_0
 // CHECK-NEXT: %[[PAST:.*]] = "udonhl.load"
 // CHECK: %[[EXTENT:.*]] = arith.addi %[[PAST]], %c1_i32

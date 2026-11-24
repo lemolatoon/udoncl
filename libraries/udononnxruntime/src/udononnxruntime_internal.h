@@ -37,8 +37,6 @@ typedef struct udononnxModel {
   size_t output_count;
 } udononnxModel_t;
 
-typedef struct udononnxTransitionalSession udononnxTransitionalSession_t;
-
 /* The model registry of the linked model Host. */
 size_t udononnxGeneratedGetModelCount(void);
 udononnxStatus_t udononnxGeneratedGetModel(size_t index,
@@ -58,19 +56,15 @@ udononnxStatus_t udononnxGetModel(size_t index, const udononnxModel_t **model);
  * largest extent of the dimension is UDONONNX_STATUS_NOT_SUPPORTED. Run
  * runs the graph on the bound buffers on `queue` and
  * enqueues a marker that reports completion. Dispose releases the session's
- * buffers and forgets every bound one. The session API passes no
- * transitional session. */
+ * buffers and forgets every bound one. */
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxTransitionalSession_t *session,
                                          cl_command_queue queue);
 udononnxStatus_t udononnxGeneratedBindMemory(uint32_t graph_id, uint32_t output,
                                              uint32_t index, cl_mem memory,
                                              int32_t extent, int32_t pitch);
 udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
                                       cl_event *completion);
-udononnxStatus_t
-udononnxGeneratedDispose(uint32_t graph_id,
-                         udononnxTransitionalSession_t *session);
+udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id);
 
 /* The UdonONNX session bind of graph input or output `index`. Building for
  * Udon, udonclc folds the constant tensor name of every udononnxBindInput

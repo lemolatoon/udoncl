@@ -1,4 +1,4 @@
-// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-attach-onnx-host-metadata --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source --canonicalize %s | %FileCheck %s
+// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-attach-onnx-host-metadata --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source --canonicalize %s | %FileCheck --implicit-check-not=EnqueueRun --implicit-check-not=__udon_onnx_resolved --implicit-check-not=udononnxSession %s
 // RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-attach-onnx-host-metadata --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source --canonicalize %s | %vrc-opt --vrc-assign-synthesized-kernel-ids=first-id=4096 --vrc-prove-synthesized-gather-kernels | %FileCheck %s --check-prefix=PROVEN
 
 // The decoder attention layer of tests/boundary/onnx_bounded_kv_fixture.py
@@ -91,7 +91,8 @@ module attributes {udoncl.dimension_bounds = {past = 8 : i64}, udoncl.static_ten
 
 
 // past_key and present_key, past_value and present_value are in-place
-// Concat pairs. The session run rejects one buffer bound with two pitches.
+// Concat pairs. The session run, the only generated run, resolves the bound
+// buffers itself and rejects one buffer bound with two pitches.
 // CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK: udonhl.address_of @__udon_onnx_dimension_0
 // CHECK-NEXT: "udonhl.store"
@@ -107,7 +108,7 @@ module attributes {udoncl.dimension_bounds = {past = 8 : i64}, udoncl.static_ten
 // A run writes only the new rows (fused_1, which takes neither the past nor
 // its pitch) when the session bound the past and the present to one buffer,
 // and the whole present (fused_0) otherwise.
-// CHECK-LABEL: func.func private @__udononnx_enqueue_resolved_run(
+// CHECK: call @clFlush
 // CHECK: %[[SAME:.*]] = arith.cmpi eq, %[[PAST:[0-9]+]], %[[PRESENT:[0-9]+]] : i32
 // CHECK: cf.cond_br %[[SAME]]
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%{{.*}}, %[[PRESENT]], %{{.*}}, %{{.*}}) : (i32, i32, i32, i32)

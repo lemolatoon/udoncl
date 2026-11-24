@@ -165,42 +165,11 @@ resolveFunctionArgumentResource(::vrc::vrc::DispatchOp dispatch,
   return identity;
 }
 
-/// The single store into the resolved-token cache global `load` reads, or
-/// null when `load` does not read such a cache. A global marked
-/// `vrc.resolved_token_cache` holds the physical token one resolve produced;
-/// its producer reads it only once that resolve succeeded (the ONNX Device run
-/// keeps it under the binding version it was resolved for), so the token has
-/// the identity of the resolve whose result is stored.
-::vrc::udonhl::StoreOp resolvedTokenCacheStore(::vrc::udonhl::LoadOp load) {
-  auto address = load.getPointer().getDefiningOp<::vrc::udonhl::AddressOfOp>();
-  if (!address)
-    return {};
-  auto module = load->getParentOfType<ModuleOp>();
-  auto global =
-      module.lookupSymbol<::vrc::udonhl::GlobalOp>(address.getGlobalAttr());
-  if (!global || !global->hasAttr("vrc.resolved_token_cache"))
-    return {};
-  ::vrc::udonhl::StoreOp found;
-  bool unique = true;
-  module.walk([&](::vrc::udonhl::StoreOp store) {
-    auto target =
-        store.getPointer().getDefiningOp<::vrc::udonhl::AddressOfOp>();
-    if (!target || target.getGlobalAttr() != address.getGlobalAttr())
-      return;
-    unique &= !found;
-    found = store;
-  });
-  return unique ? found : ::vrc::udonhl::StoreOp();
-}
-
 FailureOr<std::optional<DictionaryAttr>>
 resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
                         int32_t operandIndex, StringAttr access,
                         DominanceInfo &dominance, Builder &builder) {
   llvm::DenseSet<Value> visited;
-  // The operation the resolve must dominate: the dispatch, or the store into
-  // a resolved-token cache the dispatch reads.
-  Operation *consumer = dispatch;
   while (visited.insert(value).second) {
     if (auto allocation = value.getDefiningOp<::vrc::vrc::BufferAllocOp>()) {
       auto logicalId =
@@ -267,12 +236,7 @@ resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
     auto load = value.getDefiningOp<::vrc::udonhl::LoadOp>();
     if (!load)
       break;
-    if (::vrc::udonhl::StoreOp cached = resolvedTokenCacheStore(load)) {
-      consumer = cached;
-      value = cached.getValue();
-      continue;
-    }
-    auto function = consumer->getParentOfType<func::FuncOp>();
+    auto function = dispatch->getParentOfType<func::FuncOp>();
     SmallVector<func::CallOp> candidates;
     function.walk([&](func::CallOp call) {
       if (call.getCallee() == "udonclResolvePhysicalBuffer" &&
@@ -283,7 +247,7 @@ resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
       return dispatch.emitError(
           "static dispatch physical output cell must have one resolve writer");
     func::CallOp resolve = candidates.front();
-    if (!successPathDominates(resolve, consumer, dominance))
+    if (!successPathDominates(resolve, dispatch, dominance))
       return dispatch.emitError(
           "static dispatch requires a dominating successful buffer resolve");
     auto identity = resolveSingletonResource(resolve, 0, false);

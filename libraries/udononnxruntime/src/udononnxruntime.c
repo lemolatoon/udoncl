@@ -78,7 +78,7 @@ udononnxStatus_t udononnxCreateSession(cl_context context,
   status = udononnxGetModel(0, &model);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  status = udononnxGeneratedCreate(model->graph_id, 0, queue);
+  status = udononnxGeneratedCreate(model->graph_id, queue);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   udononnx_session.model = model;
@@ -209,7 +209,7 @@ udononnxStatus_t udononnxReleaseSession(udononnxSession_t *session) {
   udononnxStatus_t status = udononnxCheckSession(session);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  status = udononnxGeneratedDispose(session->model->graph_id, 0);
+  status = udononnxGeneratedDispose(session->model->graph_id);
   session->model = 0;
   session->context = 0;
   session->queue = 0;

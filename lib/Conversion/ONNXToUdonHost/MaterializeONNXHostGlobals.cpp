@@ -242,13 +242,6 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
     if (failed(reserve(onnxHostDeviceBufferSymbol(tensorIndex))) ||
         failed(reserve(onnxHostDeviceBufferOwnedSymbol(tensorIndex))))
       return failure();
-  if (plan.deviceGraph) {
-    if (failed(reserve(onnxHostResolvedBindingVersionSymbol)))
-      return failure();
-    for (unsigned tensorIndex : resolvedRunTensors(graph, plan))
-      if (failed(reserve(onnxHostResolvedTokenSymbol(tensorIndex))))
-        return failure();
-  }
   if (plan.deviceGraph && plan.operatorScratchBytes &&
       (failed(reserve(onnxHostOperatorScratchSymbol)) ||
        failed(reserve(onnxHostOperatorScratchOwnedSymbol))))
@@ -341,19 +334,6 @@ struct MaterializeONNXHostGlobalsPass
     if (plan->deviceGraph && plan->operatorScratchBytes) {
       createPointerGlobal(module, onnxHostOperatorScratchSymbol);
       createI32Global(module, onnxHostOperatorScratchOwnedSymbol);
-    }
-    if (plan->deviceGraph) {
-      createI32Global(module, onnxHostResolvedBindingVersionSymbol);
-      // The run keeps the physical token of each bound or owned buffer here
-      // under the binding version it was resolved for; see
-      // FinalizeONNXHost. Static resource analyses trace a token read from
-      // such a cache to the resolve that stored it.
-      for (unsigned tensorIndex : resolvedRunTensors(*graph, *plan)) {
-        std::string symbol = onnxHostResolvedTokenSymbol(tensorIndex);
-        createI32Global(module, symbol);
-        module.lookupSymbol(symbol)->setAttr(
-            "vrc.resolved_token_cache", UnitAttr::get(module.getContext()));
-      }
     }
     module->setAttr(onnxHostGlobalsMaterializedAttr,
                     UnitAttr::get(module.getContext()));

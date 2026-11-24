@@ -48,7 +48,7 @@ func.func @main_graph(
 // PLAN: device_fusion_roots = array<i64: 1, 1, 2>
 // PLAN-SAME: operator_scratch_bytes = 65536
 
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[SCORES:[^,]*]], %[[MASK:[^,]*]], %[[SCRATCH:[^)]*]]) : (i32, i32, i32) -> i32
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[SCORES]], %[[MASK]], %[[SCRATCH]], %{{[^,]*}}) : (i32, i32, i32, i32) -> i32
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[SCORES]], %[[SCRATCH]]) : (i32, i32) -> i32

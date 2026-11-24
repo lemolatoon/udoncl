@@ -51,7 +51,7 @@ func.func @main_graph(
 }
 
 // m, n, k, the strides of the three operands and the batch count.
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK-DAG: %[[C8:.*]] = arith.constant 8 : i32
 // CHECK-DAG: %[[C64:.*]] = arith.constant 64 : i32
 // CHECK-DAG: %[[C4096:.*]] = arith.constant 4096 : i32

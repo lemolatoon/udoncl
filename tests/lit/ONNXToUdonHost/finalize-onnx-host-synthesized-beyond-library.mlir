@@ -93,7 +93,7 @@ module {
 
 // The Concat writes the present that the scaled keys read; the statistics
 // and elementwise passes of the Softmax follow.
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK-NOT: call @__vrc_opencl_dispatch_udononnx_transpose
 // CHECK-NOT: call @__vrc_opencl_dispatch_udonaten
 // CHECK-NOT: call @__vrc_opencl_dispatch_udondnn
@@ -113,7 +113,7 @@ module {
 // PROVEN-COUNT-4: vrc.gather_proven
 
 // UNFUSED: device_graph = true
-// UNFUSED-LABEL: func.func @udononnxGeneratedEnqueueRun
+// UNFUSED-LABEL: func.func @udononnxGeneratedRun(
 // UNFUSED-NOT: call @__vrc_opencl_dispatch_udononnx_transpose
 // UNFUSED-NOT: call @__vrc_opencl_dispatch_udonaten
 // UNFUSED-NOT: call @__vrc_opencl_dispatch_udondnn

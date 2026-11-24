@@ -35,10 +35,8 @@ udononnxStatus_t udononnxGeneratedGetModel(size_t index,
 }
 
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxTransitionalSession_t *session,
                                          cl_command_queue queue) {
   (void)graph_id;
-  (void)session;
   (void)queue;
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }
@@ -63,11 +61,8 @@ udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 
-udononnxStatus_t
-udononnxGeneratedDispose(uint32_t graph_id,
-                         udononnxTransitionalSession_t *session) {
+udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id) {
   (void)graph_id;
-  (void)session;
   return UDONONNX_STATUS_SUCCESS;
 }
 

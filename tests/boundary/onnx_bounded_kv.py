@@ -40,7 +40,7 @@ if output.exists():
 output.mkdir(parents=True)
 root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from onnx_host_interpreter import Host, NULL, Pointer  # noqa: E402
+from onnx_host_interpreter import Host, Pointer  # noqa: E402
 
 environment = dict(os.environ)
 if sys.platform != "win32":
@@ -215,7 +215,7 @@ class Session:
         self.lines = [f"vertex {vertex_shader}", *kernels]
         self.saves = []
         self.queue = Pointer("opaque", 0x51)
-        assert host.call("udononnxGeneratedCreate", 0, NULL, self.queue) == 0
+        assert host.call("udononnxGeneratedCreate", 0, self.queue) == 0
         self.flush()
 
     def flush(self):

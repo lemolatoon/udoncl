@@ -56,7 +56,7 @@ func.func @main_graph(
       : tensor<1x4x1x8xf32>, tensor<1x4x1x8xf32>, tensor<1x4x1x8xf32>
 }
 
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK-NOT: call @__vrc_opencl_dispatch_udondnn_large_op_tensor
 
 // x * cos + y * sin
@@ -92,7 +92,7 @@ func.func @main_graph(
 // CHECK: arith.addf %[[X_SIN]], %[[COS_VALUE]] : f32
 
 // Unfused, every Mul and Add is its own OpTensor dispatch with beta 0.
-// UNFUSED-LABEL: func.func @udononnxGeneratedEnqueueRun
+// UNFUSED-LABEL: func.func @udononnxGeneratedRun(
 // UNFUSED-COUNT-7: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(
 // UNFUSED-NOT: call @__vrc_opencl_dispatch_
 // UNFUSED-NOT: gpu.module

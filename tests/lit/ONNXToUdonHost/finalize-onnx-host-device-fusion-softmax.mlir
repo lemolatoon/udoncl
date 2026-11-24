@@ -60,7 +60,7 @@ func.func @main_graph(
 
 // PLAN: device_fusion_roots = array<i64: 1, 1, 2, 3, 4>
 
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[SCORES:[^,]*]], %[[MASK:[^,]*]], %{{[^,]*}}) : (i32, i32, i32) -> i32
 // CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor
 // CHECK: call @__vrc_opencl_dispatch_udondnn_arena_softmax
@@ -115,7 +115,7 @@ func.func @main_graph(
 // PROVEN-NEXT: gpu.func @udononnx_fused_0({{.*}}vrc.gather_proven, vrc.kernel_id = 4096 : i32
 // PROVEN-NOT: gpu.module
 
-// UNFUSED-LABEL: func.func @udononnxGeneratedEnqueueRun
+// UNFUSED-LABEL: func.func @udononnxGeneratedRun(
 // UNFUSED: call @__vrc_opencl_dispatch_udondnn_large_op_tensor
 // UNFUSED: call @__vrc_opencl_dispatch_udondnn_arena_softmax
 // UNFUSED: call @__vrc_opencl_dispatch_udondnn_large_op_tensor

@@ -272,7 +272,7 @@ func.func @main_graph(
 // reshaped, rows; nine Adds; seven Muls; 66 Sins.
 // PLAN: device_fusion_roots = array<i64: 0, 1, 2, 3, 4, 5, 6, 8, 8, 15, 15, 15, 15, 15, 15, 15, 18, 18, 18, 22, 22, 22, 22, 24, 24, {{(88, ){63}88>}}
 
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
 // CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[X:[^,]*]], %[[Y:[^,]*]], %[[X]], %[[SHARED:[^,]*]],
 // CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[SHARED]], %[[X]], %[[SHARED]], %{{[^,]*}},
 // CHECK: call @__vrc_opencl_dispatch_udononnx_unary_f32(%[[SHARED]], %{{[^,]*}},

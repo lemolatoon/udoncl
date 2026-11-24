@@ -203,7 +203,7 @@ assert "func.func @udon_onnx_session_read_output_float" not in host.stdout
 assert "func.func @udononnxGeneratedCreate" in host.stdout
 # Creating the session enqueues nothing: no initialization marker.
 assert "udononnxGeneratedEnqueueInitialize" not in host.stdout
-assert "func.func @udononnxGeneratedEnqueueRun" in host.stdout
+assert "udononnxGeneratedEnqueueRun" not in host.stdout
 assert "func.func @udononnxGeneratedDispose" in host.stdout
 assert "func.func @udononnxGeneratedGetModelCount" in host.stdout
 assert "func.func @udononnxGeneratedGetModel" in host.stdout
@@ -219,12 +219,16 @@ assert "vrc.static_public_resource_binding" not in host.stdout
 assert 'resource_source = "call_allocation"' not in host.stdout
 assert "func.func @udononnxGeneratedBindMemory" in host.stdout
 assert "func.func @udononnxGeneratedRun" in host.stdout
-assert "call @udononnxSessionResolveInput" in host.stdout
-assert "call @udononnxSessionResolveOutput" in host.stdout
+# The run resolves the bound buffers itself: no binding table, no cache of
+# resolved tokens.
+assert "udononnxSession" not in host.stdout
+assert "__udon_onnx_resolved_" not in host.stdout
+assert "call @udonclResolvePhysicalBuffer" in host.stdout
 assert "call @clEnqueueMarkerWithWaitList" in host.stdout
-# Without a wait list the run only issues what the caller enqueued before
-# it (clFlush); it waits for a marker only over a caller wait list.
+# The run only issues what the caller enqueued before it (clFlush) and waits
+# for nothing.
 assert host.stdout.count("call @clFlush") == 1
+assert "call @clWaitForEvents" not in host.stdout
 assert "call @__vrc_opencl_dispatch_udondnn_large_op_tensor" in host.stdout
 assert "udoncl.onnx_lowering = \"library-calls-v2\"" in host.stdout
 assert "udoncl.onnx_device_graph = true" in host.stdout
