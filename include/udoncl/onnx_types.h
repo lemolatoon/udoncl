@@ -3,7 +3,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <udoncl/device_memory.h>
 #include <udoncl/udon_abi_layout.h>
 
 #ifdef __cplusplus
@@ -28,24 +27,6 @@ typedef enum udononnxStatus {
   UDONONNX_STATUS_INVALID_STATE = 12,
   UDONONNX_STATUS_CAPACITY_EXCEEDED = 13
 } udononnxStatus_t;
-
-/* A tensor descriptor is a non-owning logical view. The session or caller
- * owns the device allocation referenced by storage. */
-typedef struct udononnxTensor {
-  udonclBufferView_t storage;
-  uint32_t rank;
-  int64_t dimensions[UDONONNX_MAX_TENSOR_RANK];
-} udononnxTensor_t;
-
-/* A -1 dimension is dynamic and requires a positive value at the matching
- * position in dimension_bounds. Static dimensions ignore the bound. */
-typedef struct udononnxTensorMetadata {
-  const char *name;
-  udonclDataType_t data_type;
-  uint32_t rank;
-  const int64_t *dimensions;
-  const int64_t *dimension_bounds;
-} udononnxTensorMetadata_t;
 
 #ifdef __cplusplus
 }

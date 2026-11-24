@@ -1,6 +1,7 @@
 #ifndef UDONONNXOPERATORS_H
 #define UDONONNXOPERATORS_H
 
+#include <udoncl/device_memory.h>
 #include <udoncl/onnx_types.h>
 
 #ifdef __cplusplus

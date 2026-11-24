@@ -30,7 +30,7 @@ endif()
 if(NOT TARGET udononnxruntime_host)
   udoncl_add_host_library(udononnxruntime_host
     "${_UDONONNXRUNTIME_ROOT}/src/udononnxruntime.c"
-    "${_UDONONNXRUNTIME_ROOT}/src/onnx_binding_abi.c"
+    "${_UDONONNXRUNTIME_ROOT}/src/udononnx_transitional.c"
     "${_UDONONNXRUNTIME_DEVICE_MEMORY}")
   target_compile_definitions(udononnxruntime_host INTERFACE
     CL_TARGET_OPENCL_VERSION=120)
@@ -50,8 +50,4 @@ endif()
 
 set(UdonONNXRuntime_VERSION 0.1.0)
 set(UdonONNXRuntime_INCLUDE_DIRS "${_UDONONNXRUNTIME_INCLUDE_DIR}")
-# udononnxruntime_internal.h: the model registry, tensor helpers and the
-# index-bound legacy session. Not public API; only Hosts that still use the
-# legacy session add it.
-set(UdonONNXRuntime_INTERNAL_INCLUDE_DIRS "${_UDONONNXRUNTIME_ROOT}/src")
 set(UdonONNXRuntime_FOUND TRUE)

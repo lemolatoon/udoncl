@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <VRC/Runtime/OpenCL/Backend.h>
-#include <udononnxruntime_internal.h>
+#include <udononnx_transitional.h>
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -50,7 +50,7 @@ udononnxStatus_t udononnxGeneratedGetModel(size_t index,
 }
 
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxLegacySession_t *session,
+                                         udononnxTransitionalSession_t *session,
                                          cl_command_queue queue) {
   if (graph_id != active_model->graph_id || session || !queue)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -81,8 +81,9 @@ udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
              : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
-udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxLegacySession_t *session) {
+udononnxStatus_t
+udononnxGeneratedDispose(uint32_t graph_id,
+                         udononnxTransitionalSession_t *session) {
   if (graph_id != active_model->graph_id || session)
     return UDONONNX_STATUS_INVALID_VALUE;
   ++disposes;
@@ -91,10 +92,11 @@ udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
   return dispose_status;
 }
 
-/* The legacy session is not used here. */
+/* The transitional binding is not used here. */
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
+    uint32_t graph_id, udononnxTransitionalSession_t *session,
+    cl_command_queue queue, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *completion) {
   (void)graph_id;
   (void)session;
   (void)queue;
@@ -105,7 +107,8 @@ udononnxStatus_t udononnxGeneratedEnqueueInitialize(
 }
 
 udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
+udononnxGeneratedEnqueueRun(uint32_t graph_id,
+                            udononnxTransitionalSession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion) {
   (void)graph_id;

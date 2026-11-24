@@ -67,7 +67,7 @@ add_executable(opencl-aot-runtime
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
-  "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/onnx_binding_abi.c"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnx_transitional.c"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/matmul_nbits.c")
 target_compile_features(opencl-aot-runtime PRIVATE c_std_11)
 set_target_properties(opencl-aot-runtime PROPERTIES
@@ -137,7 +137,7 @@ if(TARGET VRCOpenCLRuntime)
   add_executable(udononnx-runtime
     runtime/onnx_runtime.c
     "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
-    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/onnx_binding_abi.c")
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnx_transitional.c")
   target_compile_features(udononnx-runtime PRIVATE c_std_11)
   set_target_properties(udononnx-runtime PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
@@ -157,7 +157,7 @@ if(TARGET VRCOpenCLRuntime)
     runtime/udononnx_api.c
     runtime/udononnx_api_conformance.c
     "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
-    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/onnx_binding_abi.c")
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnx_transitional.c")
   target_compile_features(udononnx-api PRIVATE c_std_11)
   set_target_properties(udononnx-api PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)

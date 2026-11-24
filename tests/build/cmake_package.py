@@ -322,11 +322,13 @@ def main():
     assert (
         install / 'share/udononnxruntime/src/udononnxruntime.c'
     ).is_file()
-    # The internal header sits with the runtime sources, not in include/.
-    assert (
-        install / 'share/udononnxruntime/src/udononnxruntime_internal.h'
-    ).is_file()
-    assert not (install / 'include/udononnxruntime_internal.h').exists()
+    # The internal headers sit with the runtime sources, not in include/;
+    # only udononnxruntime.h and the status enum are public.
+    for internal in ['udononnxruntime_internal.h', 'udononnx_transitional.h']:
+        assert (install / 'share/udononnxruntime/src' / internal).is_file()
+        assert not (install / 'include' / internal).exists()
+    for removed in ['onnx_binding_abi.h', 'onnx_generated_binding.h']:
+        assert not (install / 'include/udoncl' / removed).exists()
     assert (
         install / 'share/udontokenizers/src/udontokenizers.c'
     ).is_file()
@@ -345,23 +347,20 @@ def main():
     (runtime_source / 'probe.c').write_text(
         '#include <stdint.h>\n'
         '#include <udoncl/export.h>\n'
-        '#include <udononnxruntime_internal.h>\n'
+        '#include <udononnxruntime.h>\n'
         'UDONCL_PROGRAM("onnx_runtime_contract");\n'
-        'static const int64_t dimensions[1] = {1};\n'
-        'static udononnxLegacySession_t session;\n'
-        'static udononnxTensor_t input_bindings[1];\n'
-        'static udononnxTensor_t output_bindings[1];\n'
-        'static udononnxTensorMetadata_t inputs[1];\n'
-        'static udononnxTensorMetadata_t outputs[1];\n'
-        'static udononnxModel_t models[1];\n'
+        '/* The generated dispatchers of a model Host, stubbed: the probe only\n'
+        '   compiles a Host on the public session API. */\n'
+        'struct udononnxModel;\n'
+        'struct udononnxTransitionalSession;\n'
         'size_t udononnxGeneratedGetModelCount(void) { return 0; }\n'
         'udononnxStatus_t udononnxGeneratedGetModel(\n'
-        '    size_t index, const udononnxModel_t **model) {\n'
+        '    size_t index, const struct udononnxModel **model) {\n'
         '  (void)index; if (model) *model = 0;\n'
         '  return UDONONNX_STATUS_INVALID_VALUE;\n'
         '}\n'
         'udononnxStatus_t udononnxGeneratedEnqueueInitialize(\n'
-        '    uint32_t graph_id, udononnxLegacySession_t *value,\n'
+        '    uint32_t graph_id, struct udononnxTransitionalSession *value,\n'
         '    cl_command_queue queue, cl_uint wait_count,\n'
         '    const cl_event *wait_list, cl_event *completion) {\n'
         '  (void)graph_id; (void)value; (void)queue; (void)wait_count;\n'
@@ -369,7 +368,7 @@ def main():
         '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
         '}\n'
         'udononnxStatus_t udononnxGeneratedEnqueueRun(\n'
-        '    uint32_t graph_id, udononnxLegacySession_t *value,\n'
+        '    uint32_t graph_id, struct udononnxTransitionalSession *value,\n'
         '    cl_command_queue queue, cl_uint wait_count,\n'
         '    const cl_event *wait_list, cl_event *completion) {\n'
         '  (void)graph_id; (void)value; (void)queue; (void)wait_count;\n'
@@ -377,7 +376,7 @@ def main():
         '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
         '}\n'
         'udononnxStatus_t udononnxGeneratedCreate(\n'
-        '    uint32_t graph_id, udononnxLegacySession_t *value,\n'
+        '    uint32_t graph_id, struct udononnxTransitionalSession *value,\n'
         '    cl_command_queue queue) {\n'
         '  (void)graph_id; (void)value; (void)queue;\n'
         '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
@@ -395,34 +394,16 @@ def main():
         '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
         '}\n'
         'udononnxStatus_t udononnxGeneratedDispose(\n'
-        '    uint32_t graph_id, udononnxLegacySession_t *value) {\n'
+        '    uint32_t graph_id, struct udononnxTransitionalSession *value) {\n'
         '  (void)graph_id; (void)value;\n'
         '  return UDONONNX_STATUS_SUCCESS;\n'
         '}\n'
         'UDONCL_EXPORT int contract_probe(int context_value) {\n'
-        '  const udononnxModel_t *model = 0;\n'
-        '  inputs[0].name = "input";\n'
-        '  inputs[0].data_type = UDONCL_DATA_FLOAT32;\n'
-        '  inputs[0].rank = 1;\n'
-        '  inputs[0].dimensions = dimensions;\n'
-        '  inputs[0].dimension_bounds = 0;\n'
-        '  outputs[0].name = "output";\n'
-        '  outputs[0].data_type = UDONCL_DATA_FLOAT32;\n'
-        '  outputs[0].rank = 1;\n'
-        '  outputs[0].dimensions = dimensions;\n'
-        '  outputs[0].dimension_bounds = 0;\n'
-        '  models[0].name = "probe";\n'
-        '  models[0].graph_id = 1;\n'
-        '  models[0].inputs = inputs;\n'
-        '  models[0].input_count = 1;\n'
-        '  models[0].outputs = outputs;\n'
-        '  models[0].output_count = 1;\n'
-        '  udononnxStatus_t status =\n'
-        '      udononnxFindModel(models, 1, "probe", &model);\n'
-        '  if (status != UDONONNX_STATUS_SUCCESS) return status;\n'
-        '  return udononnxLegacySessionCreate(\n'
-        '      &session, model, (cl_context)(uintptr_t)(uint32_t)context_value,\n'
-        '      input_bindings, output_bindings);\n'
+        '  udononnxSession_t *session = 0;\n'
+        '  cl_context context = (cl_context)(uintptr_t)(uint32_t)context_value;\n'
+        '  return udononnxCreateSession(\n'
+        '      context, (cl_command_queue)(uintptr_t)(uint32_t)context_value,\n'
+        '      &session);\n'
         '}\n',
         encoding='utf-8',
     )
@@ -433,8 +414,7 @@ def main():
         'find_package(UdonONNXRuntime 0.1 REQUIRED CONFIG)\n'
         'udoncl_add_host_library(runtime_probe_host probe.c)\n'
         'target_include_directories(runtime_probe_host INTERFACE\n'
-        '  "${UdonONNXRuntime_INCLUDE_DIRS}"\n'
-        '  "${UdonONNXRuntime_INTERNAL_INCLUDE_DIRS}")\n'
+        '  "${UdonONNXRuntime_INCLUDE_DIRS}")\n'
         # No config file: UDONCL_PROGRAM names the program, and the
         # binding and budget settings are arguments.
         'udoncl_add_unity_library(runtime-probe\n'

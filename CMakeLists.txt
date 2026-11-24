@@ -99,7 +99,6 @@ install(FILES
   include/udoncl/string.h
   include/udoncl/udon_abi_layout.h
   include/udoncl/device_memory.h
-  include/udoncl/onnx_binding_abi.h
   include/udoncl/onnx_types.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
@@ -151,8 +150,9 @@ install(FILES libraries/udononnxoperators/src/matmul_nbits.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxoperators/src"
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udononnxruntime/src/udononnxruntime.c
-              libraries/udononnxruntime/src/onnx_binding_abi.c
               libraries/udononnxruntime/src/udononnxruntime_internal.h
+              libraries/udononnxruntime/src/udononnx_transitional.c
+              libraries/udononnxruntime/src/udononnx_transitional.h
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxruntime/src"
   COMPONENT UdonCLCompiler)
 install(DIRECTORY libraries/udononnxoperators/device

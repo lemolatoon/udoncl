@@ -1,10 +1,15 @@
+/* Behavior of the transitional sequence-state binding runtime
+ * (udononnx_transitional.h) on the native OpenCL runtime: the binding-state
+ * functions the generated __udononnx_transitional_* binding of the TinyLlama
+ * Conversation and Chat Hosts calls. The generated dispatchers of the model
+ * are stubbed: initialize enqueues one write, and the run copies the bound
+ * input to the bound output. */
 #include <CL/cl.h>
 #include <stddef.h>
 #include <string.h>
 #include <VRC/Runtime/OpenCL/Backend.h>
 #include <udoncl/device_memory.h>
-#include <udoncl/onnx_binding_abi.h>
-#include <udononnxruntime_internal.h>
+#include <udononnx_transitional.h>
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -14,21 +19,29 @@
 
 static cl_mem initialization_buffer;
 
-static const int64_t generated_dimensions[1] = {1};
-static const udononnxTensorMetadata_t generated_inputs[1] = {
-    {"generated_input", UDONCL_DATA_FLOAT32, 1, generated_dimensions, 0}};
-static const udononnxTensorMetadata_t generated_outputs[1] = {
-    {"generated_output", UDONCL_DATA_FLOAT32, 1, generated_dimensions, 0}};
-static const udononnxModel_t generated_model = {
-    "generated", 7, generated_inputs, 1, generated_outputs, 1};
+/* Model 0 (graph 7): input "input" and outputs "output" and "optional_aux",
+ * float32 [2, 2]. Model 1 (graph 8): the empty past input of a prefill graph,
+ * [1, 4, 0, 64]. */
+static const int64_t copy_dimensions[2] = {2, 2};
+static const int64_t empty_dimensions[4] = {1, 4, 0, 64};
+static const udononnxTensorMetadata_t copy_inputs[1] = {
+    {"input", UDONCL_DATA_FLOAT32, 2, copy_dimensions, 0}};
+static const udononnxTensorMetadata_t copy_outputs[2] = {
+    {"output", UDONCL_DATA_FLOAT32, 2, copy_dimensions, 0},
+    {"optional_aux", UDONCL_DATA_FLOAT32, 2, copy_dimensions, 0}};
+static const udononnxTensorMetadata_t empty_inputs[1] = {
+    {"past_key_values.0.key", UDONCL_DATA_FLOAT32, 4, empty_dimensions, 0}};
+static const udononnxModel_t models[2] = {
+    {"copy", 7, copy_inputs, 1, copy_outputs, 2},
+    {"empty-past", 8, empty_inputs, 1, 0, 0}};
 
-size_t udononnxGeneratedGetModelCount(void) { return 1; }
+size_t udononnxGeneratedGetModelCount(void) { return 2; }
 
 udononnxStatus_t udononnxGeneratedGetModel(size_t index,
                                            const udononnxModel_t **model) {
-  if (!model || index != 0)
+  if (!model || index >= 2)
     return UDONONNX_STATUS_INVALID_VALUE;
-  *model = &generated_model;
+  *model = &models[index];
   return UDONONNX_STATUS_SUCCESS;
 }
 
@@ -76,11 +89,12 @@ int udoncl_cl_draw(uint32_t buffer, uint32_t generation,
 }
 
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
+    uint32_t graph_id, udononnxTransitionalSession_t *session,
+    cl_command_queue queue, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *completion) {
   static const unsigned char initialized = 1;
   cl_int error;
-  if (graph_id != 7 || !session || initialization_buffer)
+  if ((graph_id != 7 && graph_id != 8) || !session || initialization_buffer)
     return UDONONNX_STATUS_INVALID_VALUE;
   initialization_buffer =
       clCreateBuffer(session->context, CL_MEM_READ_WRITE, 1, 0, &error);
@@ -93,7 +107,8 @@ udononnxStatus_t udononnxGeneratedEnqueueInitialize(
 }
 
 udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
+udononnxGeneratedEnqueueRun(uint32_t graph_id,
+                            udononnxTransitionalSession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion) {
   cl_mem input, output;
@@ -101,12 +116,10 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
   cl_int error;
   if (graph_id != 7 || !session)
     return UDONONNX_STATUS_INVALID_VALUE;
-  if (udonclBufferViewResolve(session->input_bindings[0].storage, &input,
-                              &input_offset,
-                              &input_bytes) != UDONCL_STATUS_SUCCESS ||
-      udonclBufferViewResolve(session->output_bindings[0].storage, &output,
-                              &output_offset,
-                              &output_bytes) != UDONCL_STATUS_SUCCESS ||
+  if (udononnxSessionResolveInput(session, 0, &input, &input_offset,
+                                  &input_bytes) != UDONONNX_STATUS_SUCCESS ||
+      udononnxSessionResolveOutput(session, 0, &output, &output_offset,
+                                   &output_bytes) != UDONONNX_STATUS_SUCCESS ||
       input_bytes != output_bytes)
     return UDONONNX_STATUS_INVALID_VALUE;
   error = clEnqueueCopyBuffer(queue, input, output, input_offset, output_offset,
@@ -115,10 +128,11 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
                              : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
-udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxLegacySession_t *session) {
+udononnxStatus_t
+udononnxGeneratedDispose(uint32_t graph_id,
+                         udononnxTransitionalSession_t *session) {
   cl_int error;
-  if (graph_id != 7 || !session)
+  if ((graph_id != 7 && graph_id != 8) || !session)
     return UDONONNX_STATUS_INVALID_VALUE;
   if (!initialization_buffer)
     return UDONONNX_STATUS_SUCCESS;
@@ -129,8 +143,9 @@ udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
   return UDONONNX_STATUS_SUCCESS;
 }
 
+/* The session API is not used here. */
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxLegacySession_t *session,
+                                         udononnxTransitionalSession_t *session,
                                          cl_command_queue queue) {
   (void)graph_id;
   (void)session;
@@ -155,60 +170,66 @@ udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 
+/* Writes the binding-table entry the generated bind-all writes for a tensor
+ * of `rank` dimensions viewed in `buffer`. */
+static int bind(udononnxTensor_t *entry, udonclBufferHandle_t buffer,
+                size_t byte_offset, size_t elements, uint32_t rank,
+                const int64_t *dimensions) {
+  uint32_t axis;
+  if (udonclDeviceBufferView(buffer, byte_offset, elements, UDONCL_DATA_FLOAT32,
+                             &entry->storage) != UDONCL_STATUS_SUCCESS)
+    return 0;
+  entry->rank = rank;
+  for (axis = 0; axis < UDONONNX_MAX_TENSOR_RANK; ++axis)
+    entry->dimensions[axis] = axis < rank ? dimensions[axis] : 0;
+  return 1;
+}
+
+/* Initializes the binding in `state`: initialize, wait, complete. */
+static int initialize(void *state) {
+  cl_event completion = 0;
+  if (udononnxBindingStateEnqueueInitialize(state, 0, 0, &completion) !=
+          UDONONNX_STATUS_SUCCESS ||
+      !completion || clWaitForEvents(1, &completion) != CL_SUCCESS ||
+      udononnxBindingStateCompleteEvent(state, completion,
+                                        UDONONNX_STATUS_SUCCESS) !=
+          UDONONNX_STATUS_SUCCESS)
+    return 0;
+  return clReleaseEvent(completion) == CL_SUCCESS;
+}
+
+/* Runs the binding in `state` to completion. */
+static udononnxStatus_t run(void *state) {
+  cl_event completion = 0;
+  udononnxStatus_t status =
+      udononnxBindingStateEnqueueRun(state, 0, 0, &completion);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!completion || clWaitForEvents(1, &completion) != CL_SUCCESS)
+    return UDONONNX_STATUS_EXECUTION_FAILURE;
+  status = udononnxBindingStateCompleteEvent(state, completion,
+                                             UDONONNX_STATUS_SUCCESS);
+  return clReleaseEvent(completion) == CL_SUCCESS
+             ? status
+             : UDONONNX_STATUS_OPENCL_ERROR;
+}
+
 int main(void) {
   cl_platform_id platform;
   cl_device_id device;
   cl_context context, other_context;
-  cl_command_queue queue, other_queue;
+  cl_command_queue queue, other_queue, binding_queue = 0;
   cl_int error;
-  cl_event completion = 0, write = 0, run = 0;
-  cl_mem resolved_memory = 0;
-  size_t resolved_offset = 0, resolved_bytes = 0;
-  udonclBufferHandle_t input_buffer = {0, 0}, output_buffer = {0, 0},
-                       foreign_buffer = {0, 0}, binding_input = {0, 0},
-                       binding_output = {0, 0}, binding_read_write = {0, 0};
-  udonclBufferView_t input_view, output_view, foreign_view;
-  udonclBufferView_t empty_view;
-  udononnxTensor_t input_tensor = {0}, output_tensor = {0},
-                   foreign_tensor = {0}, empty_tensor = {0};
-  udononnxTensor_t input_bindings[1], output_bindings[2];
-  udononnxLegacySession_t session = {0};
-  const udononnxModel_t *selected = 0;
-  const udononnxModel_t *constructed_model = 0;
-  _Alignas(udononnxTensorMetadata_t) unsigned char
-      metadata_storage[2 * UDONONNX_BINDING_METADATA_STORAGE_BYTES];
-  _Alignas(udononnxModel_t) unsigned char
-      model_storage[UDONONNX_BINDING_MODEL_STORAGE_BYTES];
-  _Alignas(udononnxLegacySession_t) unsigned char
-      binding_state[UDONONNX_BINDING_STATE_STORAGE_BYTES] = {0};
-  _Alignas(udononnxTensor_t) unsigned char
-      binding_inputs[UDONONNX_BINDING_TENSOR_STORAGE_BYTES] = {0};
-  _Alignas(udononnxTensor_t) unsigned char
-      binding_outputs[UDONONNX_BINDING_TENSOR_STORAGE_BYTES] = {0};
-  cl_context binding_context = 0;
-  cl_command_queue binding_queue = 0;
-  udononnxLegacySession_t *binding_session = 0;
-  int64_t dimensions[2] = {2, 2};
-  int64_t empty_dimensions[4] = {1, 4, 0, 64};
-  int32_t binding_dimensions[2] = {2, 2};
-  int32_t generated_binding_dimensions[1] = {1};
-  const udononnxTensorMetadata_t inputs[1] = {
-      {"input", UDONCL_DATA_FLOAT32, 2, dimensions, 0}};
-  const udononnxTensorMetadata_t outputs[2] = {
-      {"output", UDONCL_DATA_FLOAT32, 2, dimensions, 0},
-      {"optional_aux", UDONCL_DATA_FLOAT32, 2, dimensions, 0}};
-  const udononnxModel_t models[1] = {
-      {"synthetic-copy", 7, inputs, 1, outputs, 2}};
-  const udononnxTensorMetadata_t empty_inputs[1] = {
-      {"past_key_values.0.key", UDONCL_DATA_FLOAT32, 4, empty_dimensions, 0}};
-  const udononnxModel_t empty_model = {"empty-past", 7, empty_inputs, 1, 0, 0};
+  cl_event completion = 0, first = 0;
+  cl_mem memory = 0;
+  size_t offset = 0, bytes = 0;
+  udonclBufferHandle_t input = {0, 0}, output = {0, 0}, read_write = {0, 0};
+  udononnxTransitionalSession_t *session = 0;
+  _Alignas(8) unsigned char state[UDONONNX_BINDING_STATE_STORAGE_BYTES] = {0};
+  udononnxTensor_t inputs[1], outputs[2];
   const float source[4] = {1.0f, -2.0f, 3.5f, 9.0f};
   float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-  EXPECT(strcmp(udononnxStatusString(UDONONNX_STATUS_INVALID_STATE),
-                "invalid state") == 0);
-  EXPECT(strcmp(udononnxStatusString(UDONONNX_STATUS_CAPACITY_EXCEEDED),
-                "capacity exceeded") == 0);
+  uint32_t version;
 
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
@@ -221,326 +242,194 @@ int main(void) {
   EXPECT(queue && error == CL_SUCCESS);
   other_queue = clCreateCommandQueue(other_context, device, 0, &error);
   EXPECT(other_queue && error == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionBindInput(&session, 0, input_tensor) ==
-         UDONONNX_STATUS_NOT_INITIALIZED);
-  EXPECT(udononnxGetModelCount() == 1);
-  EXPECT(udononnxGetModel(0, &selected) == UDONONNX_STATUS_SUCCESS &&
-         selected == &generated_model);
-  EXPECT(udononnxFindGeneratedModel("generated", &selected) ==
-             UDONONNX_STATUS_SUCCESS &&
-         selected == &generated_model);
-  EXPECT(udononnxBindingInitializeTensorMetadata(
-             metadata_storage, sizeof(metadata_storage), 0, "input",
-             UDONCL_DATA_FLOAT32, 2, dimensions, 0) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingInitializeTensorMetadata(
-             metadata_storage, sizeof(metadata_storage), 1, "output",
-             UDONCL_DATA_FLOAT32, 2, dimensions, 0) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingInitializeModel(
-             model_storage, sizeof(model_storage), "constructed", 9,
-             metadata_storage, 1,
-             metadata_storage + sizeof(udononnxTensorMetadata_t), 1,
-             &constructed_model) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(constructed_model && constructed_model->graph_id == 9 &&
-         strcmp(constructed_model->inputs[0].name, "input") == 0 &&
-         strcmp(constructed_model->outputs[0].name, "output") == 0);
-  EXPECT(udononnxFindModel(models, 1, "synthetic-copy", &selected) ==
-             UDONONNX_STATUS_SUCCESS &&
-         selected == &models[0]);
-  EXPECT(udononnxLegacySessionCreate(&session, selected, context,
-                                     input_bindings, output_bindings) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionGetInputCount(&session) == 1);
-  EXPECT(udononnxSessionGetOutputCount(&session) == 2);
-  EXPECT(udononnxSessionFindInput(&session, "input") == 0);
-  EXPECT(udononnxSessionFindOutput(&session, "output") == 0);
-  EXPECT(udononnxSessionFindOutput(&session, "optional_aux") == 1);
-  EXPECT(udononnxLegacySessionEnqueueInitialize(
-             &session, queue, 0, 0, &completion) == UDONONNX_STATUS_SUCCESS &&
-         completion);
-  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_BUSY);
-  EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, completion,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
 
-  EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_ONLY, sizeof(source),
-                                  &input_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferCreate(context, CL_MEM_WRITE_ONLY, sizeof(result),
-                                  &output_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferCreate(other_context, CL_MEM_READ_ONLY,
-                                  sizeof(source),
-                                  &foreign_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferView(input_buffer, 0, 4, UDONCL_DATA_FLOAT32,
-                                &input_view) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferView(output_buffer, 0, 4, UDONCL_DATA_FLOAT32,
-                                &output_view) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferView(foreign_buffer, 0, 4, UDONCL_DATA_FLOAT32,
-                                &foreign_view) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferView(input_buffer, sizeof(source), 0,
-                                UDONCL_DATA_FLOAT32,
-                                &empty_view) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclBufferViewResolve(empty_view, &resolved_memory, &resolved_offset,
-                                 &resolved_bytes) == UDONCL_STATUS_SUCCESS &&
-         resolved_memory && resolved_offset == sizeof(source) &&
-         resolved_bytes == 0);
-  EXPECT(udononnxCreateTensor(input_view, 2, dimensions, &input_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxCreateTensor(output_view, 2, dimensions, &output_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxCreateTensor(foreign_view, 2, dimensions, &foreign_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxCreateTensor(empty_view, 4, empty_dimensions, &empty_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxLegacySessionBindInput(&session, 0, foreign_tensor) ==
-         UDONONNX_STATUS_CONTEXT_MISMATCH);
-  EXPECT(udononnxBindingBindInput(&session, 0, input_buffer.slot,
-                                  input_buffer.generation, 0, sizeof(source),
-                                  UDONCL_DATA_FLOAT32, 2, binding_dimensions) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
-         UDONONNX_STATUS_MISSING_BINDING);
-  EXPECT(!run);
-  EXPECT(udononnxLegacySessionBindOutput(&session, 0, input_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
+  /* Create takes a context, a queue of that context and binding tables
+   * large enough for the model. */
+  EXPECT(udononnxBindingStateBeginStaticBind(state) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(udononnxBindingStateCreate(state, sizeof(state), 0, queue, 0, inputs,
+                                    sizeof(inputs), outputs, sizeof(outputs)) ==
          UDONONNX_STATUS_INVALID_VALUE);
-  EXPECT(udononnxBindingBindOutput(
-             &session, 0, output_buffer.slot, output_buffer.generation, 0,
-             sizeof(result), UDONCL_DATA_FLOAT32, 2,
-             binding_dimensions) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionResolveInput(&session, 0, &resolved_memory,
-                                     &resolved_offset, &resolved_bytes) ==
-             UDONONNX_STATUS_SUCCESS &&
-         resolved_memory && resolved_offset == 0 &&
-         resolved_bytes == sizeof(source));
-  EXPECT(udononnxSessionResolveOutput(&session, 1, &resolved_memory,
-                                      &resolved_offset, &resolved_bytes) ==
-         UDONONNX_STATUS_MISSING_BINDING);
-
-  {
-    cl_mem input_memory;
-    size_t offset, bytes;
-    EXPECT(udonclBufferViewResolve(input_view, &input_memory, &offset,
-                                   &bytes) == UDONCL_STATUS_SUCCESS);
-    EXPECT(clEnqueueWriteBuffer(queue, input_memory, CL_FALSE, offset, bytes,
-                                source, 0, 0, &write) == CL_SUCCESS);
-  }
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 1, &write, &run) ==
-             UDONONNX_STATUS_SUCCESS &&
-         run);
-  EXPECT(clReleaseEvent(write) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionBindInput(&session, 0, input_tensor) ==
-         UDONONNX_STATUS_BUSY);
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion) ==
-         UDONONNX_STATUS_BUSY);
-  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_BUSY);
-  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  {
-    cl_mem output_memory;
-    size_t offset, bytes;
-    EXPECT(udonclBufferViewResolve(output_view, &output_memory, &offset,
-                                   &bytes) == UDONCL_STATUS_SUCCESS);
-    EXPECT(clEnqueueReadBuffer(queue, output_memory, CL_TRUE, offset, bytes,
-                               result, 0, 0, 0) == CL_SUCCESS);
-  }
-  EXPECT(memcmp(source, result, sizeof(source)) == 0);
-  EXPECT(udononnxSessionGetLastStatus(&session) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(strcmp(udononnxSessionGetLastError(&session), "success") == 0);
-
-  /* The first run validated the binding table. A run of the unchanged table
-   * only checks that the bound buffers are alive (nothing while no handle was
-   * destroyed); a bind validates the table again, and a destroyed buffer is
-   * still reported. The binding version changes with every bind or
-   * invalidation and never repeats. */
-  EXPECT(session.bindings_validated == 1);
-  {
-    uint32_t version = udononnxSessionBindingVersion(&session);
-    EXPECT(version != 0 &&
-           session.validated_buffer_epoch == udonclDeviceBufferEpoch());
-    EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
-               UDONONNX_STATUS_SUCCESS &&
-           run && session.bindings_validated == 1);
-    EXPECT(udononnxSessionBindingVersion(&session) == version);
-    EXPECT(udononnxSessionBindingVersion(0) == 0);
-  }
-  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  {
-    uint32_t before = udononnxSessionBindingVersion(&session);
-    EXPECT(udononnxLegacySessionBindOutput(&session, 0, input_tensor) ==
-               UDONONNX_STATUS_SUCCESS &&
-           session.bindings_validated == 0);
-    EXPECT(udononnxSessionBindingVersion(&session) != before &&
-           udononnxSessionBindingVersion(&session) != 0);
-  }
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
-             UDONONNX_STATUS_INVALID_VALUE &&
-         session.bindings_validated == 0);
-  EXPECT(udononnxLegacySessionBindOutput(&session, 0, output_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
-             UDONONNX_STATUS_SUCCESS &&
-         run && session.bindings_validated == 1);
-  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  {
-    uint32_t before = udononnxSessionBindingVersion(&session);
-    udononnxSessionInvalidateBindings(&session);
-    EXPECT(session.bindings_validated == 0 &&
-           udononnxSessionBindingVersion(&session) != before);
-  }
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
-             UDONONNX_STATUS_SUCCESS &&
-         run && session.bindings_validated == 1);
-  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  {
-    uint32_t epoch = udonclDeviceBufferEpoch();
-    EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
-    EXPECT(udonclDeviceBufferEpoch() != epoch);
-  }
-  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion) ==
-             UDONONNX_STATUS_STALE_HANDLE &&
-         !completion);
-  EXPECT(udononnxSessionGetLastStatus(&session) ==
-         UDONONNX_STATUS_STALE_HANDLE);
-  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_STALE_HANDLE);
-
-  EXPECT(udononnxLegacySessionCreate(&session, &empty_model, context,
-                                     input_bindings,
-                                     0) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxLegacySessionEnqueueInitialize(
-             &session, queue, 0, 0, &completion) == UDONONNX_STATUS_SUCCESS &&
-         completion);
-  EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionCompleteEvent(&session, completion,
-                                            UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
-  EXPECT(udononnxLegacySessionBindInput(&session, 0, empty_tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionResolveInput(&session, 0, &resolved_memory,
-                                     &resolved_offset, &resolved_bytes) ==
-             UDONONNX_STATUS_SUCCESS &&
-         resolved_memory && resolved_offset == sizeof(source) &&
-         resolved_bytes == 0);
-  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
-
-  EXPECT(udonclDeviceBufferDestroy(&input_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferDestroy(&foreign_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(initialization_buffer == 0);
+  EXPECT(udononnxBindingStateCreate(state, sizeof(state), context, other_queue,
+                                    0, inputs, sizeof(inputs), outputs,
+                                    sizeof(outputs)) ==
+         UDONONNX_STATUS_CONTEXT_MISMATCH);
   EXPECT(udononnxBindingStateCreate(
-             binding_state, sizeof(binding_state), 0, queue, 0, binding_inputs,
-             sizeof(binding_inputs), binding_outputs,
-             sizeof(binding_outputs)) == UDONONNX_STATUS_INVALID_VALUE);
+             state, sizeof(state), context, queue, 0, inputs, sizeof(inputs),
+             outputs, sizeof(outputs[0])) == UDONONNX_STATUS_INVALID_VALUE);
   EXPECT(udononnxBindingStateCreate(
-             binding_state, sizeof(binding_state), context, other_queue, 0,
-             binding_inputs, sizeof(binding_inputs), binding_outputs,
-             sizeof(binding_outputs)) == UDONONNX_STATUS_CONTEXT_MISMATCH);
+             state, sizeof(state), context, queue, 0, inputs, sizeof(inputs),
+             outputs, sizeof(outputs)) == UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateCreate(
-             binding_state, sizeof(binding_state), context, queue, 0,
-             binding_inputs, sizeof(binding_inputs), binding_outputs,
-             sizeof(binding_outputs)) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateBeginStaticBind(binding_state) ==
-         UDONONNX_STATUS_NOT_INITIALIZED);
-  EXPECT(udononnxBindingStateGetContext(binding_state, &binding_context) ==
-             UDONONNX_STATUS_SUCCESS &&
-         binding_context == context);
-  EXPECT(udononnxBindingStateGetCommandQueue(binding_state, &binding_queue) ==
+             state, sizeof(state), context, queue, 0, inputs, sizeof(inputs),
+             outputs, sizeof(outputs)) == UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateGetCommandQueue(state, &binding_queue) ==
              UDONONNX_STATUS_SUCCESS &&
          binding_queue == queue);
-  completion = 0;
-  EXPECT(udononnxBindingStateEnqueueInitialize(
-             binding_state, 0, 0, &completion) == UDONONNX_STATUS_SUCCESS &&
+  EXPECT(udononnxBindingStateGetSession(state, &session) ==
+             UDONONNX_STATUS_SUCCESS &&
+         session && session->model == &models[0]);
+
+  /* Nothing is bound or run before the binding is initialized, and it is
+   * not disposed while initializing. */
+  EXPECT(udononnxBindingStateBeginStaticBind(state) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(udononnxBindingStateEnqueueRun(state, 0, 0, &completion) ==
+             UDONONNX_STATUS_NOT_INITIALIZED &&
+         !completion);
+  EXPECT(udononnxBindingStateEnqueueInitialize(state, 0, 0, &completion) ==
+             UDONONNX_STATUS_SUCCESS &&
          completion);
+  EXPECT(udononnxBindingStateDispose(state) == UDONONNX_STATUS_BUSY);
   EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
-  EXPECT(udononnxBindingStateCompleteEvent(binding_state, completion,
+  EXPECT(udononnxBindingStateCompleteEvent(state, completion,
                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateCompleteEvent(state, completion,
+                                           UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_STALE_HANDLE);
   EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
-  EXPECT(udononnxBindingStateBeginStaticBind(binding_state) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateCompleteStaticBind(
-             binding_state, UDONONNX_STATUS_INVALID_VALUE) ==
+
+  /* The binding allocates its Device buffers read-only, write-only or
+   * read-write. */
+  EXPECT(udononnxBindingStateAllocateBuffer(state, 3, sizeof(source), &input) ==
          UDONONNX_STATUS_INVALID_VALUE);
-  EXPECT(udononnxBindingStateGetSession(binding_state, &binding_session) ==
-             UDONONNX_STATUS_SUCCESS &&
-         binding_session &&
-         binding_session->last_status == UDONONNX_STATUS_INVALID_VALUE);
-  EXPECT(udononnxBindingStateCompleteStaticBind(binding_state,
-                                                UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxBindingStateAllocateBuffer(state, 0, sizeof(source), &input) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 3, sizeof(source),
-                                            &binding_input) ==
-         UDONONNX_STATUS_INVALID_VALUE);
-  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 0, sizeof(float),
-                                            &binding_input) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 1, sizeof(float),
-                                            &binding_output) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 2, sizeof(source),
-                                            &binding_read_write) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferGetRaw(binding_read_write, &resolved_memory) ==
+  EXPECT(udononnxBindingStateAllocateBuffer(
+             state, 1, sizeof(result), &output) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateAllocateBuffer(
+             state, 2, sizeof(source), &read_write) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferGetRaw(read_write, &memory) ==
          UDONCL_STATUS_SUCCESS);
-  EXPECT(clEnqueueWriteBuffer(queue, resolved_memory, CL_TRUE, 0,
-                              sizeof(source), source, 0, 0, 0) == CL_SUCCESS);
-  memset(result, 0, sizeof(result));
-  EXPECT(clEnqueueReadBuffer(queue, resolved_memory, CL_TRUE, 0, sizeof(source),
-                             result, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, memory, CL_TRUE, 0, sizeof(source), source,
+                              0, 0, 0) == CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, memory, CL_TRUE, 0, sizeof(result), result,
+                             0, 0, 0) == CL_SUCCESS);
   EXPECT(memcmp(source, result, sizeof(source)) == 0);
-  EXPECT(udonclDeviceBufferGetSize(binding_input, &resolved_bytes) ==
-             UDONCL_STATUS_SUCCESS &&
-         resolved_bytes == sizeof(float));
-  EXPECT(udononnxBindingStateBindTensor(
-             binding_state, 0, 0, binding_input.slot, binding_input.generation,
-             0, sizeof(float), UDONCL_DATA_FLOAT32, 1,
-             generated_binding_dimensions) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateBindTensor(
-             binding_state, 1, 0, binding_output.slot,
-             binding_output.generation, 0, sizeof(float), UDONCL_DATA_FLOAT32,
-             1, generated_binding_dimensions) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateResolveInput(binding_state, 0, &resolved_memory,
-                                          &resolved_offset, &resolved_bytes) ==
+
+  /* The generated bind-all writes the tables between Begin and Complete,
+   * which records its status. A run needs every input and one output. */
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_INVALID_VALUE) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(session->last_status == UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(run(state) == UDONONNX_STATUS_MISSING_BINDING);
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(bind(&inputs[0], input, 0, 4, 2, copy_dimensions));
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(run(state) == UDONONNX_STATUS_MISSING_BINDING);
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(bind(&outputs[0], output, 0, 4, 2, copy_dimensions));
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+
+  /* The bound tensors resolve to their buffers; an unbound one does not. */
+  EXPECT(udononnxBindingStateResolveInput(state, 0, &memory, &offset, &bytes) ==
              UDONONNX_STATUS_SUCCESS &&
-         resolved_memory && resolved_offset == 0 &&
-         resolved_bytes == sizeof(float));
-  EXPECT(udononnxBindingStateResolveOutput(binding_state, 0, &resolved_memory,
-                                           &resolved_offset, &resolved_bytes) ==
+         memory && offset == 0 && bytes == sizeof(source));
+  EXPECT(
+      udononnxBindingStateResolveOutput(state, 1, &memory, &offset, &bytes) ==
+      UDONONNX_STATUS_MISSING_BINDING);
+  EXPECT(
+      udononnxBindingStateResolveOutput(state, 2, &memory, &offset, &bytes) ==
+      UDONONNX_STATUS_INVALID_VALUE);
+
+  /* A run copies the input into the output; while it is pending the binding
+   * is busy. */
+  EXPECT(udononnxBindingStateResolveInput(state, 0, &memory, &offset, &bytes) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, memory, CL_TRUE, offset, bytes, source, 0,
+                              0, 0) == CL_SUCCESS);
+  EXPECT(udononnxBindingStateEnqueueRun(state, 0, 0, &first) ==
              UDONONNX_STATUS_SUCCESS &&
-         resolved_memory && resolved_offset == 0 &&
-         resolved_bytes == sizeof(float));
-  EXPECT(udononnxBindingStateBindTensor(binding_state, 2, 0, 0, 0, 0, 0,
-                                        UDONCL_DATA_FLOAT32, 0,
-                                        0) == UDONONNX_STATUS_INVALID_VALUE);
-  EXPECT(udononnxBindingStateGetSession(binding_state, &binding_session) ==
-             UDONONNX_STATUS_SUCCESS &&
-         binding_session);
-  EXPECT(udonclDeviceBufferDestroy(&binding_input) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferDestroy(&binding_output) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferDestroy(&binding_read_write) ==
-         UDONCL_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateDispose(binding_state) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateBeginStaticBind(binding_state) ==
+         first);
+  EXPECT(udononnxBindingStateEnqueueRun(state, 0, 0, &completion) ==
+             UDONONNX_STATUS_BUSY &&
+         !completion);
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_BUSY);
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateDispose(state) == UDONONNX_STATUS_BUSY);
+  EXPECT(clWaitForEvents(1, &first) == CL_SUCCESS);
+  EXPECT(udononnxBindingStateCompleteEvent(
+             state, first, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(clReleaseEvent(first) == CL_SUCCESS);
+  memset(result, 0, sizeof(result));
+  EXPECT(udononnxBindingStateResolveOutput(state, 0, &memory, &offset,
+                                           &bytes) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, memory, CL_TRUE, offset, bytes, result, 0,
+                             0, 0) == CL_SUCCESS);
+  EXPECT(memcmp(source, result, sizeof(source)) == 0);
+  EXPECT(session->last_status == UDONONNX_STATUS_SUCCESS);
+
+  /* The first run validated the table: a run of the unchanged table keeps
+   * the binding version and only checks that the bound buffers are alive.
+   * A bind-all validates it again under a version no binding had before. */
+  EXPECT(run(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(session->bindings_validated == 1 &&
+         session->validated_buffer_epoch == udonclDeviceBufferEpoch());
+  version = udononnxSessionBindingVersion(session);
+  EXPECT(version != 0 && udononnxSessionBindingVersion(0) == 0);
+  EXPECT(run(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionBindingVersion(session) == version);
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(session->bindings_validated == 0 &&
+         udononnxSessionBindingVersion(session) != version &&
+         udononnxSessionBindingVersion(session) != 0);
+  EXPECT(run(state) == UDONONNX_STATUS_SUCCESS &&
+         session->bindings_validated == 1);
+
+  /* An output may not overlap an input. */
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(bind(&outputs[0], input, 0, 4, 2, copy_dimensions));
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(run(state) == UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(bind(&outputs[0], output, 0, 4, 2, copy_dimensions));
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(run(state) == UDONONNX_STATUS_SUCCESS);
+
+  /* A destroyed bound buffer is found by the next run. */
+  {
+    uint32_t epoch = udonclDeviceBufferEpoch();
+    EXPECT(udonclDeviceBufferDestroy(&output) == UDONCL_STATUS_SUCCESS);
+    EXPECT(udonclDeviceBufferEpoch() != epoch);
+  }
+  EXPECT(udononnxBindingStateEnqueueRun(state, 0, 0, &completion) ==
+             UDONONNX_STATUS_STALE_HANDLE &&
+         !completion);
+  EXPECT(session->last_status == UDONONNX_STATUS_STALE_HANDLE);
+  EXPECT(udononnxBindingStateDispose(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(initialization_buffer == 0);
+  EXPECT(udononnxBindingStateBeginStaticBind(state) ==
          UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(udononnxBindingStateCompleteEvent(state, first,
+                                           UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
+
+  /* An empty past input ([1, 4, 0, 64]) is bound to a zero-length view. */
+  EXPECT(udononnxBindingStateCreate(state, sizeof(state), context, queue, 1,
+                                    inputs, sizeof(inputs), 0,
+                                    0) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(initialize(state));
+  EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(bind(&inputs[0], input, sizeof(source), 0, 4, empty_dimensions));
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             state, UDONONNX_STATUS_SUCCESS) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateResolveInput(state, 0, &memory, &offset, &bytes) ==
+             UDONONNX_STATUS_SUCCESS &&
+         memory && offset == sizeof(source) && bytes == 0);
+  EXPECT(udononnxBindingStateDispose(state) == UDONONNX_STATUS_SUCCESS);
+
+  EXPECT(udonclDeviceBufferDestroy(&input) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferDestroy(&read_write) == UDONCL_STATUS_SUCCESS);
   EXPECT(clFinish(queue) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(other_queue) == CL_SUCCESS);

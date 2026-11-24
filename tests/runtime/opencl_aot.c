@@ -5,7 +5,7 @@
 #include <udonblas.h>
 #include <udondnn.h>
 #include <udononnxoperators.h>
-#include <udononnxruntime_internal.h>
+#include <udononnx_transitional.h>
 
 size_t udononnx_matmul_nbits_cpu_gid;
 #include "../../libraries/udononnxoperators/device/matmul_nbits.cl"
@@ -35,8 +35,9 @@ udononnxStatus_t udononnxGeneratedGetModel(size_t index,
 }
 
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
+    uint32_t graph_id, udononnxTransitionalSession_t *session,
+    cl_command_queue queue, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *completion) {
   (void)graph_id;
   (void)session;
   (void)queue;
@@ -47,7 +48,8 @@ udononnxStatus_t udononnxGeneratedEnqueueInitialize(
 }
 
 udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
+udononnxGeneratedEnqueueRun(uint32_t graph_id,
+                            udononnxTransitionalSession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion) {
   (void)graph_id;
@@ -60,7 +62,7 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
 }
 
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxLegacySession_t *session,
+                                         udononnxTransitionalSession_t *session,
                                          cl_command_queue queue) {
   (void)graph_id;
   (void)session;
@@ -85,8 +87,9 @@ udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 
-udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxLegacySession_t *session) {
+udononnxStatus_t
+udononnxGeneratedDispose(uint32_t graph_id,
+                         udononnxTransitionalSession_t *session) {
   (void)graph_id;
   (void)session;
   return UDONONNX_STATUS_SUCCESS;
@@ -1041,7 +1044,6 @@ int main(void) {
   udonclBufferHandle_t host_output_buffer = {0, 0};
   udonclBufferView_t view;
   udonclWorkspace_t workspace;
-  udononnxTensor_t tensor;
   udonblasHandle_t blas_handle = 0;
   cl_command_queue blas_stream = 0;
   udondnnHandle_t dnn_handle = 0;
@@ -1074,7 +1076,6 @@ int main(void) {
   int sub_source = 91, sub_result = 0;
   cl_buffer_region sub_region = {4, sizeof(sub_source)};
   size_t bytes, byte_offset, byte_length;
-  size_t elements;
   udononnxOperatorHandle_t operator_handle = 0;
   float gather_data[6] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
   float gather_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1122,7 +1123,6 @@ int main(void) {
   uint16_t bfloat_a[16], bfloat_scales[2] = {0x3f00, 0x3f80};
   uint16_t bfloat_bias[2] = {0x3f80, 0xc000}, bfloat_y[2] = {0, 0};
   int bits;
-  int64_t tensor_dimensions[2] = {2, 2};
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
          CL_SUCCESS);
@@ -1154,11 +1154,6 @@ int main(void) {
   EXPECT(udonclBufferViewResolve(view, &resolved, &byte_offset, &byte_length) ==
              UDONCL_STATUS_SUCCESS &&
          resolved && byte_offset == 8 && byte_length == 16);
-  EXPECT(udononnxCreateTensor(view, 2, tensor_dimensions, &tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxGetTensorElementCount(tensor, &elements) ==
-             UDONONNX_STATUS_SUCCESS &&
-         elements == 4);
   EXPECT(udonclDeviceBufferView(common_buffer, 2, 1, UDONCL_DATA_FLOAT32,
                                 &view) == UDONCL_STATUS_INVALID_VALUE);
   EXPECT(udonclDeviceBufferView(common_buffer, 60, 2, UDONCL_DATA_FLOAT32,
@@ -1172,7 +1167,6 @@ int main(void) {
   EXPECT(!common_buffer.slot && !common_buffer.generation);
   EXPECT(udonclWorkspaceResolve(workspace, &resolved, &byte_offset,
                                 &byte_length) == UDONCL_STATUS_STALE_HANDLE);
-  EXPECT(udononnxValidateTensor(tensor) == UDONONNX_STATUS_STALE_HANDLE);
   EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_WRITE, 64,
                                   &replacement) == UDONCL_STATUS_SUCCESS);
   EXPECT(replacement.slot == stale_buffer.slot &&

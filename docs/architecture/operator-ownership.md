@@ -162,10 +162,10 @@ Binding a model input or output to Device storage is owned by ONNX Runtime
 `Ort::IoBinding::BindInput` / `BindOutput` / `SynchronizeOutputs`): a bound
 tensor stays on the execution provider's device across `Run`, and nothing is
 copied to the CPU unless the caller asks for it. The UdonONNX counterpart is
-the session binding (`udononnxLegacySessionBindInput`, `udononnxLegacySessionBindOutput`,
-`udononnxSessionResolveInput`, `udononnxSessionResolveOutput`) and the
-transitional physical helpers of `examples/onnx-transformer-tiny/transitional_sequence_state.h`; every bound
-tensor is a borrowed `cl_mem` range. There is no UdonONNX read, write or
+the session binding (`udononnxBindInput`, `udononnxBindOutput`) and, for the
+TinyLlama Conversation and Chat Hosts only, the transitional helpers of
+`examples/onnx-transformer-tiny/transitional_sequence_state.h`; every bound
+tensor is a borrowed `cl_mem`. There is no UdonONNX read, write or
 feedback facade and no `Ext` entry point: moving bytes between bound tensors,
 or between the Device and the Host, is owned by OpenCL 1.2 and uses its
 signatures and ordering rules unchanged.
@@ -243,11 +243,10 @@ Deviations, each forced by the Udon target or stated by a test:
 The generated binding keeps the `cl_mem` of each graph input and output in a
 memory cell (`udononnxGeneratedBindMemory`), which the generated run reads
 (`udononnxGeneratedRun`), so the static Device resource analysis follows each
-bound buffer from its UDONCL_PUBLIC variable into the run. The index-bound
-legacy session (`udononnxLegacySession*` in the internal
-`udononnxruntime_internal.h`), the model registry and the tensor helpers are
-not public API; the MNIST example and the generated ONNX binding still use
-them until they move to the session API.
+bound buffer from its UDONCL_PUBLIC variable into the run. The model
+registry and the generated dispatchers (`udononnxruntime_internal.h`) and the
+runtime of the transitional sequence-state binding (`udononnx_transitional.h`)
+are installed next to the runtime sources and are not public API.
 
 ## Banked sequence state
 

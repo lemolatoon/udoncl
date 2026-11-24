@@ -2385,8 +2385,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   }
   func::ReturnOp::create(builder, location, onnxStatus(0));
 
-  // The legacy session's initialization is Create followed by a marker that
-  // completes once everything enqueued before it has.
+  // The transitional session's initialization is Create followed by a
+  // marker that completes once everything enqueued before it has.
   builder.setInsertionPointToEnd(module.getBody());
   auto enqueueInitialize = func::FuncOp::create(
       builder, location, "udononnxGeneratedEnqueueInitialize", signature);
@@ -2672,7 +2672,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     // session owns to physical tokens depends only on the binding table and
     // on the buffers Initialize created, not on the run. The tokens are kept
     // in globals under the session binding version they were resolved for;
-    // a run of an unchanged table (udononnxLegacySessionEnqueueRun has checked
+    // a run of an unchanged table (the transitional session has checked
     // that its buffers are alive) reads them instead of resolving every buffer
     // again.
     Value bindingVersion =
