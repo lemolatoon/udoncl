@@ -16,6 +16,7 @@ def canonicalize(
     lower_to_host=False,
     static_data_directory=None,
     host_metadata=None,
+    transitional_sequence_state=False,
 ):
     model = model.resolve()
     output = output.resolve()
@@ -53,7 +54,13 @@ def canonicalize(
                 f'static-data-directory={temporary_static_data}',
                 '--udoncl-externalize-onnx-graph-constants=' +
                 f'static-data-directory={temporary_static_data}',
-                '--udoncl-identify-onnx-sequence-state',
+            ])
+            # Transitional: only the TinyLlama Conversation and Chat model
+            # libraries still bank and advance their KV cache inside the
+            # binding (removed once they bind it through udononnxBindInput).
+            if transitional_sequence_state:
+                command.append('--udoncl-identify-onnx-sequence-state')
+            command.extend([
                 '--udoncl-lower-onnx-to-host',
                 '--udoncl-validate-onnx-host-graph',
                 '--udoncl-plan-onnx-host-graph',
@@ -99,12 +106,14 @@ def main():
     parser.add_argument('--lower-to-host', action='store_true')
     parser.add_argument('--static-data-directory', type=Path)
     parser.add_argument('--host-metadata', type=Path)
+    parser.add_argument('--transitional-sequence-state', action='store_true')
     args = parser.parse_args()
     try:
         canonicalize(args.model, args.output, args.frontend.resolve(),
                      args.dimension,
                      args.input_shape, args.lower_to_host,
-                     args.static_data_directory, args.host_metadata)
+                     args.static_data_directory, args.host_metadata,
+                     args.transitional_sequence_state)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'{error}\n')
 

@@ -124,11 +124,14 @@ target_include_directories(transformer_user_host INTERFACE
 # The graph of `rows` positions per run on a past of capacity - 1 rows
 # (past_sequence_length = capacity - 1, an attention mask of
 # capacity + rows - 1), as the ONNX Host library `target`.
+# ARGN: TRANSITIONAL_SEQUENCE_STATE for the Conversation and Chat libraries,
+# whose generated binding still banks and advances the KV cache.
 function(tinyllama_add_model_library target capacity rows)
   math(EXPR past_length "${capacity} - 1")
   math(EXPR window "${capacity} + ${rows} - 1")
   udoncl_add_onnx_host_library(${target}
     MODEL "${model}"
+    ${ARGN}
     DIMENSION_BOUNDS
       batch_size=1
       sequence_length=${rows}
@@ -151,7 +154,7 @@ endfunction()
 function(tinyllama_add_conversation_libraries suffix capacity host chat_host)
   set(rows ${UDONCL_TINYLLAMA_SEQUENCE_ROWS})
   tinyllama_add_model_library(transformer_conversation_model_host${suffix}
-    ${capacity} ${rows})
+    ${capacity} ${rows} TRANSITIONAL_SEQUENCE_STATE)
   set(definitions
     TINYLLAMA_CONTEXT_CAPACITY=${capacity}u
     TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u
@@ -264,13 +267,11 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     tinyllama_add_conversation_artifacts(_4k -4k)
   endif()
   # The M=1 step validation artifact keeps the M=1 graph of the Context
-  # Capacity whatever rows the Conversation Artifacts run.
-  set(step_model_host transformer_conversation_model_host)
-  if(NOT UDONCL_TINYLLAMA_SEQUENCE_ROWS EQUAL 1)
-    set(step_model_host transformer_step_model_host)
-    tinyllama_add_model_library(${step_model_host}
-      ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} 1)
-  endif()
+  # Capacity whatever rows the Conversation Artifacts run, as a plain graph:
+  # its past and present KV tensors are ordinary inputs and outputs.
+  set(step_model_host transformer_step_model_host)
+  tinyllama_add_model_library(${step_model_host}
+    ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} 1)
   udoncl_add_host_library(transformer_step_user_host step_host.c)
   target_include_directories(transformer_step_user_host INTERFACE
     "${UdonONNXRuntime_INCLUDE_DIRS}")

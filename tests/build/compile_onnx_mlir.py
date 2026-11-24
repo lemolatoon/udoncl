@@ -25,7 +25,8 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.output = self.root / 'out/model.mlir'
 
     def run_pipeline(self, content, dimensions=(), input_shapes=(),
-                     lower_to_host=False, static_data_directory=None):
+                     lower_to_host=False, static_data_directory=None,
+                     transitional_sequence_state=False):
         def run(command, check):
             self.assertTrue(check)
             prefix = ('--udoncl-externalize-onnx-initializers='
@@ -45,7 +46,8 @@ class CompileONNXMLIRTests(unittest.TestCase):
         with mock.patch.object(compiler.subprocess, 'run', side_effect=run) as call:
             compiler.canonicalize(
                 self.model, self.output, self.frontend, dimensions,
-                input_shapes, lower_to_host, static_data_directory)
+                input_shapes, lower_to_host, static_data_directory,
+                transitional_sequence_state=transitional_sequence_state)
         return call.call_args.args[0]
 
     def test_frontend_imports_and_runs_upstream_passes_in_one_process(self):
@@ -77,7 +79,6 @@ class CompileONNXMLIRTests(unittest.TestCase):
                        '--udoncl-fold-onnx-repeated-matmul-operand',
                        '--udoncl-materialize-onnx-constants',
                        '--udoncl-merge-onnx-sibling-matmulnbits',
-                       '--udoncl-identify-onnx-sequence-state',
                        '--udoncl-lower-onnx-to-host',
                        '--udoncl-validate-onnx-host-graph',
                        '--udoncl-plan-onnx-host-graph',
@@ -88,8 +89,9 @@ class CompileONNXMLIRTests(unittest.TestCase):
                        '--udoncl-cleanup-onnx-host-source',
                        '--emit-bytecode'):
             self.assertIn(option, command)
-        self.assertLess(command.index('--udoncl-simplify-onnx-empty-concat'),
-                        command.index('--udoncl-identify-onnx-sequence-state'))
+        # A plain graph: its past and present tensors are ordinary inputs
+        # and outputs.
+        self.assertNotIn('--udoncl-identify-onnx-sequence-state', command)
         self.assertLess(command.index('--udoncl-simplify-onnx-views'),
                         command.index('--udoncl-materialize-onnx-constants'))
         # The repeated-operand fold matches the Expand and Reshape views the
@@ -129,6 +131,14 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.assertLess(command.index('--udoncl-finalize-onnx-host'),
                         command.index('--udoncl-cleanup-onnx-host-source'))
         self.assertEqual(self.output.read_bytes(), b'host bytecode')
+
+    def test_transitional_sequence_state_is_opt_in(self):
+        command = self.run_pipeline(b'host bytecode', lower_to_host=True,
+                                    transitional_sequence_state=True)
+        identify = command.index('--udoncl-identify-onnx-sequence-state')
+        self.assertLess(command.index('--udoncl-simplify-onnx-empty-concat'),
+                        identify)
+        self.assertLess(identify, command.index('--udoncl-lower-onnx-to-host'))
 
     def test_host_lowering_moves_static_payloads_transactionally(self):
         sidecar = self.root / 'out/static-tensors'
