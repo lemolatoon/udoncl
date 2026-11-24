@@ -182,9 +182,15 @@ udoncl_add_unity_library(my_unity_library
   [docs/architecture/refactor-baseline-and-mlir-pipeline.md](docs/architecture/refactor-baseline-and-mlir-pipeline.md)).
 - An ONNX model becomes a Host library with
   `udoncl_add_onnx_host_library(<target> MODEL <model.onnx> DIMENSIONS
-  <name>=<value>...)`, which your own Host C drives through
-  `UdonONNXRuntime`; see the
-  [MNIST tutorial](#compile-your-own-onnx-model-with-host-c-mnist).
+  <name>=<value>... DIMENSION_BOUNDS <name>=<max>...)`, which your own Host
+  C drives through `UdonONNXRuntime`. `DIMENSIONS` fixes a symbolic
+  dimension of the model. `DIMENSION_BOUNDS` keeps it dynamic with extents
+  from 0 to `max`, and the Host gives the extent of each run when it binds
+  the tensors. Every symbolic dimension needs one of the two; see the
+  [MNIST tutorial](#compile-your-own-onnx-model-with-host-c-mnist) for a
+  fixed dimension and the
+  [TinyLlama tutorial](#chat-with-tinyllama-4096-token-context) for a
+  bounded one.
 
 Build the target to write the importable artifact to
 `<build>/udoncl/<target>/artifact`. It contains `manifest.json`, the
@@ -680,7 +686,8 @@ udoncl_add_unity_library(onnx-mnist
 - `udoncl_add_onnx_host_library` compiles the model, at configure time,
   into the Host library `mnist_host`. `DIMENSIONS batch=1` fixes the
   model's symbolic `batch` dimension; every symbolic dimension needs a
-  build-time value.
+  build-time value or, with `DIMENSION_BOUNDS`, a build-time bound (see the
+  [TinyLlama tutorial](#chat-with-tinyllama-4096-token-context)).
 - `mnist_user_host` is your Host C. `UdonONNXRuntime::UdonONNXRuntime` is the
   session API it calls, and `UdonDNN::OpenCLRuntime` is the linked OpenCL
   runtime with the UdonDNN kernels enabled.
@@ -939,9 +946,10 @@ here. Keep these limits in mind:
   910 MB). In the measurement recorded in
   [TINYLLAMA_AOT_CONVERSATION_PLAN.md](TINYLLAMA_AOT_CONVERSATION_PLAN.md#4096-token-artifacts),
   the 4096-token Conversation Artifact compiled to 37 kernels and 107 Device
-  buffers totalling 358 MB of GPU memory.
-- Per decode step, attention reads and writes all 4096 positions whatever the
-  conversation length.
+  buffers totalling 358 MB of GPU memory, before its key/value cache moved
+  to the bounded session binding described below.
+- Per position, attention loads and computes only the positions the
+  conversation holds, but its draws still cover all 4096 positions.
 - TinyLlama-1.1B was trained on 2048 positions (`max_position_embeddings`).
   Longer conversations run, because its rotary embedding is computed from the
   position, but replies past position 2048 may degrade.
@@ -954,38 +962,71 @@ CMake derive the chat configuration:
 **The token-array Conversation Host**
 ([`conversation_host.c`](examples/onnx-transformer-tiny/conversation_host.c),
 with [`conversation_host.h`](examples/onnx-transformer-tiny/conversation_host.h)).
-It owns the OpenCL context and queue, drives the model through a private,
-transitional binding the compiler generates for this example's Conversation
-and Chat model libraries
-([`transitional_sequence_state.h`](examples/onnx-transformer-tiny/transitional_sequence_state.h),
-`__udononnx_transitional_*`, built with `TRANSITIONAL_SEQUENCE_STATE`),
-keeps the key/value cache on the GPU between positions, and selects each next
-token with an argmax on the GPU (greedy decoding). The transitional binding is
-not public API: it keeps the key/value cache inside the binding until these
-Hosts bind it as ordinary graph inputs and outputs through the UdonONNX
-session API of the MNIST tutorial, and it is removed then. Its exports are
+It owns the OpenCL context and queue and every graph input and output, drives
+the model through the UdonONNX session API of the MNIST tutorial, keeps the
+key/value cache on the GPU between positions, and selects each next token
+with an argmax on the GPU (greedy decoding).
+
+The model library bounds `past_sequence_length` instead of fixing it (see
+the CMake project below), so one run is one position on a past of `position`
+rows and costs as many rows as the conversation holds. Each of the 22 layers
+keeps its K and its V in one private `CL_MEM_READ_WRITE` buffer of the whole
+Context Capacity (`[1, 4, 4096, 64]` floats), 44 buffers in all. Every run
+binds the attention mask at `position + 1`, and each layer's past at
+`position` rows and present at `position + 1` rows, both in the same buffer
+with `buffer_dims` of the capacity. The past is then the leading block of the
+present, so the run writes only the new row (an in-place Concat; see
+[operator-ownership.md](docs/architecture/operator-ownership.md#in-place-concat)).
+Nothing is ever cleared: `reset` starts again at position 0, and a later turn
+continues at the position the conversation reached. Its exports are
 `initialize`, `reset`, `set_prompt_tokens`,
 `generate`, `generated_token_count`,
 `read_generated_tokens`, and `shutdown`:
 
 ```c
+/* Binds the tensors of a run at `position`. Bind copies the dimensions,
+   so every run binds them again. */
+static udononnxStatus_t bind_position(uint32_t position) {
+  int64_t mask_dims[2] = {1, (int64_t)position + 1};
+  int64_t past_dims[4] = {1, 4, (int64_t)position, 64};
+  int64_t present_dims[4] = {1, 4, (int64_t)position + 1, 64};
+  udononnxStatus_t status;
+  int layer;
+  status = udononnxBindInput(session, "attention_mask", attention_mask, 2,
+                             mask_dims, mask_buffer_dims);
+  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status = udononnxBindInput(session, past_key_names[layer], *keys[layer],
+                                 4, past_dims, cache_buffer_dims);
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status = udononnxBindOutput(session, present_key_names[layer],
+                                  *keys[layer], 4, present_dims,
+                                  cache_buffer_dims);
+    /* ... and the same for the values ... */
+  }
+  return status;
+}
+
 UDONCL_EXPORT udononnxStatus_t initialize(void) {
   /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
-     clCreateCommandQueue ... */
-  status = __udononnx_transitional_create(context, queue);
+     clCreateCommandQueue, create input_ids, attention_mask, position_ids,
+     logits, the 44 key/value buffers and the argmax buffers ... */
+  status = udononnxCreateSession(context, queue, &session);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = __udononnx_transitional_bind_all();
-  /* ... resolve the input_ids, attention_mask, position_ids and logits
-     buffers, create the argmax buffers, clear the sequence state ... */
+    status = bind_fixed(); /* input_ids, position_ids and logits */
+  /* ... fill the attention mask with ones once: every leading block of it
+     is then right ... */
 }
 
 UDONCL_EXPORT udononnxStatus_t generate(uint32_t max_new_tokens) {
   /* ... check the state and the Context Capacity ... */
-  /* Run the prompt, then decode one token per model run until EOS or
-     max_new_tokens. */
-  for (index = 0; index < prompt_tokens; index += rows) {
-    /* ... advance the sequence state past the previous run ... */
-    status = enqueue_chunk(prompt + index, rows, base + index);
+  /* Run the prompt one position per run, then decode one token per run
+     until EOS or max_new_tokens. Each run uploads its token and position,
+     calls bind_position and udononnxRun. */
+  for (index = 0; index < prompt_tokens; ++index) {
+    status = enqueue_prompt_token(prompt[index], base + index);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      break;
   }
   for (output_index = 0; output_index < max_new_tokens; ++output_index) {
     status = decode_token(base + prompt_tokens + output_index,
@@ -1055,25 +1096,22 @@ helper functions build the 512-token and 4096-token variants from the same
 files. For `onnx-transformer-tiny-chat-4k` they amount to:
 
 ```cmake
-# The model, specialized to one position per run on a past of 4095 positions,
-# with the transitional binding that keeps its key/value cache.
+# The model, specialized to one position per run on a past of at most 4095
+# positions, whose extent the Host binds for every run.
 udoncl_add_onnx_host_library(transformer_conversation_model_host_4k
   MODEL "${UDONCL_TINYLLAMA_ONNX_MODEL}"
-  TRANSITIONAL_SEQUENCE_STATE
   DIMENSIONS
     batch_size=1
     sequence_length=1
-    past_sequence_length=4095
-  INPUT_SHAPES
-    attention_mask=1,4096)
+  DIMENSION_BOUNDS
+    past_sequence_length=4095)
 
 # The Conversation Host and the text layer, compiled with the same dimensions.
 udoncl_add_host_library(transformer_conversation_user_host_4k
   conversation_host_4k.c)
 target_compile_definitions(transformer_conversation_user_host_4k INTERFACE
   TINYLLAMA_CONTEXT_CAPACITY=4096u
-  TINYLLAMA_GENERATED_CAPACITY=32u
-  TINYLLAMA_SEQUENCE_ROWS=1u)
+  TINYLLAMA_GENERATED_CAPACITY=32u)
 udontokenizers_add_huggingface_model(transformer_chat_tokenizer_4k
   TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
   SYMBOL tinyllama_tokenizer

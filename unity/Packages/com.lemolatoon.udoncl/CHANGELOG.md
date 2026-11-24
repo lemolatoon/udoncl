@@ -33,6 +33,18 @@ All notable changes to this package are recorded here.
   through the UdonONNX session API (`udononnxCreateSession`,
   `udononnxBindInput`, `udononnxBindOutput`, `udononnxRun`,
   `udononnxReleaseSession`), which mirrors the ONNX Runtime C API.
+- The manifest `onnx_binding` describes bounded dynamic dimensions
+  (`DIMENSION_BOUNDS`): a dynamic axis is `-1` in the dimensions, with its
+  largest extent in `dimension_bounds` and its name in `dimension_names`,
+  and `in_place_concats` lists the graph inputs and outputs that may share
+  one buffer. A public buffer's `source` names its ONNX tensors in the
+  `onnx_tensors` array, which replaces `onnx_tensor`, since one buffer may
+  hold both tensors of an in-place Concat.
+- The TinyLlama Chat artifact binds its key/value cache through the UdonONNX
+  session API: one position per run on a past bounded by the Context
+  Capacity, with each layer's past and present in one buffer, so attention
+  loads and arithmetic grow with the conversation instead of always covering
+  the whole capacity.
 
 ### Removed
 

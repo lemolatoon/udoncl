@@ -244,6 +244,7 @@ repo-private udoncl-onnx-frontend
 
   udoncl-canonicalize-onnx-library-patterns
   udoncl-infer-onnx-shapes
+  udoncl-bound-onnx-shape-operands
   udoncl-simplify-onnx-empty-concat
   udoncl-simplify-onnx-views
   udoncl-fold-onnx-repeated-matmul-operand
@@ -251,7 +252,6 @@ repo-private udoncl-onnx-frontend
   udoncl-merge-onnx-sibling-matmulnbits
   udoncl-externalize-onnx-initializers
   udoncl-externalize-onnx-graph-constants
-  udoncl-identify-onnx-sequence-state
   udoncl-lower-onnx-to-host
   udoncl-validate-onnx-host-graph
   udoncl-plan-onnx-host-graph
@@ -313,8 +313,22 @@ Current ownership mapping includes:
 
 `ExternalizeONNXInitializers.cpp` replaces dense constant payloads with private
 static tensor symbols and `udoncl.static_tensors` metadata. The bytes are placed
-in the artifact's static-tensor store. `IdentifyONNXSequenceState.cpp` records
-KV-like state in `udoncl.onnx_sequence_states`.
+in the artifact's static-tensor store.
+
+A symbolic model dimension is fixed (`DIMENSIONS`) or bounded
+(`DIMENSION_BOUNDS`). `udoncl-specialize-onnx-inputs` substitutes the fixed
+ones, keeps a bounded one dynamic with its extent expression
+(`udoncl.dim_exprs`, `{axis, symbol, offset}`) on each input axis, and lists
+the bounds in `udoncl.dimension_bounds`. With bounds present,
+`udoncl-infer-onnx-shapes` evaluates extents and shape values with the
+`ONNXDimensionExprs` analysis (`symbol + offset` or a constant), and
+`udoncl-bound-onnx-shape-operands` rewrites shape operands into extent-free
+forms and turns data computed from constants and shapes alone (a causal
+mask) into an `onnx.Custom "UdonclBoundedPrefix"` of its value at the bound.
+The view simplifications and the repeated-operand fold only rewrite what
+holds for every extent. `udoncl-lower-onnx-to-host` records the extent
+expression of every result with a dynamic axis, and the Host graph plans
+such a tensor at its largest extent.
 
 ### 3. Provider graph to executable host
 
@@ -327,7 +341,7 @@ KV-like state in `udoncl.onnx_sequence_states`.
 - public input/output and static buffer generation;
 - BLAS/DNN/ATen/ONNXOperators call generation;
 - initialize/write/run/read/dispose exports;
-- sequence/KV state API generation;
+- run-time extents of bounded dimensions and the in-place Concat dispatch;
 - binding and device graph metadata.
 
 Graph validation and graph-level planning are now explicit prerequisites.
@@ -363,7 +377,7 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
 - **Groups.** A group has one root, the only node whose result has a buffer,
   and interior nodes whose results exist only inside the root's kernel. A
   fusible producer joins the group of its readers when its result is not a
-  graph input or output (which covers sequence state) and every reader is in
+  graph input or output (a key/value cache included) and every reader is in
   that group. Everything else a group reads is a leaf buffer; a known f32
   scalar next to a non-constant Add or Mul operand is an immediate. Groups
   grow greedily from the last node to the first, breadth-first from the root.
@@ -392,7 +406,8 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
 - **Kernel.** `ONNXHostFusionKernel.cpp` emits the `gpu.func` into the carrier
   `gpu.module @udononnx_fused_kernels` and a dispatch declaration with
   `vrc.synthesized_dispatch`. Its arguments are the leaf buffers and the
-  root's buffer; all shapes are static, so it takes no scalars. It launches
+  root's buffer; with static shapes it takes no scalars (see "Run-time
+  extents" below for bounded dimensions). It launches
   over the 8192 wide rows that hold the root's elements and writes zero
   outside them. Views are index arithmetic in front of the Loads, a Concat is
   an `scf.if`, and the float operations repeat the library kernels' formulas
@@ -420,41 +435,60 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   `minui`, never by a branch condition inside the expression, which
   canonicalization can separate from the value it guards.
 
-#### Banked sequence state
+#### Run-time extents
 
-`udoncl-identify-onnx-sequence-state` records past/present pairs whose
-present is `Concat(past, new)`. Host planning banks a pair
-(`sequence_state_banks` in `udoncl.onnx_host_plan`,
-`--udoncl-plan-onnx-host-graph=bank-sequence-state=false` turns it off) when
-the graph runs on the Device, the Concat is a fusible two-input Concat and
-nothing else reads the past. Every past input is allocated with the size of
-its present, so the past input and the present output are two banks of one
-state. The global `__udon_onnx_sequence_state_bank` says where the next run
-finds the carried rows: 0 in the past input as the ONNX past tensor (after
-create, bind-all, reset), 1 in the present output, 2 in the past input, each
-as the rows after the step of the previous present. The run loads it once;
-every dispatch that touches a banked buffer is emitted per bank it
-distinguishes: in bank 1 the Concat writes the past input and its readers
-read it, and in banks 1 and 2 the Concat is a view kernel
-(`DeviceFusionKernels::dispatch(root, DeviceFusionLeafView)`) that reads the
-past leaf at row r + step of the other bank. The advance only maps the bank
-to 2 after a run from bank 1 and to 1 otherwise; it copies nothing. A
-banked state is bounded by its view kernel (a gather surface per present),
-not by the 16384 words of the Slice that a copying advance still uses.
+A node that reads or writes a tensor with a dynamic axis must support the
+run-time extent (`udoncl-validate-onnx-host-graph` names the operator, the
+axis and the dimension otherwise). The Host graph records how a buffer lays
+that axis out (`dynamicLayout`): dense at the run-time extent for a buffer a
+node writes, at the bound for a constant, and with the pitch of its binding
+for a graph input or output. The run derives each bounded dimension from the
+first binding that has it and returns `UDONONNX_STATUS_INVALID_VALUE` when
+another binding disagrees.
 
-Only a model library built with `TRANSITIONAL_SEQUENCE_STATE` (the
-identification ran) gets this private binding and its state globals
-(`__udon_onnx_binding_*`, `__udon_onnx_io_handles`); every other Host binds
-its buffers through the UdonONNX session API. The binding, the option and the
-sequence-state identification are transitional and are removed in stage 3,
-when the TinyLlama Conversation and Chat Hosts bind their key/value tensors
-through the session API. Representative output:
+- MatMul runs the arena strided-batched SGEMM with the extent loaded from
+  the run (`__udon_onnx_dimension_<i>`) as m, n or k; Cast, Equal and Where
+  run their UdonONNXOperators kernels with the run-time element count. Their
+  dynamic operands must be dense.
+- Per-element, re-indexing and Softmax nodes with a dynamic axis always run
+  as synthesized kernels, alone or in their group. Such a kernel indexes at
+  the largest extents and takes the value of every bounded dimension its
+  tensors name, and the pitch of every bound graph input or output it reads
+  or writes, as i32 scalars after its other arguments (`vrc.argument_bounds`
+  gives their ranges). An element past the extent is written as zero without
+  a Load, a Concat whose first operand has the dynamic axis splits at its
+  run-time extent, and a Softmax loops to it. Fragments stay at the largest
+  extent; Loads and ALU work scale with the extent.
+
+#### In-place Concat
+
+`inPlaceConcats` lists every graph output that is `Concat(input, x)` of a
+graph input along the axis of a bounded dimension, with the same element
+type and extents on every other axis and rows of a multiple of four words.
+The binding metadata names them as `in_place_concats` (`{input, output,
+axis}`). For each pair the run binds directly, finalization synthesizes a
+second kernel of the Concat's group (`DeviceFusionKernels::dispatchInPlace`)
+that neither takes nor reads the first operand: it evaluates the second
+operand at the rows after the first operand's run-time extent and stores
+only there, a partial-output kernel whose `vrc.output_granule` is one row
+(see `udon-vrchat-shader-constraints.md`). The run compares the physical
+tokens of the two bound buffers: when they are equal it dispatches the
+partial kernel, otherwise the whole Concat, and one buffer bound with two
+pitches is `UDONONNX_STATUS_INVALID_VALUE`. Building for Udon,
+`vrc-resolve-static-kernel-bindings` folds the token comparison, so only one
+of the two dispatches remains. `vrc-verify-onnx-session-bindings` lets only
+such a pair (or tensors without elements) share a buffer. Rows outside a
+tensor's leading block are undefined after a run that writes it; a Host
+restarts a sequence by binding a smaller extent, and nothing is cleared.
+
+Every Host binds its graph inputs and outputs through the UdonONNX session
+API. Representative output:
 
 ```mlir
-func.func @__udononnx_transitional_create(...)
-func.func @__udononnx_transitional_bind_all(...)
-func.func @__udononnx_transitional_enqueue_run(...)
-func.func @__udononnx_transitional_dispose(...)
+func.func @udononnxGeneratedCreate(...)
+func.func @udononnxGeneratedBindMemory(...)
+func.func @udononnxGeneratedRun(...)
+func.func @udononnxGeneratedDispose(...)
 ```
 
 The module carries contracts such as:
@@ -471,7 +505,7 @@ udoncl.export
 ```
 
 The pass should first be split internally into graph reader, validator, tensor
-plan, provider lowering, session API builder, sequence-state builder, and
+plan, provider lowering, session API builder, and
 metadata builder. Creating several externally visible passes before those
 interfaces are stable would make the pipeline harder to change.
 
@@ -695,7 +729,7 @@ for whole-buffer copies and binding uploads; mode 1 (range copy) and mode 2
 (word fill) write only the destination words `[First, First + Count)` and
 discard every other fragment, so the rest of the buffer keeps its contents
 without a readback. `vrc.buffer_fill` (from `clEnqueueFillBuffer` through
-`__vrc_opencl_buffer_fill`, and from the generated sequence-state reset) is
+`__vrc_opencl_buffer_fill`) is
 one mode-2 Blit with a 1- to 32-word pattern read from the raw heap at issue.
 A `vrc.buffer_upload` of a mutable buffer of 1 to 128 word-aligned bytes is
 written the same way inside the issuing Udon event, with the upload as the
@@ -1001,8 +1035,9 @@ buffer its element type, logical size, access and index. The access is
 `CL_MEM_WRITE_ONLY`) or `inout` (both, `CL_MEM_READ_WRITE`); an `inout`
 buffer gets both `TryWrite<Name>` and `StartRead<Name>`. A public buffer
 also states its `source` when the module says it: `{kind: host_variable,
-symbol}` for a `UDONCL_PUBLIC` variable, `{kind: onnx_tensor, tensor}` for
-an ONNX graph input or output. The manifest carries the source, and the
+symbol}` for a `UDONCL_PUBLIC` variable, with `onnx_tensors` naming every
+ONNX graph tensor a UdonONNX session binds it to (one, or the input and the
+output of an in-place Concat). The manifest carries the source, and the
 generated binding turns it into the XML doc comment of the buffer methods;
 the public ABI fingerprint (udonclc and the Unity manifest validator alike)
 leaves it out.
@@ -1288,7 +1323,7 @@ Approximate current sizes and internal seams:
 | File | Size | Internal split |
 |---|---:|---|
 | `LowerScalar.cpp` | 6.1k lines | data layout, slots, scalar/cf/memref, externs, metadata |
-| `FinalizeONNXHost.cpp` | 5.0k | graph, tensor plan, providers, session, sequence state, metadata |
+| `FinalizeONNXHost.cpp` | 5.0k | graph, tensor plan, providers, session, run-time extents, metadata |
 | `PropagateDeviceResourceProvenance.cpp` | 4.1k | lattice, memory models, summaries, solver, receipt |
 | `tools/vrccl/vrccl.cpp` | 4.1k | CLI, pipelines, semantics, artifact writing |
 | `UdonclArtifactImporter.cs` | 3.7k | parser, transaction, resources, bindings, examples/UI |

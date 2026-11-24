@@ -47,22 +47,24 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   and `udoncl_add_unity_library` arguments set the binding names, texel
   format and Device work budget. Every Device buffer resolves at compile time
   to one compiler-assigned Unity Texture; for an ONNX Host udonclc derives the
-  buffers from the ONNX execution plan and binding. The one exception is the
-  four programs whose model library is built with
-  `TRANSITIONAL_SEQUENCE_STATE` (`tinyllama_real_conversation`,
-  `tinyllama_real_chat` and their `_4k` variants): their private transitional
-  binding banks the key/value cache and keeps the run-time buffer pool until
-  stage 3 binds that cache through the session API (in-place Concat and
-  bounded dynamic dimensions).
+  buffers from the ONNX execution plan and binding, with no exception.
 - ONNX models compile through the C++ ONNX-dialect path.
   `udoncl_add_onnx_host_library` runs `scripts/compile_onnx_mlir.py` with the
   repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model
-  to its `DIMENSIONS` and `INPUT_SHAPES`, and lowers it to Host MLIR that
+  to its `DIMENSIONS` and `INPUT_SHAPES`, keeps each `DIMENSION_BOUNDS`
+  dimension dynamic up to its bound, and lowers it to Host MLIR that
   calls UdonBLAS, UdonDNN, UdonATen and UdonONNXOperators. A user C Host
   drives that model through the `UdonONNXRuntime` session API of
-  `<udononnxruntime.h>` (the TinyLlama Conversation and Chat Hosts still use
-  the private transitional `__udononnx_transitional_*` binding) and
-  is linked into an ordinary Unity library with a generated U# binding.
+  `<udononnxruntime.h>` and is linked into an ordinary Unity library with a
+  generated U# binding. A bounded dimension takes its extent from the bound
+  tensors of each run; library kernels run with the run-time counts and
+  synthesized kernels take the extents and pitches as scalars, while draws
+  cover the bound. A graph output `Concat(input, x)` along the bounded axis
+  may share one `CL_MEM_READ_WRITE` buffer with that input, and the run then
+  writes only the rows of `x` (in-place Concat); any other buffer sharing is
+  a compile error. The TinyLlama Conversation and Chat Hosts run one position
+  per run this way, with 44 shared key/value buffers
+  ([operator-ownership.md](operator-ownership.md#bounded-dimensions)).
   `examples/onnx-mnist` and `examples/onnx-transformer-tiny`, up to the real
   TinyLlama-1.1B with 512- and 4096-token contexts, use this path. The Python
   execution-plan planner and its Unity runtime were removed (43eabad6,

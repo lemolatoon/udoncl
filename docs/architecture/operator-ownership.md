@@ -162,18 +162,17 @@ Binding a model input or output to Device storage is owned by ONNX Runtime
 `Ort::IoBinding::BindInput` / `BindOutput` / `SynchronizeOutputs`): a bound
 tensor stays on the execution provider's device across `Run`, and nothing is
 copied to the CPU unless the caller asks for it. The UdonONNX counterpart is
-the session binding (`udononnxBindInput`, `udononnxBindOutput`) and, for the
-TinyLlama Conversation and Chat Hosts only, the transitional helpers of
-`examples/onnx-transformer-tiny/transitional_sequence_state.h`; every bound
+the session binding (`udononnxBindInput`, `udononnxBindOutput`); every bound
 tensor is a borrowed `cl_mem`. There is no UdonONNX read, write or
 feedback facade and no `Ext` entry point: moving bytes between bound tensors,
 or between the Device and the Host, is owned by OpenCL 1.2 and uses its
 signatures and ordering rules unchanged.
 
-- Output-to-input feedback is `clEnqueueCopyBuffer` between the two bound
-  buffers (the transitional sequence-state advance for the K/V of the
-  TinyLlama Conversation and Chat Hosts). It is one Device Blit and never
-  reaches the Host.
+- Output-to-input feedback is `clEnqueueCopyBuffer` between two bound
+  buffers (the TinyLlama Conversation and Chat Hosts copy the Device ArgMax
+  of the logits into `input_ids`). It is one Device Blit and never reaches
+  the Host. A key/value cache needs no copy: its past input and present
+  output share one buffer ([In-place Concat](#in-place-concat)).
 - Host-known input updates are `clEnqueueWriteBuffer` / `clEnqueueFillBuffer`
   on the resolved range; small word-aligned ones are Device patches issued
   inside the current Udon event.
@@ -227,20 +226,22 @@ Deviations, each forced by the Udon target or stated by a test:
   of the wrong shape.
 - `buffer_dims` is the layout of the buffer, as the shape of the max-length
   `OrtValue` that ONNX Runtime's shared-buffer decoding allocates and binds
-  (`onnxruntime/transformers/models/llama/llama_inputs.py`,
-  `enable_past_present_share_buffer`), while `dims` is the logical extent ORT
-  passes separately. NULL is `dims`. It is never smaller than `dims`
+  ([In-place Concat](#in-place-concat)), while `dims` is the logical extent
+  ORT passes separately. NULL is `dims`. It is never smaller than `dims`
   (`UDONONNX_STATUS_INVALID_VALUE`) and may be larger only on the dynamic
   axis, whose pitch it is, up to the largest extent of that dimension on any
-  graph input or output; the tensor is the leading block of the buffer and a
-  run leaves the rest undefined. A larger static axis or pitch is
+  graph input or output. The tensor is the leading block of the buffer:
+  after a run that writes the tensor, every element of the buffer outside
+  that block is undefined. A larger static axis or pitch is
   `UDONONNX_STATUS_NOT_SUPPORTED`.
 - Built for Udon, every tensor name is a compile-time constant
   (`vrc-resolve-onnx-tensor-names` folds it to the graph index;
   `udononnxBindInputAt`/`udononnxBindOutputAt` are the private indexed
   binds), every graph input and output of a Host that calls udononnxRun is
   bound, each to exactly one Device buffer of sufficient capacity and, for a
-  UDONCL_PUBLIC variable, of the tensor's element type
+  UDONCL_PUBLIC variable, of the tensor's element type, a constant extent of
+  a bounded dimension is within its bound, and two tensors share a buffer
+  only as an in-place Concat pair ([In-place Concat](#in-place-concat))
   (`vrc-verify-onnx-session-bindings`). These are compile errors.
 - Every call returns a `udononnxStatus_t` instead of an `OrtStatus*`;
   ReleaseSession returns the status of releasing the session's buffers (ORT's
@@ -254,13 +255,104 @@ Deviations, each forced by the Udon target or stated by a test:
 - A graph the Device cannot run (the Host fallback) is
   `UDONONNX_STATUS_NOT_SUPPORTED` through the session API.
 
-The generated binding keeps the `cl_mem` of each graph input and output in a
-memory cell (`udononnxGeneratedBindMemory`), which the generated run reads
+The generated binding keeps the `cl_mem` of each graph input and output, and
+the extent and pitch of its dynamic axis, in memory cells
+(`udononnxGeneratedBindMemory`), which the generated run reads
 (`udononnxGeneratedRun`), so the static Device resource analysis follows each
 bound buffer from its UDONCL_PUBLIC variable into the run. The model
-registry and the generated dispatchers (`udononnxruntime_internal.h`) and the
-runtime of the transitional sequence-state binding (`udononnx_transitional.h`)
-are installed next to the runtime sources and are not public API.
+registry and the generated dispatchers (`udononnxruntime_internal.h`) are
+installed next to the runtime sources and are not public API.
+
+## Bounded dimensions
+
+`udoncl_add_onnx_host_library` either fixes or bounds each symbolic
+dimension of the model; a dimension that is neither is a compile error.
+
+- `DIMENSIONS name=value` fixes the dimension: the model is compiled with
+  static shapes.
+- `DIMENSION_BOUNDS name=max` keeps the dimension dynamic, with any extent
+  from 0 to `max`. Each axis that depends on it has the extent `name + c`
+  (for example `past_sequence_length + 1` on a present), a tensor has at
+  most one such axis, and every Host buffer of the tensor is planned at its
+  largest extent.
+
+This follows ONNX Runtime's symbolic dimensions: the ONNX graph names a
+dimension (`past_sequence_length`), and `onnxruntime/tools/symbolic_shape_infer.py`
+evaluates shapes such as `past_sequence_length + 1` symbolically. UdonCL does
+the same at compile time (`udoncl-infer-onnx-shapes` with the
+`ONNXDimensionExprs` analysis). `udoncl-bound-onnx-shape-operands` then
+rewrites shape operands into forms that hold at every extent and replaces
+data computed from constants and shapes alone (the causal mask of a Hugging
+Face decoder) by a bounded prefix of its value at the bound. An operator that
+cannot run at a run-time extent is a compile error that names the operator,
+the axis and the dimension.
+
+No operator changes owner. Library kernels whose contract already takes a
+count run with the run-time extent: MatMul runs the arena strided-batched
+SGEMM with run-time m, n or k (the public `udonblasSgemmStridedBatched`
+contract is unchanged), and Cast, Equal and Where run their
+UdonONNXOperators kernels with the run-time element count. Per-element,
+re-indexing and Softmax nodes with a dynamic axis run as synthesized kernels
+([Synthesized Device kernels](#synthesized-device-kernels)) that take the
+extents and the pitches of the bound buffers as scalars. Loads and arithmetic
+scale with the extent; a draw still covers the tensor at its bound.
+
+The session rules are the ones above: Bind takes a dynamic extent within the
+bound and a pitch on the dynamic axis (`buffer_dims`), and Run derives each
+dimension and returns `UDONONNX_STATUS_INVALID_VALUE` when two bindings
+disagree. A Host restarts a sequence by binding a smaller extent again;
+nothing is cleared.
+
+## In-place Concat
+
+A graph output that is `Concat(input, x, ...)` along the axis of a bounded
+dimension, whose first operand is a graph input with the same element type
+and the same extents on every other axis, forms an in-place Concat pair with
+that input. Its rows (the words after the axis) must be a multiple of four
+words, so a row is whole texels in every Device texel format. The ONNX
+binding metadata and the manifest `onnx_binding` list the pairs as
+`in_place_concats` (`{input, output, axis}`).
+
+Ownership: Concat stays the ONNX operator (ATen `cat`) with its
+UdonONNXOperators kernels. Writing only the remaining operands when the first
+operand shares the output's buffer is an ONNX Host lowering decision under
+ONNX Runtime `IOBinding` buffer sharing, so no public UdonATen,
+UdonONNXOperators, UdonBLAS or UdonDNN API changes and no `Ext` entry point
+is added.
+
+- Sharing (`vrc-verify-onnx-session-bindings`, compile time): the two tensors
+  of a pair may be bound to one buffer, which must be `CL_MEM_READ_WRITE`;
+  constant `buffer_dims` of the two must be equal, so the input is the
+  leading block of the output's layout. Any other sharing of a buffer is a
+  compile error that names every tensor on it, except for tensors without
+  elements, which share nothing (the TinyLlama prefill Host binds its 44
+  empty pasts to one buffer).
+- Run: when the session bound both to one buffer with the same pitch, the
+  run dispatches a partial-output kernel that writes the remaining operands
+  at the rows after the input's extent along the axis and discards every
+  other texel, so the input's rows keep their contents
+  ([udon-vrchat-shader-constraints.md](udon-vrchat-shader-constraints.md)).
+  Otherwise it runs the whole Concat. One buffer bound with two different
+  pitches is `UDONONNX_STATUS_INVALID_VALUE`: the input is then not the
+  leading block of the output. Built for Udon, every buffer resolves to one
+  allocation, so `vrc-resolve-static-kernel-bindings` folds the choice and
+  only one of the two dispatches remains.
+- Rows of the buffer outside the output's leading block are undefined after
+  the run, as for any tensor. A Host restarts by binding a smaller past;
+  multi-turn keeps growing it.
+
+The ONNX Runtime counterpart is the past/present buffer sharing of its
+decoder tooling (onnxruntime 1.23.2,
+`onnxruntime/transformers/models/llama/llama_inputs.py`, lines 278-347):
+`enable_past_present_share_buffer` allocates each past as
+`[batch, heads, max_sequence_length, head]` with the real past rows in its
+leading block, and `add_io_bindings_as_ortvalues` binds that one OrtValue as
+both the `past_key_values.*` input and the `present.*` output. ORT does this
+only for its attention contrib ops (GroupQueryAttention with
+`past_present_share_buffer`), which receive the real length as a separate
+input; UdonONNX does it for a plain ONNX Concat. UdonONNX `buffer_dims` is
+the shape of ORT's shared max-length OrtValue, and `dims` is the logical
+extent ORT passes separately.
 
 # Synthesized Device kernels
 
