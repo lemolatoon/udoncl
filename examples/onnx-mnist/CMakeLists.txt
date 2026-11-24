@@ -22,7 +22,7 @@ if(NOT result EQUAL 0)
 endif()
 
 udoncl_add_onnx_host_library(mnist_host MODEL "${model}"
-  DIMENSION_BOUNDS batch=1)
+  DIMENSIONS batch=1)
 target_include_directories(mnist_host INTERFACE
   "${UdonBLAS_INCLUDE_DIRS}"
   "${UdonDNN_INCLUDE_DIRS}"

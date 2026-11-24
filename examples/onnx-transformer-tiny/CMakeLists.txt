@@ -20,7 +20,7 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     message(FATAL_ERROR "TinyLlama ONNX model does not exist: ${model}")
   endif()
   set(model_shape_arguments
-    DIMENSION_BOUNDS
+    DIMENSIONS
       batch_size=1
       sequence_length=4
       past_sequence_length=0
@@ -103,7 +103,7 @@ else()
   if(NOT result EQUAL 0)
     message(FATAL_ERROR "Transformer ONNX generation failed:\n${stdout}${stderr}")
   endif()
-  set(model_shape_arguments DIMENSION_BOUNDS sequence=4)
+  set(model_shape_arguments DIMENSIONS sequence=4)
 endif()
 
 udoncl_add_onnx_host_library(transformer_host MODEL "${model}"
@@ -132,7 +132,7 @@ function(tinyllama_add_model_library target capacity rows)
   udoncl_add_onnx_host_library(${target}
     MODEL "${model}"
     ${ARGN}
-    DIMENSION_BOUNDS
+    DIMENSIONS
       batch_size=1
       sequence_length=${rows}
       past_sequence_length=${past_length}

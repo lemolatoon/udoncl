@@ -181,7 +181,7 @@ udoncl_add_unity_library(my_unity_library
   "User OpenCL C kernels" in
   [docs/architecture/refactor-baseline-and-mlir-pipeline.md](docs/architecture/refactor-baseline-and-mlir-pipeline.md)).
 - An ONNX model becomes a Host library with
-  `udoncl_add_onnx_host_library(<target> MODEL <model.onnx> DIMENSION_BOUNDS
+  `udoncl_add_onnx_host_library(<target> MODEL <model.onnx> DIMENSIONS
   <name>=<value>...)`, which your own Host C drives through
   `UdonONNXRuntime`; see the
   [MNIST tutorial](#compile-your-own-onnx-model-with-host-c-mnist).
@@ -658,7 +658,7 @@ if(NOT result EQUAL 0)
 endif()
 
 udoncl_add_onnx_host_library(mnist_host MODEL "${model}"
-  DIMENSION_BOUNDS batch=1)
+  DIMENSIONS batch=1)
 target_include_directories(mnist_host INTERFACE
   "${UdonBLAS_INCLUDE_DIRS}"
   "${UdonDNN_INCLUDE_DIRS}"
@@ -678,9 +678,9 @@ udoncl_add_unity_library(onnx-mnist
 ```
 
 - `udoncl_add_onnx_host_library` compiles the model, at configure time,
-  into the Host library `mnist_host`. `DIMENSION_BOUNDS batch=1` fixes the
+  into the Host library `mnist_host`. `DIMENSIONS batch=1` fixes the
   model's symbolic `batch` dimension; every symbolic dimension needs a
-  build-time bound.
+  build-time value.
 - `mnist_user_host` is your Host C. `UdonONNXRuntime::UdonONNXRuntime` is the
   session API it calls, and `UdonDNN::OpenCLRuntime` is the linked OpenCL
   runtime with the UdonDNN kernels enabled.
@@ -1060,14 +1060,14 @@ files. For `onnx-transformer-tiny-chat-4k` they amount to:
 udoncl_add_onnx_host_library(transformer_conversation_model_host_4k
   MODEL "${UDONCL_TINYLLAMA_ONNX_MODEL}"
   TRANSITIONAL_SEQUENCE_STATE
-  DIMENSION_BOUNDS
+  DIMENSIONS
     batch_size=1
     sequence_length=1
     past_sequence_length=4095
   INPUT_SHAPES
     attention_mask=1,4096)
 
-# The Conversation Host and the text layer, compiled with the same bounds.
+# The Conversation Host and the text layer, compiled with the same dimensions.
 udoncl_add_host_library(transformer_conversation_user_host_4k
   conversation_host_4k.c)
 target_compile_definitions(transformer_conversation_user_host_4k INTERFACE

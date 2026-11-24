@@ -487,7 +487,7 @@ def main():
         'find_package(UdonONNXOperators 0.1 REQUIRED CONFIG)\n'
         'find_package(UdonONNXRuntime 0.1 REQUIRED CONFIG)\n'
         'udoncl_add_onnx_host_library(mnist_host MODEL model.onnx\n'
-        '  DIMENSION_BOUNDS batch=1 sequence=4)\n'
+        '  DIMENSIONS batch=1 sequence=4)\n'
         'target_include_directories(mnist_host INTERFACE\n'
         '  "${UdonBLAS_INCLUDE_DIRS}" "${UdonDNN_INCLUDE_DIRS}"\n'
         '  "${UdonATen_INCLUDE_DIRS}")\n'
@@ -497,9 +497,9 @@ def main():
         '  endif()\n'
         'endforeach()\n'
         'get_target_property(generated mnist_host UDONCL_ONNX_HOST)\n'
-        'get_target_property(bounds mnist_host UDONCL_ONNX_DIMENSION_BOUNDS)\n'
-        'if(NOT bounds STREQUAL "batch=1;sequence=4")\n'
-        '  message(FATAL_ERROR "generic ONNX dimension bounds were not retained")\n'
+        'get_target_property(dimensions mnist_host UDONCL_ONNX_DIMENSIONS)\n'
+        'if(NOT dimensions STREQUAL "batch=1;sequence=4")\n'
+        '  message(FATAL_ERROR "generic ONNX dimensions were not retained")\n'
         'endif()\n'
         'if(NOT EXISTS "${generated}")\n'
         '  message(FATAL_ERROR "generated ONNX Host is missing")\n'
@@ -539,10 +539,16 @@ def main():
     assert not list(onnx_consumer.rglob('plan.json'))
     for case, invocation, diagnostic in [
         (
-            'invalid-bound',
+            'invalid-dimension',
             'udoncl_add_onnx_host_library(probe MODEL model.onnx '
-            'DIMENSION_BOUNDS sequence=-1)',
-            'Invalid DIMENSION_BOUNDS entry',
+            'DIMENSIONS sequence=-1)',
+            'Invalid DIMENSIONS entry',
+        ),
+        (
+            'unsupported-bound',
+            'udoncl_add_onnx_host_library(probe MODEL model.onnx '
+            'DIMENSION_BOUNDS sequence=4)',
+            'DIMENSION_BOUNDS is not supported yet',
         ),
         (
             'legacy-profile',

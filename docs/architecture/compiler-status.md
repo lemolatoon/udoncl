@@ -57,7 +57,7 @@ Gates and evidence are recorded in [validation.md](../validation.md).
 - ONNX models compile through the C++ ONNX-dialect path.
   `udoncl_add_onnx_host_library` runs `scripts/compile_onnx_mlir.py` with the
   repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model
-  to its `DIMENSION_BOUNDS` and `INPUT_SHAPES`, and lowers it to Host MLIR that
+  to its `DIMENSIONS` and `INPUT_SHAPES`, and lowers it to Host MLIR that
   calls UdonBLAS, UdonDNN, UdonATen and UdonONNXOperators. A user C Host
   drives that model through the `UdonONNXRuntime` session API of
   `<udononnxruntime.h>` (the TinyLlama Conversation and Chat Hosts still use

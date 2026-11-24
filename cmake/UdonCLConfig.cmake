@@ -175,7 +175,7 @@ function(udoncl_add_onnx_host_library target)
   # TinyLlama Conversation and Chat model libraries.
   set(_options TRANSITIONAL_SEQUENCE_STATE)
   set(_one_value MODEL)
-  set(_multi_value DIMENSION_BOUNDS INPUT_SHAPES)
+  set(_multi_value DIMENSIONS DIMENSION_BOUNDS INPUT_SHAPES)
   cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}"
                         "${_multi_value}")
   if(_ARG_UNPARSED_ARGUMENTS)
@@ -190,18 +190,24 @@ function(udoncl_add_onnx_host_library target)
   if(NOT EXISTS "${_model}")
     message(FATAL_ERROR "ONNX model does not exist: ${_model}")
   endif()
-  set(_bound_names)
-  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
-    if(NOT _bound MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=(0|[1-9][0-9]*)$")
+  # DIMENSIONS name=value fixes a symbolic model dimension to value.
+  set(_dimension_names)
+  foreach(_dimension IN LISTS _ARG_DIMENSIONS)
+    if(NOT _dimension MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=(0|[1-9][0-9]*)$")
       message(FATAL_ERROR
-        "Invalid DIMENSION_BOUNDS entry '${_bound}'; expected name=non_negative_integer")
+        "Invalid DIMENSIONS entry '${_dimension}'; expected name=non_negative_integer")
     endif()
-    set(_bound_name "${CMAKE_MATCH_1}")
-    if(_bound_name IN_LIST _bound_names)
-      message(FATAL_ERROR "Duplicate DIMENSION_BOUNDS entry '${_bound_name}'")
+    set(_dimension_name "${CMAKE_MATCH_1}")
+    if(_dimension_name IN_LIST _dimension_names)
+      message(FATAL_ERROR "Duplicate DIMENSIONS entry '${_dimension_name}'")
     endif()
-    list(APPEND _bound_names "${_bound_name}")
+    list(APPEND _dimension_names "${_dimension_name}")
   endforeach()
+  if(_ARG_DIMENSION_BOUNDS)
+    message(FATAL_ERROR
+      "DIMENSION_BOUNDS is not supported yet: bounded dynamic dimensions are "
+      "not implemented; use DIMENSIONS to fix a dimension")
+  endif()
   set(_input_shape_names)
   foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
     if(NOT _shape MATCHES "^([^=]+)=([0-9]+)(,[0-9]+)*$")
@@ -236,8 +242,8 @@ function(udoncl_add_onnx_host_library target)
       --lower-to-host
       --static-data-directory "${_generated_static_data}"
       --host-metadata "${_generated_host_metadata}")
-  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
-    list(APPEND _compile_command --dimension "${_bound}")
+  foreach(_dimension IN LISTS _ARG_DIMENSIONS)
+    list(APPEND _compile_command --dimension "${_dimension}")
   endforeach()
   foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
     list(APPEND _compile_command --input-shape "${_shape}")
@@ -281,8 +287,8 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_host_metadata}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MLIR
                "${_generated_host_mlir}")
-  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
-               "${_ARG_DIMENSION_BOUNDS}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSIONS
+               "${_ARG_DIMENSIONS}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_INPUT_SHAPES
                "${_ARG_INPUT_SHAPES}")
   set_property(TARGET "${target}" PROPERTY UDONCL_MUTABLE_HANDLE_CAPACITY
