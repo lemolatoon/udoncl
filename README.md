@@ -579,61 +579,40 @@ UDONCL_PROGRAM("generic_onnx_mnist");
 
 UDONCL_PUBLIC(float) cl_mem image, logits;
 
+static const int64_t image_dims[4] = {1, 1, 28, 28};
+static const int64_t logits_dims[2] = {1, 10};
+
 static cl_context context;
 static cl_command_queue queue;
-static udonclBufferHandle_t input_buffer;
-static udonclBufferHandle_t output_buffer;
-static udononnxLegacySession_t session;
-
-/* *memory = clCreateBuffer(...), then wrap the cl_mem as an ONNX tensor of
-   the model's shape (udonclDeviceBufferAdopt, udonclDeviceBufferView,
-   udononnxCreateTensor). */
-static udononnxStatus_t create_buffer(cl_mem_flags flags, size_t elements,
-                                      cl_mem *memory,
-                                      udonclBufferHandle_t *handle,
-                                      udononnxTensor_t *tensor, uint32_t rank,
-                                      const int64_t *dimensions);
-
-/* Waits for an enqueued session command and reports its completion. */
-static udononnxStatus_t complete(cl_event event,
-                                 udononnxStatus_t enqueue_status);
+static udononnxSession_t *session;
 
 UDONCL_EXPORT udononnxStatus_t initialize(void) {
-  /* ... udononnxGetModel(0, &model), clGetPlatformIDs, clGetDeviceIDs,
-     clCreateContext, clCreateCommandQueue ... */
-  status = create_buffer(CL_MEM_READ_ONLY, MNIST_INPUT_ELEMENTS, &image,
-                         &input_buffer, &input_tensor, model->inputs[0].rank,
-                         model->inputs[0].dimensions);
-  /* ... logits (CL_MEM_WRITE_ONLY, 10 elements) likewise ... */
-  status = udononnxLegacySessionCreate(&session, model, context, input_bindings,
-                                 output_bindings);
-  /* Uploads the model weights. */
-  status = udononnxLegacySessionEnqueueInitialize(&session, queue, 0, 0, &completion);
-  status = complete(completion, status);
-  status = udononnxLegacySessionBindInput(&session, 0, input_tensor);
-  status = udononnxLegacySessionBindOutput(&session, 0, output_tensor);
+  /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
+     clCreateCommandQueue ... */
+  image = clCreateBuffer(context, CL_MEM_READ_ONLY, 28 * 28 * sizeof(float), 0,
+                         &error);
+  logits =
+      clCreateBuffer(context, CL_MEM_WRITE_ONLY, 10 * sizeof(float), 0, &error);
+  status = udononnxCreateSession(context, queue, &session);
+  status = udononnxBindInput(session, "image", image, 4, image_dims, 0);
+  status = udononnxBindOutput(session, "logits", logits, 2, logits_dims, 0);
   /* ... each step checks its status and releases everything on failure ... */
 }
 
-UDONCL_EXPORT udononnxStatus_t run(void) {
-  cl_event completion = 0;
-  udononnxStatus_t status;
-  if (!session_created)
-    return UDONONNX_STATUS_NOT_INITIALIZED;
-  status = udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion);
-  return complete(completion, status);
-}
+UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
 UDONCL_EXPORT udononnxStatus_t shutdown(void) {
-  /* ... udononnxLegacySessionDispose, udonclDeviceBufferDestroy,
-     clReleaseCommandQueue, clReleaseContext ... */
+  /* ... udononnxReleaseSession, clReleaseMemObject, clReleaseCommandQueue,
+     clReleaseContext ... */
 }
 ```
 
-`initialize` and `run` launch GPU work, so they become
-asynchronous U# methods. U# writes the image into the buffer bound as the
-model input and reads the buffer bound as the model output; the Host C never
-copies tensor data itself.
+`run` launches GPU work, so it becomes an asynchronous U# method;
+`initialize` only creates the buffers and the session (the weights are
+compiled into the artifact), so it is synchronous. `udononnxRun` returns once
+the graph is enqueued on the session's in-order queue. U# writes the image
+into the buffer bound as the model input and reads the buffer bound as the
+model output; the Host C never copies tensor data itself.
 
 - `UDONCL_PROGRAM("generic_onnx_mnist")` names the program: Unity imports the
   artifact under `Assets/udoncl-generated/generic_onnx_mnist` and names the
@@ -641,15 +620,15 @@ copies tensor data itself.
 - `UDONCL_PUBLIC(float) cl_mem image, logits;` makes the two buffers public,
   named after the variables: `image` (784 floats, `CL_MEM_READ_ONLY`,
   `TryWriteImage`) and `logits` (10 floats, `CL_MEM_WRITE_ONLY`,
-  `StartReadLogits`). `create_buffer` stores each into the variable it is
-  given; the build resolves each variable to the one buffer it holds.
+  `StartReadLogits`). `udononnxBindInput` and `udononnxBindOutput` bind
+  each to the model tensor of that name; the build resolves each variable
+  and each bind to the one buffer it holds, and rejects a tensor left
+  unbound.
 - The three `UDONCL_EXPORT` functions are U# methods named after the
   PascalCase of their C names: `initialize` → `Initialize`, `run` → `Run`,
   and `shutdown` → `Shutdown`, none with parameters.
-- The generated ONNX Host library also defines helper functions
-  (`udon_onnx_binding_*`) that your Host calls. They are never part of your
-  U# API. The other Device buffers of the model stay private; the compiler
-  derives them from the model.
+- The other Device buffers of the model belong to the session and stay
+  private; the compiler derives them from the model.
 
 **The CMake project** ([`CMakeLists.txt`](examples/onnx-mnist/CMakeLists.txt)):
 
@@ -764,11 +743,11 @@ build/onnx-mnist-cmake/udoncl/onnx-mnist/artifact
 
 The generated binding follows the same rules as in the SAXPY tutorial:
 
-- `int StartInitialize(UdonSharpBehaviour receiver, string completionEvent)`,
-  `int GetInitializeStatus()`, and `int TryGetInitializeResult(out int result)`:
-  run `initialize` asynchronously and read its `udononnxStatus_t`.
-- `int StartRun(...)`, `int GetRunStatus()`, and
-  `int TryGetRunResult(out int result)`: the same for `run`.
+- `int TryInitialize(out int result)`: `initialize`, which launches no GPU
+  work and therefore runs synchronously; `result` is its `udononnxStatus_t`.
+- `int StartRun(UdonSharpBehaviour receiver, string completionEvent)`,
+  `int GetRunStatus()`, and `int TryGetRunResult(out int result)`: run `run`
+  asynchronously and read its `udononnxStatus_t`.
 - `int TryShutdown(out int result)`: `shutdown`, which launches no GPU
   work and therefore runs synchronously.
 - `int TryWriteImage(float[] source)`: upload the 784 pixels of the `image`
@@ -847,19 +826,12 @@ public class MnistClassifier : UdonSharpBehaviour
         for (int i = 0; i < image.Length; i++)
             image[i] = Digit[i] == '#' ? 1.0f : 0.0f;
 
-        // Initialize creates the OpenCL context, the ONNX session and its
-        // input and output buffers in the C Host, and uploads the weights.
-        int status = binding.StartInitialize(this, "OnModelInitialized");
-        if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
-            Debug.LogError("MNIST: StartInitialize failed with status " + status);
-    }
-
-    public void OnModelInitialized()
-    {
+        // Initialize creates the OpenCL context, the image and logits
+        // buffers and the ONNX session in the C Host and binds the buffers to
+        // the model input and output. The weights are compiled into the
+        // artifact, so it enqueues no Device work and completes at once.
         int libraryStatus = 0;
-        int status = binding.GetInitializeStatus();
-        if (status == UdonclGenericOnnxMnistBinding.StatusSuccess)
-            status = binding.TryGetInitializeResult(out libraryStatus);
+        int status = binding.TryInitialize(out libraryStatus);
         if (status != UdonclGenericOnnxMnistBinding.StatusSuccess || libraryStatus != 0)
         {
             Debug.LogError(

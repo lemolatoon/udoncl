@@ -178,15 +178,8 @@ namespace Lemolatoon.Udoncl.Generated
                 Classify();
                 return;
             }
-            status = binding.StartInitialize(this, ""OnInitializeComplete"");
-        }
-
-        public void OnInitializeComplete()
-        {
-            status = binding.GetInitializeStatus();
-            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
-                return;
-            status = binding.TryGetInitializeResult(out libraryStatus);
+            // Initialize enqueues no Device work, so it completes at once.
+            status = binding.TryInitialize(out libraryStatus);
             if (status != UdonclGenericOnnxMnistBinding.StatusSuccess || libraryStatus != 0)
                 return;
             initialized = true;

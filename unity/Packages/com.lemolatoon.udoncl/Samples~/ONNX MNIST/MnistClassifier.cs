@@ -63,19 +63,12 @@ public class MnistClassifier : UdonSharpBehaviour
         for (int i = 0; i < image.Length; i++)
             image[i] = Digit[i] == '#' ? 1.0f : 0.0f;
 
-        // Initialize creates the OpenCL context, the ONNX session and its
-        // input and output buffers in the C Host, and uploads the weights.
-        int status = binding.StartInitialize(this, "OnModelInitialized");
-        if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
-            Debug.LogError("MNIST: StartInitialize failed with status " + status);
-    }
-
-    public void OnModelInitialized()
-    {
+        // Initialize creates the OpenCL context, the image and logits
+        // buffers and the ONNX session in the C Host and binds the buffers to
+        // the model input and output. The weights are compiled into the
+        // artifact, so it enqueues no Device work and completes at once.
         int libraryStatus = 0;
-        int status = binding.GetInitializeStatus();
-        if (status == UdonclGenericOnnxMnistBinding.StatusSuccess)
-            status = binding.TryGetInitializeResult(out libraryStatus);
+        int status = binding.TryInitialize(out libraryStatus);
         if (status != UdonclGenericOnnxMnistBinding.StatusSuccess || libraryStatus != 0)
         {
             Debug.LogError(

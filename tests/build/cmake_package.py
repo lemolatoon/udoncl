@@ -670,13 +670,15 @@ def main():
     assert 'singleton_site_count = 5 : i32' in mnist_context_plan
     assert 'shared_site_count = 0 : i32' in mnist_context_plan
     assert 'required_clone_count = 0 : i32' in mnist_context_plan
-    assert 'cloned_function_count = 1 : i32' in mnist_context_specialization
-    assert 'rewritten_call_count = 1 : i32' in mnist_context_specialization
-    assert 'specialized_context_count = 1 : i32' in mnist_context_specialization
-    # The UDONCL_PUBLIC image and logits are the buffers the two contexts of
-    # create_buffer store into them; the generated ONNX binding keeps its
-    # buffers private. Every Device buffer resolves at compile time to its
-    # own Unity Texture, so the static lowering replaces the buffer pool.
+    # host.c creates each buffer at a call site of its own: no allocation
+    # context needs a specialized clone.
+    assert 'cloned_function_count = 0 : i32' in mnist_context_specialization
+    assert 'rewritten_call_count = 0 : i32' in mnist_context_specialization
+    assert 'specialized_context_count = 0 : i32' in mnist_context_specialization
+    # The UDONCL_PUBLIC image and logits are the buffers host.c binds by name
+    # to the graph input and output; the session keeps its own buffers
+    # private. Every Device buffer resolves at compile time to its own Unity
+    # Texture, so the static lowering replaces the buffer pool.
     assert mnist_inventory.count('public = true') == 2
     for name, access in [('image', 'input'), ('logits', 'output')]:
         assert (f'name = "{name}", persistent = true, public = true, '
@@ -708,7 +710,7 @@ def main():
     assert 'dynamic_release_count = 0 : i32' in mnist_lowering_readiness
     assert 'dynamic_resolve_count = 0 : i32' in mnist_lowering_readiness
     assert 'materialized_count = 5 : i32' in mnist_physical_resolves
-    assert 'checked_count = 3 : i32' in mnist_physical_resolves
+    assert 'checked_count = 5 : i32' in mnist_physical_resolves
     assert 'unresolved_count = 0 : i32' in mnist_physical_resolves
     assert 'candidate_count = 5 : i32' in mnist_physical_plan
     assert 'planned_count = 5 : i32' in mnist_physical_plan
@@ -827,7 +829,9 @@ def main():
     assert_binding_identity(onnx_mnist_manifest, mnist_binding)
     assert 'public sealed class UdonclGenericOnnxMnistBinding' in mnist_binding
     assert '[SerializeField] private Texture2D[] staticTensors;' in mnist_binding
-    assert 'public int StartInitialize(' in mnist_binding
+    # initialize enqueues no Device work: it is a synchronous export.
+    assert 'public int TryInitialize(out int result)' in mnist_binding
+    assert 'public int StartInitialize(' not in mnist_binding
     assert 'public int TryWriteImage(float[] source)' in mnist_binding
     assert 'public int StartRun(' in mnist_binding
     assert 'public int GetRunStatus()' in mnist_binding
@@ -849,7 +853,6 @@ def main():
     assert 'EnsureDeviceBuffersCreated();' in validate_transfer
     for method, next_method in [
         ('public int StartRun(', 'public int GetRunStatus()'),
-        ('public int StartInitialize(', 'public int GetInitializeStatus()'),
     ]:
         async_start = mnist_binding.split(method, 1)[1].split(next_method, 1)[0]
         ensure_position = async_start.index('EnsureDeviceBuffersCreated();')
@@ -972,7 +975,6 @@ def main():
     )
     for method, next_method in [
         ('public int StartRun(', 'public int GetRunStatus()'),
-        ('public int StartInitialize(', 'public int GetInitializeStatus()'),
     ]:
         async_start = mnist_binding.split(method, 1)[1].split(next_method, 1)[0]
         assert async_start.index('busy = true;') < async_start.index(
@@ -1115,7 +1117,7 @@ def main():
         'generic-onnx-mnist-test-controller.cs.txt'
     ).read_text(encoding='utf-8')
     for call in [
-        'binding.StartInitialize(',
+        'binding.TryInitialize(',
         'binding.TryWriteImage(',
         'binding.StartRun(',
         'binding.GetRunStatus()',

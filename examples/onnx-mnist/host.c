@@ -1,11 +1,8 @@
 #define CL_TARGET_OPENCL_VERSION 120
 #include <CL/cl.h>
-#include <udoncl/device_memory.h>
+#include <stdint.h>
 #include <udoncl/export.h>
-#include <udononnxruntime_internal.h>
-
-#define MNIST_INPUT_ELEMENTS 784u
-#define MNIST_OUTPUT_ELEMENTS 10u
+#include <udononnxruntime.h>
 
 /* Unity imports the library under Assets/udoncl-generated/generic_onnx_mnist
  * and names its U# binding UdonclGenericOnnxMnistBinding. */
@@ -13,36 +10,33 @@ UDONCL_PROGRAM("generic_onnx_mnist");
 
 /* The model input and output: U# writes the 28x28 image (CL_MEM_READ_ONLY)
  * with TryWriteImage before Run and reads the ten logits (CL_MEM_WRITE_ONLY)
- * with StartReadLogits after it. */
+ * with StartReadLogits after it. initialize binds them by name to the graph
+ * input "image" and the graph output "logits". */
 UDONCL_PUBLIC(float) cl_mem image, logits;
+
+static const int64_t image_dims[4] = {1, 1, 28, 28};
+static const int64_t logits_dims[2] = {1, 10};
 
 static cl_context context;
 static cl_command_queue queue;
-static udonclBufferHandle_t input_buffer;
-static udonclBufferHandle_t output_buffer;
-static udononnxTensor_t input_bindings[1];
-static udononnxTensor_t output_bindings[1];
-static udononnxLegacySession_t session;
-static int session_created;
-static int input_buffer_created;
-static int output_buffer_created;
+static udononnxSession_t *session;
 
 static udononnxStatus_t release_resources(void) {
   int failed = 0;
-  if (session_created) {
-    if (udononnxLegacySessionDispose(&session) != UDONONNX_STATUS_SUCCESS)
-      failed = 1;
-    session_created = 0;
+  udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
+  if (session) {
+    status = udononnxReleaseSession(session);
+    session = 0;
   }
-  if (input_buffer_created) {
-    if (udonclDeviceBufferDestroy(&input_buffer) != UDONCL_STATUS_SUCCESS)
+  if (logits) {
+    if (clReleaseMemObject(logits) != CL_SUCCESS)
       failed = 1;
-    input_buffer_created = 0;
+    logits = 0;
   }
-  if (output_buffer_created) {
-    if (udonclDeviceBufferDestroy(&output_buffer) != UDONCL_STATUS_SUCCESS)
+  if (image) {
+    if (clReleaseMemObject(image) != CL_SUCCESS)
       failed = 1;
-    output_buffer_created = 0;
+    image = 0;
   }
   if (queue) {
     if (clReleaseCommandQueue(queue) != CL_SUCCESS)
@@ -54,105 +48,42 @@ static udononnxStatus_t release_resources(void) {
       failed = 1;
     context = 0;
   }
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
   return failed ? UDONONNX_STATUS_OPENCL_ERROR : UDONONNX_STATUS_SUCCESS;
 }
 
-static udononnxStatus_t complete(cl_event event,
-                                 udononnxStatus_t enqueue_status) {
-  udononnxStatus_t status;
-  cl_int wait_status;
-  cl_int release_status;
-  if (enqueue_status != UDONONNX_STATUS_SUCCESS)
-    return enqueue_status;
-  if (!event)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  wait_status = clWaitForEvents(1, &event);
-  status = udononnxLegacySessionCompleteEvent(
-      &session, event,
-      wait_status == CL_SUCCESS ? UDONONNX_STATUS_SUCCESS
-                                : UDONONNX_STATUS_EXECUTION_FAILURE);
-  release_status = clReleaseEvent(event);
-  return release_status == CL_SUCCESS ? status : UDONONNX_STATUS_OPENCL_ERROR;
-}
-
-/* Creates the Device buffer *memory of `elements` floats and its tensor. */
-static udononnxStatus_t create_buffer(cl_mem_flags flags, size_t elements,
-                                      cl_mem *memory,
-                                      udonclBufferHandle_t *handle,
-                                      udononnxTensor_t *tensor, uint32_t rank,
-                                      const int64_t *dimensions) {
-  const size_t bytes = elements * sizeof(float);
-  udonclBufferView_t view;
-  udononnxStatus_t status;
-  cl_int error = CL_SUCCESS;
-  *memory = clCreateBuffer(context, flags, bytes, 0, &error);
-  if (!*memory || error != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  if (udonclDeviceBufferAdopt(context, *memory, bytes, handle) !=
-      UDONCL_STATUS_SUCCESS) {
-    clReleaseMemObject(*memory);
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  }
-  if (udonclDeviceBufferView(*handle, 0, elements, UDONCL_DATA_FLOAT32,
-                             &view) != UDONCL_STATUS_SUCCESS) {
-    udonclDeviceBufferDestroy(handle);
-    return UDONONNX_STATUS_INVALID_VALUE;
-  }
-  status = udononnxCreateTensor(view, rank, dimensions, tensor);
-  if (status != UDONONNX_STATUS_SUCCESS) {
-    udonclDeviceBufferDestroy(handle);
-    return status;
-  }
-  return status;
-}
-
 UDONCL_EXPORT udononnxStatus_t initialize(void) {
-  const udononnxModel_t *model = 0;
   cl_platform_id platform = 0;
   cl_device_id device = 0;
-  cl_event completion = 0;
   cl_int error = CL_SUCCESS;
-  udononnxTensor_t input_tensor;
-  udononnxTensor_t output_tensor;
-  udononnxStatus_t status;
-  if (session_created)
+  udononnxStatus_t status = UDONONNX_STATUS_OPENCL_ERROR;
+  if (session)
     return UDONONNX_STATUS_BUSY;
-  if (udononnxGetModel(0, &model) != UDONONNX_STATUS_SUCCESS ||
-      clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
+  if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
       clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
   context = clCreateContext(0, 1, &device, 0, 0, &error);
   if (!context || error != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
+    goto fail;
   queue = clCreateCommandQueue(context, device, 0, &error);
   if (!queue || error != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  status = create_buffer(CL_MEM_READ_ONLY, MNIST_INPUT_ELEMENTS, &image,
-                         &input_buffer, &input_tensor, model->inputs[0].rank,
-                         model->inputs[0].dimensions);
+    goto fail;
+  image = clCreateBuffer(context, CL_MEM_READ_ONLY, 28 * 28 * sizeof(float), 0,
+                         &error);
+  if (!image || error != CL_SUCCESS)
+    goto fail;
+  logits =
+      clCreateBuffer(context, CL_MEM_WRITE_ONLY, 10 * sizeof(float), 0, &error);
+  if (!logits || error != CL_SUCCESS)
+    goto fail;
+  status = udononnxCreateSession(context, queue, &session);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  input_buffer_created = 1;
-  status = create_buffer(CL_MEM_WRITE_ONLY, MNIST_OUTPUT_ELEMENTS, &logits,
-                         &output_buffer, &output_tensor, model->outputs[0].rank,
-                         model->outputs[0].dimensions);
+  status = udononnxBindInput(session, "image", image, 4, image_dims, 0);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  output_buffer_created = 1;
-  status = udononnxLegacySessionCreate(&session, model, context, input_bindings,
-                                       output_bindings);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    goto fail;
-  session_created = 1;
-  status = udononnxLegacySessionEnqueueInitialize(&session, queue, 0, 0,
-                                                  &completion);
-  status = complete(completion, status);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    goto fail;
-  status = udononnxLegacySessionBindInput(&session, 0, input_tensor);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    goto fail;
-  status = udononnxLegacySessionBindOutput(&session, 0, output_tensor);
+  status = udononnxBindOutput(session, "logits", logits, 2, logits_dims, 0);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
   return UDONONNX_STATUS_SUCCESS;
@@ -161,17 +92,12 @@ fail:
   return status;
 }
 
-UDONCL_EXPORT udononnxStatus_t run(void) {
-  cl_event completion = 0;
-  udononnxStatus_t status;
-  if (!session_created)
-    return UDONONNX_STATUS_NOT_INITIALIZED;
-  status = udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion);
-  return complete(completion, status);
-}
+/* Runs the model on the bound image. It returns once the run is enqueued:
+ * StartReadLogits reads through the same in-order queue. */
+UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
 UDONCL_EXPORT udononnxStatus_t shutdown(void) {
-  if (!session_created)
+  if (!session)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return release_resources();
 }

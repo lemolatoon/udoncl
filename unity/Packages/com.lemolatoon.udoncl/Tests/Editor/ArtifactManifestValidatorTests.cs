@@ -496,11 +496,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.NotNull(usage);
             Assert.AreEqual("UdonclGenericOnnxMnistExample", usage.ClassName);
-            StringAssert.Contains("binding.StartInitialize(this", usage.Source);
-            StringAssert.Contains(
-                "binding.TryGetInitializeResult(out libraryStatus)",
-                usage.Source
-            );
+            // initialize enqueues no Device work: it is synchronous.
+            StringAssert.Contains("binding.TryInitialize(out libraryStatus)", usage.Source);
+            StringAssert.DoesNotContain("StartInitialize", usage.Source);
             StringAssert.Contains("binding.TryWriteImage(image)", usage.Source);
             StringAssert.Contains("binding.StartRun(this", usage.Source);
             StringAssert.Contains("binding.TryGetRunResult(out libraryStatus)", usage.Source);

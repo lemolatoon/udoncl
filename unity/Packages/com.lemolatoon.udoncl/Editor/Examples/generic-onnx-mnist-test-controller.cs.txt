@@ -42,22 +42,9 @@ namespace Lemolatoon.Udoncl.Generated
                 completed = true;
                 return;
             }
-            phase = 2;
-            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
-            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
-                completed = true;
-        }
-
-        public void OnInitializeComplete()
-        {
+            // Initialize enqueues no Device work, so it completes at once.
             phase = 3;
-            status = binding.GetInitializeStatus();
-            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
-            {
-                completed = true;
-                return;
-            }
-            status = binding.TryGetInitializeResult(out libraryStatus);
+            status = binding.TryInitialize(out libraryStatus);
             if (
                 status != UdonclGenericOnnxMnistBinding.StatusSuccess
                 || libraryStatus != 0
