@@ -27,8 +27,11 @@ public:
   uint32_t drawCount() const;
   size_t bufferLimit() const;
   bool gatherProfile(const char *, struct udoncl_cl_gather_profile *) const;
+  // With `destination`, the target starts as those `bytes` instead of a
+  // clear color: the texels a partial-output kernel discards keep them.
   int drawGather(uint32_t, const unsigned char *const *, size_t, size_t,
-                 const unsigned char *, size_t, unsigned char *) noexcept;
+                 const unsigned char *, size_t, unsigned char *,
+                 const unsigned char *destination = nullptr) noexcept;
   bool matchesSource(const char *, size_t) const;
   bool matchesKernel(const char *) const;
   int draw(uint32_t buffer, uint32_t generation, const unsigned char scalar[4],

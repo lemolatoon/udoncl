@@ -520,6 +520,24 @@ LogicalResult proveKernel(gpu::GPUFuncOp kernel) {
   };
 
   Block &body = kernel.getBody().front();
+  // A partial-output kernel stores its word only where a condition holds
+  // (the HLSL fragment discards the others, which keep their contents): the
+  // store is alone in the then-block of a top-level scf.if without results
+  // or else-block. vrc.output_granule promises that the condition is the
+  // same for every aligned run of that many words, so a texel of several
+  // words is written whole or not at all.
+  auto granule = kernel->getAttrOfType<IntegerAttr>("vrc.output_granule");
+  if (granule && (granule.getInt() < 1 || words % granule.getInt() != 0))
+    return reject(function, "vrc.output_granule must be a positive divisor of "
+                            "vrc.words");
+  auto partialStore = [&](memref::StoreOp candidate) {
+    auto branch = dyn_cast<scf::IfOp>(candidate->getParentOp());
+    return granule && branch && branch->getBlock() == &body &&
+           branch.getNumResults() == 0 && branch.getElseRegion().empty() &&
+           candidate->getBlock() == branch.thenBlock() &&
+           candidate->getNextNode() == branch.thenBlock()->getTerminator() &&
+           candidate.getOperation() == &branch.thenBlock()->front();
+  };
   memref::StoreOp store;
   LogicalResult result = success();
   kernel.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
@@ -554,10 +572,12 @@ LogicalResult proveKernel(gpu::GPUFuncOp kernel) {
     if (auto candidate = dyn_cast<memref::StoreOp>(op)) {
       if (store)
         return fail(reject(op, "requires exactly one output store"));
-      if (op->getBlock() != &body || candidate.getMemref() != output ||
-          candidate.getIndices().size() != 1)
+      if ((op->getBlock() != &body && !partialStore(candidate)) ||
+          candidate.getMemref() != output || candidate.getIndices().size() != 1)
         return fail(reject(op, "the store must write the output buffer at "
-                               "the top level of the kernel"));
+                               "the top level of the kernel, or alone in "
+                               "a top-level scf.if of a kernel with "
+                               "vrc.output_granule"));
       if (!linearFragmentIndex(candidate.getIndices()[0]))
         return fail(reject(op, "the store index must be global_id x + "
                                "global_id y * ")

@@ -122,6 +122,10 @@ struct Emitter {
                                    " >> 16u) & 255u, (" + word +
                                    " >> 24u) & 255u) / 255.0");
     } else if (auto output = dyn_cast<fragment::OutputOp>(op)) {
+      // A fragment that keeps nothing leaves its texel of the target as it
+      // was.
+      if (Value keep = output.getKeep())
+        line("if (!" + get(keep) + ") discard;");
       line("return " + get(output.getValue()) + ";");
     } else if (auto condition = dyn_cast<scf::IfOp>(op)) {
       for (auto value : condition.getResults())

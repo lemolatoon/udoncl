@@ -867,6 +867,12 @@ struct Emitter {
            (output.getValue().getType().isF32() ? "asuint(" + value + ")"
                                                 : value) +
            ";");
+      // The four words of a texel share their `keep` (the kernel's output
+      // granule is whole texels): lane zero's decides.
+      if (Value keep = output.getKeep())
+        line("_vrc_keep = " +
+             (info(keep).lane == Lane::Varying ? get(keep) + ".x" : get(keep)) +
+             ";");
     } else if (auto branch = dyn_cast<scf::IfOp>(op)) {
       return conditional(branch);
     } else if (auto loop = dyn_cast<scf::WhileOp>(op)) {
@@ -1098,9 +1104,18 @@ LogicalResult emitWordTexelFragmentHLSL(fragment::KernelOp kernel,
     return failure();
   if (checked)
     out << "  bool _vrc_exact = true;\n";
+  bool partial = false;
+  if (auto output =
+          dyn_cast<fragment::OutputWordOp>(pass.getBody().front().back()))
+    partial = static_cast<bool>(output.getKeep());
+  if (partial)
+    out << "  bool _vrc_keep = true;\n";
   out << "  uint4 _vrc_out = (uint4)0;\n" << fast;
   if (checked)
     out << "  [branch] if (!_vrc_exact) {\n" << exact << "  }\n";
+  // A texel the kernel does not write keeps its contents.
+  if (partial)
+    out << "  if (!_vrc_keep) discard;\n";
   out << "  return asfloat(_vrc_out);\n}\n";
   return success();
 }

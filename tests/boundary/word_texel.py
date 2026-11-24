@@ -9,6 +9,10 @@ arguments of real dispatches (and shapes that are not multiples of four, which
 exercise the per-lane fallback), and every output word must be bit-identical.
 The word-texel Q4 MatMulNBits kernel must also read each 32-element block with
 the documented number of texel Loads.
+
+A synthesized partial-output kernel (partial_output_kernel.mlir) draws onto a
+target that already holds words: in both formats exactly the rows it keeps
+change, and every other word stays as it was (HLSL `discard`).
 """
 
 import json
@@ -276,6 +280,54 @@ for name, kernel, scalars, inputs, bounds in cases:
         "\t".join([name, str(narrow), str(wide), str(len(inputs)),
                    payload(kernel, scalars), str(path), str(count)])
     )
+# The partial-output kernel draws rows [first, first + count) of 64 words onto
+# a target of random words; the second case crosses the surface row.
+partial_config = {
+    "schema_version": 1,
+    "profile": "gather-f32",
+    "local_size": [1, 1, 1],
+    "global_offset": [0, 0, 0],
+    "kernel": "partial_rows",
+    "kernel_id": 9,
+    "words": 16384,
+    "global_size": [8192, 2, 1],
+    "input_words": [16384],
+}
+partial = {}
+for texel_format in ("rgba8_unorm", "rgba32_float"):
+    config = dict(partial_config)
+    if texel_format != "rgba8_unorm":
+        config["texel_format"] = texel_format
+    path = output / f"partial_rows-{texel_format}.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    bundle = output / f"partial_rows-{texel_format}"
+    run(
+        [
+            compiler,
+            "--emit-native-device-bundle",
+            path,
+            "--device-mlir",
+            root / "tests/boundary/partial_output_kernel.mlir",
+            "-o",
+            bundle,
+        ]
+    )
+    partial[texel_format] = bundle / "kernels/kernel_9.hlsl"
+    assert "discard;" in partial[texel_format].read_text(encoding="utf-8")
+partial_cases = []
+for name, first, count in (("partial_block", 37, 5), ("partial_straddle", 120, 20)):
+    source = words("p", 16384)
+    destination = words("u", 16384)
+    path = output / f"{name}.bin"
+    path.write_bytes(struct.pack("<16384I", *source))
+    target = output / f"{name}.target"
+    target.write_bytes(struct.pack("<16384I", *destination))
+    lines.append(
+        "	".join([name, str(partial["rgba8_unorm"]), str(partial["rgba32_float"]),
+                   "1", struct.pack("<ii", first, count).hex(), str(path),
+                   "16384", str(target)])
+    )
+    partial_cases.append((name, first, count, source, destination, target))
 case_file = output / "cases.txt"
 case_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 vertex = output / "fullscreen.hlsl"
@@ -295,6 +347,16 @@ assert result.returncode == 0, (result.stdout, result.stderr)
 for name, *_ in cases:
     count = surface(dict((case[0], case[1]) for case in cases)[name])
     assert re.search(rf"^{name} exact={count}/{count} ", result.stdout, re.M), name
+for name, first, count, source, destination, target in partial_cases:
+    assert re.search(rf"^{name} exact=16384/16384 ", result.stdout, re.M), name
+    drawn = struct.unpack("<16384I", (output / f"{name}.target.out").read_bytes())
+    for index in range(16384):
+        if first * 64 <= index < (first + count) * 64:
+            value = struct.unpack("<f", struct.pack("<I", source[index]))[0]
+            expected = struct.unpack("<I", struct.pack("<f", value + value))[0]
+        else:
+            expected = destination[index]
+        assert drawn[index] == expected, (name, index, drawn[index], expected)
 
 # A full Q4 block of the word-texel kernel: 1 scale and 1 packed-weight texel
 # per lane, and the 32 shared activations from 9 texels of one funnelled run.

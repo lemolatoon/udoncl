@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
@@ -75,14 +76,33 @@ struct LowerGatherDevicePass
           signalPassFailure();
           return;
         }
+        // The output store is at the top level, or alone in a top-level
+        // scf.if whose condition decides which fragments write
+        // (vrc-prove-synthesized-gather-kernels checks the form).
         memref::StoreOp store;
-        for (auto candidate : source.getOps<memref::StoreOp>()) {
+        scf::IfOp keepBranch;
+        auto noteStore = [&](memref::StoreOp candidate, scf::IfOp branch) {
           if (store) {
             source.emitError("multiple output stores");
+            return false;
+          }
+          store = candidate;
+          keepBranch = branch;
+          return true;
+        };
+        for (Operation &op : source.getBody().front()) {
+          bool noted = true;
+          if (auto candidate = dyn_cast<memref::StoreOp>(op))
+            noted = noteStore(candidate, {});
+          else if (auto branch = dyn_cast<scf::IfOp>(op);
+                   branch && branch.getNumResults() == 0 &&
+                   branch.getElseRegion().empty())
+            for (auto candidate : branch.thenBlock()->getOps<memref::StoreOp>())
+              noted &= noteStore(candidate, branch);
+          if (!noted) {
             signalPassFailure();
             return;
           }
-          store = candidate;
         }
         if (!store) {
           source.emitError("missing proven output store");
@@ -151,6 +171,20 @@ struct LowerGatherDevicePass
           return;
         }
         bool wordTexels = texelWords > 1;
+        // A fragment owns one texel: a partial output must decide whole
+        // texels.
+        if (keepBranch) {
+          auto granule =
+              source->getAttrOfType<IntegerAttr>("vrc.output_granule");
+          if (!granule || granule.getInt() % int64_t(texelWords) != 0) {
+            source.emitError("partial-output kernel writes runs of ")
+                << (granule ? granule.getInt() : 0)
+                << " words, not whole texels of Device texel format "
+                << texelFormat;
+            signalPassFailure();
+            return;
+          }
+        }
         b.setInsertionPoint(module);
         auto loc = source.getLoc();
         SmallVector<Attribute> kinds;
@@ -261,7 +295,8 @@ struct LowerGatherDevicePass
         Value logicalY =
             arith::DivUIOp::create(b, loc, physicalLinear, logicalWidth);
         for (auto &op : source.getBody().front())
-          if (!isa<gpu::ReturnOp, memref::StoreOp>(op))
+          if (!isa<gpu::ReturnOp, memref::StoreOp>(op) &&
+              &op != keepBranch.getOperation())
             b.clone(op, mapping);
         SmallVector<gpu::GlobalIdOp> globals;
         pass->walk([&](gpu::GlobalIdOp op) { globals.push_back(op); });
@@ -353,9 +388,12 @@ struct LowerGatherDevicePass
           b.replaceOp(op, value->getResults());
         }
         b.setInsertionPointToEnd(block);
+        SmallVector<Value> outputs{mapping.lookup(store.getValue())};
+        if (keepBranch)
+          outputs.push_back(mapping.lookup(keepBranch.getCondition()));
         if (wordTexels) {
           make(b, store.getLoc(), fragment::OutputWordOp::getOperationName(),
-               {}, ValueRange{mapping.lookup(store.getValue())}, {});
+               {}, outputs, {});
           // Equal index expressions become one value, so the emitter sees
           // the Loads that share texels (the Device sources recompute
           // offsets per access). Only pure operations merge, so every value
@@ -370,8 +408,8 @@ struct LowerGatherDevicePass
                  ValueRange{mapping.lookup(store.getValue())},
                  {b.getNamedAttr("byte_offset", b.getI32IntegerAttr(0)),
                   b.getNamedAttr("format", b.getStringAttr("rgba8_unorm"))});
-        make(b, loc, fragment::OutputOp::getOperationName(), {},
-             packed->getResults(), {});
+        outputs[0] = packed->getResult(0);
+        make(b, loc, fragment::OutputOp::getOperationName(), {}, outputs, {});
       }
     }
     for (auto module : modules)

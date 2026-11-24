@@ -206,6 +206,16 @@ stay in the investigation section.
 - Rule: every kernel must define its output for the complete draw. Logical
   bounds must produce a neutral or zero tail, and downstream kernels may read
   only the declared logical element count.
+- Exception: a partial-output kernel. Its gpu.func stores its word only where
+  a condition holds (the store is alone in a top-level `scf.if`), and its
+  `vrc.output_granule` promises that the condition is the same for every
+  aligned run of that many words. The output carries the condition as `keep`,
+  and a fragment whose `keep` is false runs HLSL `discard`, so its texel keeps
+  the contents it had before the Blit, as the transfer shader's modes 1 and 2
+  do. The kernel never reads its target (a Blit cannot), and a word-texel
+  format needs a granule of whole texels (`vrc-lower-gather-device` rejects
+  another), so no texel is written in part and no snapshot is needed. ONNX
+  Host finalization uses it to write only the new rows of an in-place Concat.
 
 ### ONNX shader inputs have distinct dynamic and static roles
 

@@ -13,8 +13,12 @@ class FragmentRenderer {
 public:
   virtual ~FragmentRenderer() = default;
   virtual std::array<uint8_t, 4> draw(float uniform) = 0;
-  virtual std::vector<uint8_t> drawWords(std::span<const uint8_t> input,
-                                         std::span<const uint8_t> scalars) = 0;
+  // With `destination` (a gather draw's target words), the target starts
+  // with those words instead of a clear color, so a fragment that discards
+  // keeps its texel as it was.
+  virtual std::vector<uint8_t>
+  drawWords(std::span<const uint8_t> input, std::span<const uint8_t> scalars,
+            std::span<const uint8_t> destination = {}) = 0;
   virtual std::string deviceName() const = 0;
 };
 std::unique_ptr<FragmentRenderer>

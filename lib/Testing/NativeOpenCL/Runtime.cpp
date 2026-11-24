@@ -92,7 +92,8 @@ bool Session::gatherProfile(const char *name,
 int Session::drawGather(uint32_t id, const unsigned char *const *inputs,
                         size_t inputCount, size_t bytes,
                         const unsigned char *scalars, size_t scalarBytes,
-                        unsigned char *output) noexcept {
+                        unsigned char *output,
+                        const unsigned char *destination) noexcept {
   try {
     for (size_t i = 0; i < gatherBindings.size(); ++i) {
       const auto &binding = gatherBindings[i];
@@ -111,8 +112,13 @@ int Session::drawGather(uint32_t id, const unsigned char *const *inputs,
         std::memcpy(packedInputs.data() + textureBytes * input, inputs[input],
                     bytes);
       }
-      auto result =
-          gatherRenderers[i]->drawWords(packedInputs, {scalars, scalarBytes});
+      std::vector<uint8_t> target;
+      if (destination) {
+        target.assign(textureBytes, 0);
+        std::memcpy(target.data(), destination, bytes);
+      }
+      auto result = gatherRenderers[i]->drawWords(
+          packedInputs, {scalars, scalarBytes}, target);
       if (result.size() < bytes)
         return 0;
       std::memcpy(output, result.data(), bytes);

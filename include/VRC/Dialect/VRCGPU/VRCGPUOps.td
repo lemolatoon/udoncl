@@ -36,9 +36,13 @@ def VRCGPU_RawPackOp : Op<VRCGPU_Dialect, "raw_pack", [Pure]> {
   let results = (outs VectorOfLengthAndType<[4], [F32]>:$texel);
   let hasVerifier = 1;
 }
+// With `keep`, a fragment whose `keep` is false writes nothing (HLSL
+// `discard`): its texel of the target keeps the contents it had before the
+// pass. A kernel that writes part of its target this way never reads it.
 def VRCGPU_OutputOp : Op<VRCGPU_Dialect, "output", [Terminator, HasParent<"PassOp">]> {
   let summary = "Write the sole render target";
-  let arguments = (ins VectorOfLengthAndType<[4], [F32]>:$value);
+  let arguments = (ins VectorOfLengthAndType<[4], [F32]>:$value,
+    Optional<I1>:$keep);
 }
 
 def VRCGPU_FragmentCoordOp : Op<VRCGPU_Dialect, "fragment_coord", [Pure]> {
@@ -73,9 +77,11 @@ def VRCGPU_WordLoadOp : Op<VRCGPU_Dialect, "word_load", [Pure]> {
   let assemblyFormat = "$resource `[` $index `]` attr-dict `:` type($value)";
   let hasVerifier = 1;
 }
+// `keep` is as for `output`; the four words of a texel share one value of it
+// (the kernel's vrc.output_granule is a multiple of four words).
 def VRCGPU_OutputWordOp : Op<VRCGPU_Dialect, "output_word", [Terminator, HasParent<"PassOp">]> {
   let summary = "Write the word of the sole word-texel render target";
-  let arguments = (ins AnyType:$value);
-  let assemblyFormat = "$value attr-dict `:` type($value)";
+  let arguments = (ins AnyType:$value, Optional<I1>:$keep);
+  let assemblyFormat = "$value (`if` $keep^)? attr-dict `:` type($value)";
   let hasVerifier = 1;
 }

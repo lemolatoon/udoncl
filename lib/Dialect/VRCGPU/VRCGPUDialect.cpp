@@ -307,6 +307,8 @@ LogicalResult PassOp::verify() {
   auto output = cast<OutputOp>(block.back());
   if (!output.getValue().getDefiningOp<RawPackOp>())
     return emitOpError("RGBA8 output must be produced by raw_pack");
+  if (output.getKeep())
+    return emitOpError("the initial pattern writes every fragment");
   return success();
 }
 LogicalResult UniformLoadOp::verify() {

@@ -414,8 +414,28 @@ public:
     std::memcpy(result.data(), bytes.data(), 4);
     return result;
   }
-  std::vector<uint8_t> drawWords(std::span<const uint8_t> input,
-                                 std::span<const uint8_t> scalars) override {
+  std::vector<uint8_t>
+  drawWords(std::span<const uint8_t> input, std::span<const uint8_t> scalars,
+            std::span<const uint8_t> destination = {}) override {
+    if (destination.empty())
+      return drawOnce(input, scalars, false);
+    if (!gather || destination.size() != size_t(width) * height * 4)
+      throw std::runtime_error("invalid fragment destination size");
+    // The render pass clears its target. Two draws over clears that differ
+    // in every byte agree exactly on the texels the kernel writes; every
+    // other texel keeps the destination's word.
+    std::vector<uint8_t> first = drawOnce(input, scalars, false);
+    std::vector<uint8_t> second = drawOnce(input, scalars, true);
+    for (size_t texel = 0; texel < first.size(); texel += 4)
+      if (std::memcmp(first.data() + texel, second.data() + texel, 4) != 0)
+        std::memcpy(first.data() + texel, destination.data() + texel, 4);
+    return first;
+  }
+
+private:
+  std::vector<uint8_t> drawOnce(std::span<const uint8_t> input,
+                                std::span<const uint8_t> scalars,
+                                bool alternateClear) {
     size_t inputBytes = size_t(width) * height * 4;
     if (scalars.size() > 64 ||
         (gather ? input.size() != inputBytes * inputCount : !input.empty()))
@@ -469,7 +489,8 @@ public:
     }
     VkClearValue clear{};
     clear.color.float32[0] = clear.color.float32[2] = clear.color.float32[3] =
-        1;
+        alternateClear ? 0 : 1;
+    clear.color.float32[1] = alternateClear ? 1 : 0;
     auto render =
         info<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
     render.renderPass = state.renderPass;

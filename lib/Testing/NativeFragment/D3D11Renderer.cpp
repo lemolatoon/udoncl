@@ -114,11 +114,13 @@ public:
     std::memcpy(result.data(), bytes.data(), 4);
     return result;
   }
-  std::vector<uint8_t> drawWords(std::span<const uint8_t> state,
-                                 std::span<const uint8_t> scalars) override {
+  std::vector<uint8_t>
+  drawWords(std::span<const uint8_t> state, std::span<const uint8_t> scalars,
+            std::span<const uint8_t> destination = {}) override {
     size_t inputBytes = size_t(width) * height * 4;
     if (scalars.size() > 64 ||
-        (gather ? state.size() != inputBytes * inputCount : !state.empty()))
+        (gather ? state.size() != inputBytes * inputCount : !state.empty()) ||
+        (!destination.empty() && (!gather || destination.size() != inputBytes)))
       throw std::runtime_error("invalid fragment input/payload size");
     uint8_t data[64]{};
     if (!scalars.empty())
@@ -137,7 +139,10 @@ public:
       context->PSSetShaderResources(0, inputCount, views);
     }
     float clear[4]{1, 0, 1, 1};
-    if (texelWords == 1)
+    if (!destination.empty())
+      context->UpdateSubresource(target.Get(), 0, nullptr, destination.data(),
+                                 width * 4, 0);
+    else if (texelWords == 1)
       context->ClearRenderTargetView(view.Get(), clear);
     ID3D11RenderTargetView *rt = view.Get();
     context->OMSetRenderTargets(1, &rt, nullptr);
