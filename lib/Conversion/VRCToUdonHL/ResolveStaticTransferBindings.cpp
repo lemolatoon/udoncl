@@ -163,8 +163,12 @@ struct ResolveStaticTransferBindingsPass
           auto ids = resourceCase
                          ? resourceCase.getAs<ArrayAttr>("resource_ids")
                          : nullptr;
+          // A handle that may be null still names one allocation when it is
+          // not: the OpenCL transfer checks its handles before it moves any
+          // data, and its specialization keeps that check, so a null handle
+          // fails as it would without one.
           if (!root || !path || !unknown || unknown.getValue() || !mayBeNull ||
-              mayBeNull.getValue() || !ids || ids.size() != 1) {
+              !ids || ids.size() != 1) {
             unresolved = true;
             continue;
           }
