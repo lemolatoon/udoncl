@@ -248,11 +248,37 @@ registry and the generated dispatchers (`udononnxruntime_internal.h`) and the
 runtime of the transitional sequence-state binding (`udononnx_transitional.h`)
 are installed next to the runtime sources and are not public API.
 
-## Banked sequence state
+## Transitional sequence state (removed in stage 3)
+
+The three mechanisms below (banks, partial advance, zero rows) are private to
+the transitional sequence-state binding and are not part of the UdonONNX API.
+Only a model library built with `TRANSITIONAL_SEQUENCE_STATE`
+(`udoncl_add_onnx_host_library`) gets that binding, and only the TinyLlama
+Conversation and Chat model libraries of `examples/onnx-transformer-tiny` are
+built so: the programs `tinyllama_real_conversation`,
+`tinyllama_real_conversation_4k`, `tinyllama_real_chat` and
+`tinyllama_real_chat_4k`. Their Host (`conversation_host.c`) calls the
+`__udononnx_transitional_*` functions of the example's private header
+`transitional_sequence_state.h`, and these four programs are the only ones
+the static resource lowering still lets use the run-time Device buffer pool
+(manifest `onnx_binding.transitional_sequence_state`). Every other ONNX Host,
+the TinyLlama prefill and M=1 step validation programs included, binds its
+past and present tensors as ordinary graph inputs and outputs through the
+session API above.
+
+Stage 3 removes all of it: the four programs bind their key/value tensors
+through the session API like any other tensor, a `Concat` whose first operand
+is bound to the leading block of its output's buffer writes only the new
+rows (in-place Concat), and a dimension the model declares dynamic is
+bounded at build time and given its extent at bind time (bounded dynamic
+dimensions). No KV-specific API is added; the compiler identifies no
+sequence state.
+
+### Banked sequence state
 
 Advancing a sequence state (an ONNX past input carried into the next run from
-the `Concat` that produces the matching present output) is a binding
-mechanism of this section, not an operator: it adds no UdonBLAS, UdonDNN,
+the `Concat` that produces the matching present output) is a transitional
+binding mechanism, not an operator: it adds no UdonBLAS, UdonDNN,
 UdonATen or UdonONNXOperators API and changes no operator contract. The
 `Concat` stays the UdonONNXOperators operator, and ONNX semantics are
 unchanged: every run computes present = Concat(past, new) element for
@@ -283,9 +309,9 @@ codes instead of a different contract: ranges are word-aligned
 `CL_INVALID_OPERATION`; one Host transfer is outstanding at a time, so a
 second transfer first waits for the previous one.
 
-## Partial sequence-state advance
+### Partial sequence-state advance
 
-Also a binding mechanism of this section, not an operator. A graph
+Also a transitional binding mechanism, not an operator. A graph
 specialized to a sequence of k > 1 positions (every state appends the same k
 rows per run; `sequenceStatePartialAdvanceStep` in
 `ONNXHostSequenceExtents.h`) lets a Host run fewer than k real positions in
@@ -320,9 +346,9 @@ The function is generated only for such a graph and is not a Udon export;
 like materialization, a C Host calls it. A graph of one row per run (every
 M=1 decode graph) is generated exactly as before.
 
-## Zero rows of a sequence state
+### Zero rows of a sequence state
 
-Like the banks, this is a binding mechanism, not an operator: it adds no
+Like the banks, this is a transitional binding mechanism, not an operator: it adds no
 public API and changes no operator contract or result
 (`ONNXHostSequenceExtents.h`). The reset fills every past input with zeros,
 and every advance drops the first `step` rows, so before the run that
