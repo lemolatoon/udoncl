@@ -142,6 +142,14 @@ inline std::string onnxHostDeviceBufferOwnedSymbol(unsigned index) {
       .str();
 }
 
+/// The `cl_mem` a UdonONNX session (udononnxBindInput/udononnxBindOutput)
+/// bound to graph input or output `index`, or null while it is unbound.
+inline std::string onnxHostBoundMemorySymbol(bool output, unsigned index) {
+  return (llvm::Twine("__udon_onnx_bound_") + (output ? "output" : "input") +
+          "_" + llvm::Twine(index))
+      .str();
+}
+
 /// The session binding version the run's resolved physical tokens belong to
 /// (0: none resolved).
 inline constexpr llvm::StringLiteral onnxHostResolvedBindingVersionSymbol =

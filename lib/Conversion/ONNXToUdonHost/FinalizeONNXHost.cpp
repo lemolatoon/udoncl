@@ -2743,13 +2743,82 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   }
   if (supportsDeviceGraph(graph) && operatorScratchBytes(graph))
     releaseDeviceBuffer(operatorScratchSymbol, operatorScratchOwnedSymbol);
+  // The buffers a UdonONNX session bound stay owned by the caller; the
+  // session forgets them.
+  for (bool output : {false, true}) {
+    unsigned count = output ? graph.outputs.size() : graph.inputs.size();
+    for (unsigned index = 0; index < count; ++index)
+      store(builder, location, nullPointer(builder, location),
+            addressOf(builder, location,
+                      onnxHostBoundMemorySymbol(output, index)));
+  }
   func::ReturnOp::create(builder, location,
                          loadI32(builder, location, disposeStatus));
   declarations.require("clReleaseMemObject", {pointer}, {i32});
 
+  // BindMemory(graph_id, output, index, memory) keeps the cl_mem a UdonONNX
+  // session binds to graph input (output = 0) or output (output = 1) `index`
+  // in the generated memory cell udononnxGeneratedRun reads; a null memory
+  // unbinds it.
   builder.setInsertionPointToEnd(module.getBody());
-  auto run = func::FuncOp::create(builder, location,
-                                  "udononnxGeneratedEnqueueRun", signature);
+  auto bindMemory = func::FuncOp::create(
+      builder, location, "udononnxGeneratedBindMemory",
+      FunctionType::get(module.getContext(), {i32, i32, i32, pointer}, {i32}));
+  {
+    Block *bindEntry = bindMemory.addEntryBlock();
+    Block *bindValid = bindMemory.addBlock();
+    Block *bindInvalid = bindMemory.addBlock();
+    builder.setInsertionPointToEnd(bindEntry);
+    graphMatches(bindEntry, bindValid, bindInvalid);
+    builder.setInsertionPointToEnd(bindInvalid);
+    func::ReturnOp::create(builder, location, onnxStatus(1));
+    Block *inputs = bindMemory.addBlock();
+    Block *outputs = bindMemory.addBlock();
+    builder.setInsertionPointToEnd(bindValid);
+    Value isOutput =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
+                              bindEntry->getArgument(1), onnxStatus(0));
+    cf::CondBranchOp::create(builder, location, isOutput, outputs, ValueRange{},
+                             inputs, ValueRange{});
+    for (bool output : {false, true}) {
+      unsigned count = output ? graph.outputs.size() : graph.inputs.size();
+      SmallVector<int32_t> caseValues;
+      SmallVector<Block *> caseBlocks;
+      for (unsigned index = 0; index < count; ++index) {
+        Block *bind = bindMemory.addBlock();
+        builder.setInsertionPointToEnd(bind);
+        store(builder, location, bindEntry->getArgument(3),
+              addressOf(builder, location,
+                        onnxHostBoundMemorySymbol(output, index)));
+        func::ReturnOp::create(builder, location, onnxStatus(0));
+        caseValues.push_back(static_cast<int32_t>(index));
+        caseBlocks.push_back(bind);
+      }
+      builder.setInsertionPointToEnd(output ? outputs : inputs);
+      SmallVector<ValueRange> caseOperands(caseBlocks.size(), ValueRange{});
+      cf::SwitchOp::create(builder, location, bindEntry->getArgument(2),
+                           bindInvalid, ValueRange{}, caseValues, caseBlocks,
+                           caseOperands);
+    }
+  }
+
+  // udononnxGeneratedRun(graph_id, queue, completion) runs the graph on the
+  // buffers a UdonONNX session bound (udononnxGeneratedBindMemory); a graph
+  // the Device cannot run is not supported there.
+  builder.setInsertionPointToEnd(module.getBody());
+  auto sessionRun = func::FuncOp::create(
+      builder, location, "udononnxGeneratedRun",
+      FunctionType::get(module.getContext(), {i32, pointer, pointer}, {i32}));
+  sessionRun->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
+  Block *sessionRunEntry = sessionRun.addEntryBlock();
+  if (!supportsDeviceGraph(graph)) {
+    builder.setInsertionPointToEnd(sessionRunEntry);
+    func::ReturnOp::create(builder, location, onnxStatus(4));
+  }
+
+  builder.setInsertionPointToEnd(module.getBody());
+  func::FuncOp run = func::FuncOp::create(
+      builder, location, "udononnxGeneratedEnqueueRun", signature);
   run->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
   Block *entry = run.addEntryBlock();
   Block *body = run.addBlock();
@@ -2910,7 +2979,91 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     store(builder, location, bindingVersion,
           addressOf(builder, location, onnxHostResolvedBindingVersionSymbol));
     cf::BranchOp::create(builder, location, tokensReady);
+
+    // Everything after the tokens are resolved is the resolved run, which
+    // the legacy run and the UdonONNX session run share. It reads the
+    // tokens from the cache, so it takes the arguments of the legacy run.
+    builder.setInsertionPointToEnd(module.getBody());
+    auto resolvedRun = func::FuncOp::create(
+        builder, location, "__udononnx_enqueue_resolved_run", signature);
+    resolvedRun->setAttr("vrc.async_effect",
+                         builder.getStringAttr("may_suspend"));
+    resolvedRun.setPrivate();
+    Block *resolvedEntry = resolvedRun.addEntryBlock();
     builder.setInsertionPointToEnd(tokensReady);
+    func::ReturnOp::create(builder, location,
+                           func::CallOp::create(builder, location, resolvedRun,
+                                                entry->getArguments())
+                               .getResult(0));
+
+    // The UdonONNX session run resolves the bound memory cells (an empty
+    // cell is a missing binding) and the owned buffers to tokens. It keeps
+    // no binding version: a legacy run after it resolves again.
+    run = sessionRun;
+    entry = sessionRunEntry;
+    {
+      Block *valid = run.addBlock();
+      Block *invalid = run.addBlock();
+      builder.setInsertionPointToEnd(entry);
+      graphMatches(entry, valid, invalid);
+      builder.setInsertionPointToEnd(invalid);
+      func::ReturnOp::create(builder, location, onnxStatus(1));
+      builder.setInsertionPointToEnd(valid);
+      SmallVector<Value> sessionTokens(graph.tensors.size());
+      auto resolveCell = [&](bool output, unsigned index,
+                             unsigned tensorIndex) {
+        Value memory =
+            loadPointer(builder, location,
+                        addressOf(builder, location,
+                                  onnxHostBoundMemorySymbol(output, index)));
+        Value isBound = arith::CmpIOp::create(
+            builder, location, arith::CmpIPredicate::ne,
+            pointerToInt(builder, location, memory), constant(0));
+        Block *bound = run.addBlock();
+        Block *missing = run.addBlock();
+        cf::CondBranchOp::create(builder, location, isBound, bound,
+                                 ValueRange{}, missing, ValueRange{});
+        builder.setInsertionPointToEnd(missing);
+        func::ReturnOp::create(builder, location, onnxStatus(11));
+        builder.setInsertionPointToEnd(bound);
+        sessionTokens[tensorIndex] = resolvePhysicalBuffer(memory);
+      };
+      for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs))
+        resolveCell(false, inputIndex, tensorIndex);
+      for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph.outputs))
+        resolveCell(true, outputIndex, tensorIndex);
+      for (unsigned tensorIndex : plan.ownedDeviceBuffers) {
+        if (sessionTokens[tensorIndex])
+          continue;
+        Value handle = loadPointer(
+            builder, location,
+            addressOf(builder, location, deviceBufferSymbol(tensorIndex)));
+        sessionTokens[tensorIndex] = resolvePhysicalBuffer(handle);
+      }
+      for (unsigned tensorIndex : resolvedTensors) {
+        if (!sessionTokens[tensorIndex])
+          return emitError(location)
+                 << "ONNX Device session run did not resolve tensor "
+                 << tensorIndex;
+        store(builder, location, sessionTokens[tensorIndex],
+              addressOf(builder, location,
+                        onnxHostResolvedTokenSymbol(tensorIndex)));
+      }
+      store(builder, location, constant(0),
+            addressOf(builder, location, onnxHostResolvedBindingVersionSymbol));
+      func::ReturnOp::create(
+          builder, location,
+          func::CallOp::create(
+              builder, location, resolvedRun,
+              ValueRange{entry->getArgument(0), nullPointer(builder, location),
+                         entry->getArgument(1), constant(0),
+                         nullPointer(builder, location), entry->getArgument(2)})
+              .getResult(0));
+    }
+
+    run = resolvedRun;
+    entry = resolvedEntry;
+    builder.setInsertionPointToEnd(entry);
     for (unsigned tensorIndex : resolvedTensors) {
       Value token =
           loadI32(builder, location,

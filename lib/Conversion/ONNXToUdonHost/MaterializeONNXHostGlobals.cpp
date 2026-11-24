@@ -254,6 +254,16 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
     if (failed(reserve(onnxHostHasRunSymbol)))
       return failure();
   }
+  for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs)) {
+    (void)tensorIndex;
+    if (failed(reserve(onnxHostBoundMemorySymbol(false, inputIndex))))
+      return failure();
+  }
+  for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph.outputs)) {
+    (void)tensorIndex;
+    if (failed(reserve(onnxHostBoundMemorySymbol(true, outputIndex))))
+      return failure();
+  }
   for (unsigned tensorIndex : plan.ownedDeviceBuffers)
     if (failed(reserve(onnxHostDeviceBufferSymbol(tensorIndex))) ||
         failed(reserve(onnxHostDeviceBufferOwnedSymbol(tensorIndex))))
@@ -339,6 +349,15 @@ struct MaterializeONNXHostGlobalsPass
         createI32Global(module, onnxHostInputBindingSymbol(inputIndex));
       }
       createI32Global(module, onnxHostHasRunSymbol);
+    }
+    // The cl_mem a UdonONNX session binds to each graph input and output.
+    for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph->inputs)) {
+      (void)tensorIndex;
+      createPointerGlobal(module, onnxHostBoundMemorySymbol(false, inputIndex));
+    }
+    for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph->outputs)) {
+      (void)tensorIndex;
+      createPointerGlobal(module, onnxHostBoundMemorySymbol(true, outputIndex));
     }
     for (unsigned tensorIndex : plan->ownedDeviceBuffers) {
       createPointerGlobal(module, onnxHostDeviceBufferSymbol(tensorIndex));
