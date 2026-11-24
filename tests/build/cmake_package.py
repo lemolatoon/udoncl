@@ -338,11 +338,12 @@ def main():
     assert (
         install / 'share/udononnxruntime/src/udononnxruntime.c'
     ).is_file()
-    # The internal headers sit with the runtime sources, not in include/;
+    # The internal header sits with the runtime sources, not in include/;
     # only udononnxruntime.h and the status enum are public.
-    for internal in ['udononnxruntime_internal.h', 'udononnx_transitional.h']:
-        assert (install / 'share/udononnxruntime/src' / internal).is_file()
-        assert not (install / 'include' / internal).exists()
+    assert (
+        install / 'share/udononnxruntime/src/udononnxruntime_internal.h'
+    ).is_file()
+    assert not (install / 'include/udononnxruntime_internal.h').exists()
     for removed in ['onnx_binding_abi.h', 'onnx_generated_binding.h']:
         assert not (install / 'include/udoncl' / removed).exists()
     assert (
@@ -374,14 +375,6 @@ def main():
         '    size_t index, const struct udononnxModel **model) {\n'
         '  (void)index; if (model) *model = 0;\n'
         '  return UDONONNX_STATUS_INVALID_VALUE;\n'
-        '}\n'
-        'udononnxStatus_t udononnxGeneratedEnqueueRun(\n'
-        '    uint32_t graph_id, struct udononnxTransitionalSession *value,\n'
-        '    cl_command_queue queue, cl_uint wait_count,\n'
-        '    const cl_event *wait_list, cl_event *completion) {\n'
-        '  (void)graph_id; (void)value; (void)queue; (void)wait_count;\n'
-        '  (void)wait_list; (void)completion;\n'
-        '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
         '}\n'
         'udononnxStatus_t udononnxGeneratedCreate(\n'
         '    uint32_t graph_id, struct udononnxTransitionalSession *value,\n'
@@ -529,10 +522,9 @@ def main():
     generated_onnx_host_text = run([
         install / 'bin' / f'udoncl-opt{suffix}', generated_onnx_host,
     ])
-    # A model library built without TRANSITIONAL_SEQUENCE_STATE has no
-    # private binding: its Host binds buffers through the session API.
+    # A model library has no binding of its own: its Host binds buffers
+    # through the session API.
     assert 'udoncl.export' not in generated_onnx_host_text
-    assert '__udononnx_transitional_' not in generated_onnx_host_text
     for symbol in ['udononnxGeneratedCreate', 'udononnxGeneratedBindMemory',
                    'udononnxGeneratedRun', 'udononnxGeneratedDispose']:
         assert f'func.func @{symbol}' in generated_onnx_host_text
@@ -1099,7 +1091,6 @@ def main():
         assert cleanup in complete_readback
     assert 'public int TryShutdown(out int result)' in mnist_binding
     assert 'BindOnnxTensorPhysical' not in mnist_binding
-    assert '__udononnx_transitional_bind_tensor' not in mnist_binding
     assert 'public void _ContinueAsyncCommand()' in mnist_binding
     assert 'int physicalBufferToken = (int)rawBuffer;' in mnist_binding
     assert 'int index = physicalBufferToken - 1;' in mnist_binding
@@ -1368,8 +1359,6 @@ def main():
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])
-    # The synthetic model library has no private binding.
-    assert '__udononnx_transitional_' not in transformer_source
     assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source
     assert 'udoncl.onnx_device_graph = true' in transformer_source
     assert 'udoncl.onnx_device_unsupported = []' in transformer_source

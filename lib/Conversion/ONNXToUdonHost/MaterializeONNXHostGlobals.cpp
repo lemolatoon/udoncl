@@ -2,7 +2,6 @@
 #include "ONNXHostGraph.h"
 #include "ONNXHostMaterialization.h"
 #include "ONNXHostPlan.h"
-#include "ONNXHostSequenceExtents.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "udoncl/udon_abi_layout.h"
@@ -148,36 +147,7 @@ void setBufferViewLayout(Operation *global, int32_t count, int32_t stride,
       }));
 }
 
-/// The state of the private transitional binding (removed in stage 3). Only
-/// a library built with TRANSITIONAL_SEQUENCE_STATE has that binding; every
-/// other Host binds its buffers through the UdonONNX session API.
-void createTransitionalBindingGlobals(ModuleOp module,
-                                      const GraphRecord &graph) {
-  setBufferViewLayout(createZeroGlobal(module, onnxHostBindingStateSymbol,
-                                       onnxHostBindingStateStorageBytes),
-                      0, 0, {});
-  setBufferViewLayout(
-      createZeroGlobal(module, onnxHostBindingInputSymbol,
-                       std::max<size_t>(graph.inputs.size(), 1) *
-                           onnxHostBindingTensorStorageBytes),
-      static_cast<int32_t>(graph.inputs.size()),
-      UDONCL_UDON_ABI_ONNX_TENSOR_BYTES, {0});
-  setBufferViewLayout(
-      createZeroGlobal(module, onnxHostBindingOutputSymbol,
-                       std::max<size_t>(graph.outputs.size(), 1) *
-                           onnxHostBindingTensorStorageBytes),
-      static_cast<int32_t>(graph.outputs.size()),
-      UDONCL_UDON_ABI_ONNX_TENSOR_BYTES, {0});
-  createZeroGlobal(
-      module, onnxHostBindingIoHandlesSymbol,
-      std::max<size_t>(graph.inputs.size() + graph.outputs.size(), 1) *
-          onnxHostBindingBufferHandleBytes,
-      4);
-  createI32Global(module, onnxHostBindingEventSymbol);
-}
-
-void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph,
-                                bool transitional) {
+void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
   setBufferViewLayout(createZeroGlobal(module, onnxHostModelStorageSymbol,
                                        onnxHostModelStorageBytes),
                       0, 0, {});
@@ -192,15 +162,6 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph,
                            onnxHostMetadataStorageBytes),
       0, 0, {});
   createStringGlobal(module, onnxHostModelNameSymbol, "model");
-  if (transitional)
-    createTransitionalBindingGlobals(module, graph);
-  if (!graph.sequenceStates.empty()) {
-    createI32Global(module, onnxHostSequenceStateOwnedSymbol);
-    createI32Global(module, onnxHostSequenceStatePendingSymbol);
-    createI32Global(module, onnxHostSequenceStatePoisonedSymbol);
-    // The fill pattern that clears every sequence state: one zero word.
-    createZeroGlobal(module, onnxHostSequenceStateZeroSymbol, 4, 4);
-  }
   // A dynamic axis is -1 in the dimensions and its largest extent in the
   // dimension bounds of the registry.
   for (bool output : {false, true}) {
@@ -239,19 +200,6 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
         onnxHostOutputMetadataSymbol, onnxHostModelNameSymbol})
     if (failed(reserve(symbol)))
       return failure();
-  if (isTransitionalSequenceStateHost(module))
-    for (StringRef symbol :
-         {onnxHostBindingStateSymbol, onnxHostBindingInputSymbol,
-          onnxHostBindingOutputSymbol, onnxHostBindingEventSymbol,
-          onnxHostBindingIoHandlesSymbol})
-      if (failed(reserve(symbol)))
-        return failure();
-  if (!graph.sequenceStates.empty())
-    for (StringRef symbol :
-         {onnxHostSequenceStateOwnedSymbol, onnxHostSequenceStatePendingSymbol,
-          onnxHostSequenceStatePoisonedSymbol, onnxHostSequenceStateZeroSymbol})
-      if (failed(reserve(symbol)))
-        return failure();
   for (bool output : {false, true}) {
     ArrayRef<unsigned> tensors = output ? graph.outputs : graph.inputs;
     for (auto [index, tensorIndex] : llvm::enumerate(tensors)) {
@@ -305,17 +253,6 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
       (failed(reserve(onnxHostOperatorScratchSymbol)) ||
        failed(reserve(onnxHostOperatorScratchOwnedSymbol))))
     return failure();
-  if (!plan.sequenceStateBanks.empty() &&
-      failed(reserve(onnxHostSequenceStateBankSymbol)))
-    return failure();
-  if (!plan.sequenceStateBanks.empty() &&
-      sequenceStatePartialAdvanceStep(graph) &&
-      failed(reserve(onnxHostSequenceStateAdvancedRowsSymbol)))
-    return failure();
-  if (deviceSequenceExtents(graph).used() &&
-      (failed(reserve(onnxHostSequenceStateFillAgeSymbol)) ||
-       failed(reserve(onnxHostSequenceStateExposedSymbol))))
-    return failure();
 
   for (const auto &entry : symbols)
     if (Operation *existing =
@@ -368,8 +305,7 @@ struct MaterializeONNXHostGlobalsPass
     if (!plan->deviceGraph)
       for (const TensorRecord &tensor : graph->tensors)
         createTensorGlobal(module, tensor);
-    createModelMetadataGlobals(module, *graph,
-                               isTransitionalSequenceStateHost(module));
+    createModelMetadataGlobals(module, *graph);
     if (!plan->deviceGraph) {
       for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph->inputs)) {
         (void)tensorIndex;
@@ -418,15 +354,6 @@ struct MaterializeONNXHostGlobalsPass
         module.lookupSymbol(symbol)->setAttr(
             "vrc.resolved_token_cache", UnitAttr::get(module.getContext()));
       }
-    }
-    if (!plan->sequenceStateBanks.empty())
-      createI32Global(module, onnxHostSequenceStateBankSymbol);
-    if (!plan->sequenceStateBanks.empty() &&
-        sequenceStatePartialAdvanceStep(*graph))
-      createI32Global(module, onnxHostSequenceStateAdvancedRowsSymbol);
-    if (deviceSequenceExtents(*graph).used()) {
-      createI32Global(module, onnxHostSequenceStateFillAgeSymbol);
-      createI32Global(module, onnxHostSequenceStateExposedSymbol);
     }
     module->setAttr(onnxHostGlobalsMaterializedAttr,
                     UnitAttr::get(module.getContext()));

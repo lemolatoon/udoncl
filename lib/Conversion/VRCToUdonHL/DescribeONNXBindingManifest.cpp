@@ -92,8 +92,6 @@ struct DescribeONNXBindingManifestPass
     auto modelName = binding.getAs<StringAttr>("model_name");
     auto inputs = binding.getAs<ArrayAttr>("inputs");
     auto outputs = binding.getAs<ArrayAttr>("outputs");
-    auto transitional =
-        binding.getAs<DictionaryAttr>("transitional_sequence_state");
     if (!abi || !modelIndex || !modelName || !inputs || !outputs)
       return module.emitError("ONNX binding metadata is incomplete");
     auto describedInputs = describeTensors(module, inputs);
@@ -136,28 +134,6 @@ struct DescribeONNXBindingManifestPass
       }
       fields.push_back(builder.getNamedAttr("in_place_concats",
                                             builder.getArrayAttr(described)));
-    }
-    // Transitional (removed in stage 3): only a library built with
-    // TRANSITIONAL_SEQUENCE_STATE names the symbols of its private binding,
-    // the sequence-state ones when the graph has sequence state.
-    if (transitional) {
-      SmallVector<NamedAttribute> symbols;
-      for (StringRef name :
-           {"create_symbol", "bind_all_symbol", "resolve_input_symbol",
-            "resolve_output_symbol", "enqueue_run_symbol", "dispose_symbol"}) {
-        auto value = transitional.getAs<StringAttr>(name);
-        if (!value || value.getValue().empty())
-          return module.emitError()
-                 << "ONNX binding metadata has no transitional " << name;
-        symbols.push_back(builder.getNamedAttr(name, value));
-      }
-      for (StringRef name :
-           {"reset_sequence_state_symbol", "advance_sequence_state_symbol"})
-        if (auto value = transitional.getAs<StringAttr>(name);
-            value && !value.getValue().empty())
-          symbols.push_back(builder.getNamedAttr(name, value));
-      fields.push_back(builder.getNamedAttr(
-          "transitional_sequence_state", builder.getDictionaryAttr(symbols)));
     }
     module->setAttr(descriptionAttribute, builder.getDictionaryAttr(fields));
     return success();

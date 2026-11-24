@@ -5,7 +5,6 @@
 #include "ONNXHostIRBuilder.h"
 #include "ONNXHostMaterialization.h"
 #include "ONNXHostPlan.h"
-#include "ONNXHostSequenceExtents.h"
 #include "ONNXHostSymbols.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
@@ -42,29 +41,7 @@ namespace host = ::vrc::udonhl;
 constexpr StringRef operatorScratchSymbol = onnxHostOperatorScratchSymbol;
 constexpr StringRef operatorScratchOwnedSymbol =
     onnxHostOperatorScratchOwnedSymbol;
-constexpr StringRef bindingStateSymbol = onnxHostBindingStateSymbol;
-constexpr StringRef bindingInputSymbol = onnxHostBindingInputSymbol;
-constexpr StringRef bindingOutputSymbol = onnxHostBindingOutputSymbol;
-constexpr StringRef bindingEventSymbol = onnxHostBindingEventSymbol;
-constexpr StringRef bindingIoHandlesSymbol = onnxHostBindingIoHandlesSymbol;
-constexpr StringRef sequenceStateOwnedSymbol = onnxHostSequenceStateOwnedSymbol;
-constexpr StringRef sequenceStatePendingSymbol =
-    onnxHostSequenceStatePendingSymbol;
-constexpr StringRef sequenceStatePoisonedSymbol =
-    onnxHostSequenceStatePoisonedSymbol;
-constexpr StringRef sequenceStateZeroSymbol = onnxHostSequenceStateZeroSymbol;
-constexpr StringRef sequenceStateBankSymbol = onnxHostSequenceStateBankSymbol;
-constexpr StringRef sequenceStateAdvancedRowsSymbol =
-    onnxHostSequenceStateAdvancedRowsSymbol;
-constexpr StringRef sequenceStateFillAgeSymbol =
-    onnxHostSequenceStateFillAgeSymbol;
-constexpr StringRef sequenceStateExposedSymbol =
-    onnxHostSequenceStateExposedSymbol;
 constexpr StringRef hasRunSymbol = onnxHostHasRunSymbol;
-constexpr int32_t bindingStateStorageBytes = onnxHostBindingStateStorageBytes;
-constexpr int32_t bindingTensorStorageBytes = onnxHostBindingTensorStorageBytes;
-constexpr int32_t bindingBufferHandleBytes = onnxHostBindingBufferHandleBytes;
-constexpr int32_t maximumTensorRank = onnxHostMaximumTensorRank;
 
 std::string inputBindingSymbol(unsigned index) {
   return onnxHostInputBindingSymbol(index);
@@ -83,24 +60,6 @@ unsigned elementByteSize(Type type) { return onnxHostElementByteSize(type); }
 int32_t udonclDataType(Type type) { return onnxHostDataType(type); }
 
 StringRef udonclDataTypeName(Type type) { return onnxHostDataTypeName(type); }
-
-bool isSequenceStateInput(const GraphRecord &graph, size_t index) {
-  return llvm::any_of(graph.sequenceStates,
-                      [&](const SequenceStateRecord &state) {
-                        return state.inputIndex == index;
-                      });
-}
-
-bool isSequenceStateOutput(const GraphRecord &graph, size_t index) {
-  return llvm::any_of(graph.sequenceStates,
-                      [&](const SequenceStateRecord &state) {
-                        return state.outputIndex == index;
-                      });
-}
-
-bool isBankedSequenceState(const HostPlanRecord &plan, size_t stateIndex) {
-  return llvm::is_contained(plan.sequenceStateBanks, stateIndex);
-}
 
 Value addressOf(OpBuilder &builder, Location location, StringRef symbol) {
   return onnxHostAddressOf(builder, location, symbol);
@@ -1488,32 +1447,14 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
   return declarations.result();
 }
 
-/// Declares the runtime functions the generated binding and dispatchers
-/// call.
+/// Declares the runtime functions the generated dispatchers call.
 LogicalResult declareBindingRuntime(ModuleOp module) {
   ONNXHostDeclarations declarations(module);
   Builder builder(module.getContext());
   Type i32 = builder.getI32Type();
   Type pointer = host::PtrType::get(module.getContext(), 0);
-  declarations.require(
-      "udononnxBindingStateCreate",
-      {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32}, {i32});
-  declarations.require("udononnxBindingStateAllocateBuffer",
-                       {pointer, i32, i32, pointer}, {i32});
-  declarations.require("udononnxBindingStateCreateSession", {pointer}, {i32});
-  declarations.require("udononnxBindingStateBeginStaticBind", {pointer}, {i32});
-  declarations.require("udononnxBindingStateCompleteStaticBind", {pointer, i32},
-                       {i32});
   declarations.require("udonclDeviceBufferView",
                        {pointer, i32, i32, i32, pointer}, {i32});
-  declarations.require("udononnxBindingStateEnqueueRun",
-                       {pointer, i32, pointer, pointer}, {i32});
-  declarations.require("udononnxBindingStateGetSession", {pointer, pointer},
-                       {i32});
-  declarations.require("udononnxBindingStateResolveInput",
-                       {pointer, i32, pointer, pointer, pointer}, {i32});
-  declarations.require("udononnxBindingStateResolveOutput",
-                       {pointer, i32, pointer, pointer, pointer}, {i32});
   declarations.require("udononnxSessionResolveInput",
                        {pointer, i32, pointer, pointer, pointer}, {i32});
   declarations.require("udononnxSessionResolveOutput",
@@ -1526,755 +1467,13 @@ LogicalResult declareBindingRuntime(ModuleOp module) {
                        {i32});
   declarations.require("__vrc_opencl_buffer_fill",
                        {i32, i32, i32, pointer, i32}, {i32});
-  declarations.require("udononnxBindingStateGetCommandQueue",
-                       {pointer, pointer}, {i32});
   declarations.require("clFinish", {pointer}, {i32});
   declarations.require("__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
   declarations.require("__vrc_opencl_await", {i32}, {i32});
-  declarations.require("udononnxBindingStateCompleteEvent",
-                       {pointer, pointer, i32}, {i32});
-  declarations.require("udononnxBindingStateDispose", {pointer}, {i32});
   declarations.require("udonclDeviceBufferDestroy", {pointer}, {i32});
   declarations.require("clWaitForEvents", {i32, pointer}, {i32});
   declarations.require("clReleaseEvent", {pointer}, {i32});
   return declarations.result();
-}
-
-LogicalResult createPhysicalBindingExports(ModuleOp module,
-                                           const GraphRecord &graph,
-                                           const HostPlanRecord &plan) {
-  ONNXHostDeclarations declarations(module);
-  OpBuilder builder(module.getBodyRegion());
-  Location location = module.getLoc();
-  Type i32 = builder.getI32Type();
-  Type pointer = host::PtrType::get(module.getContext(), 0);
-  auto constant = [&](int64_t value) -> Value {
-    return arith::ConstantIntOp::create(builder, location, value, 32);
-  };
-  bool banked = !plan.sequenceStateBanks.empty();
-  // create, bind-all and reset leave the carried rows of a banked state in
-  // the past input, laid out as the ONNX past tensor.
-  auto resetBank = [&]() {
-    if (banked)
-      store(builder, location, constant(0),
-            addressOf(builder, location, sequenceStateBankSymbol));
-  };
-  // The fill age (ONNXHostSequenceExtents.h): advances since the binding
-  // zero-filled the past inputs, plus one, or 0 when it cannot vouch for
-  // their contents. Only a graph whose runs skip zero rows keeps it.
-  bool fillAge = deviceSequenceExtents(graph).used();
-  auto storeFillAge = [&](Value value) {
-    if (fillAge)
-      store(builder, location, value,
-            addressOf(builder, location, sequenceStateFillAgeSymbol));
-  };
-  auto loadFillAge = [&]() {
-    return loadI32(builder, location,
-                   addressOf(builder, location, sequenceStateFillAgeSymbol));
-  };
-  auto state = [&]() -> Value {
-    return addressOf(builder, location, bindingStateSymbol);
-  };
-  // The binding functions are roots of the Host the user C calls into, never
-  // U# exports of their own: udoncl.internal_export keeps them out of the
-  // generated binding.
-  auto markExport = [&](func::FuncOp function) {
-    function->setAttr("udoncl.export", builder.getUnitAttr());
-    function->setAttr("udoncl.internal_export", builder.getUnitAttr());
-  };
-  builder.setInsertionPointToEnd(module.getBody());
-  auto create = func::FuncOp::create(
-      builder, location, "__udononnx_transitional_create",
-      FunctionType::get(module.getContext(), {pointer, pointer}, {i32}));
-  markExport(create);
-  Block *entry = create.addEntryBlock();
-  builder.setInsertionPointToEnd(entry);
-  auto createCall = func::CallOp::create(
-      builder, location, "udononnxBindingStateCreate", TypeRange{i32},
-      ValueRange{state(), constant(bindingStateStorageBytes),
-                 entry->getArgument(0), entry->getArgument(1), constant(0),
-                 addressOf(builder, location, bindingInputSymbol),
-                 constant(std::max<size_t>(graph.inputs.size(), 1) *
-                          bindingTensorStorageBytes),
-                 addressOf(builder, location, bindingOutputSymbol),
-                 constant(std::max<size_t>(graph.outputs.size(), 1) *
-                          bindingTensorStorageBytes)});
-  auto returnIfNonzero = [&](func::FuncOp function, Value status) {
-    Block *next = function.addBlock();
-    Block *failure = function.addBlock();
-    Value succeeded = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, status, constant(0));
-    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                             failure, ValueRange{});
-    builder.setInsertionPointToEnd(failure);
-    func::ReturnOp::create(builder, location, status);
-    builder.setInsertionPointToEnd(next);
-  };
-  returnIfNonzero(create, createCall.getResult(0));
-  auto handleAddress = [&](size_t index) {
-    return pointerAdd(builder, location,
-                      addressOf(builder, location, bindingIoHandlesSymbol),
-                      constant(index * bindingBufferHandleBytes));
-  };
-  auto allocate = [&](uint32_t access, size_t tensorIndex, size_t handleIndex) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    auto allocated = func::CallOp::create(
-        builder, location, "udononnxBindingStateAllocateBuffer", TypeRange{i32},
-        ValueRange{state(), constant(access),
-                   constant(std::max<int64_t>(
-                       elementByteSize(tensor.type.getElementType()),
-                       deviceAllocationBytes(graph, tensorIndex))),
-                   handleAddress(handleIndex)});
-    returnIfNonzero(create, allocated.getResult(0));
-  };
-  size_t handleIndex = 0;
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
-    allocate(isSequenceStateInput(graph, index) ? 2 : 0, tensorIndex,
-             handleIndex++);
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
-    allocate(isSequenceStateOutput(graph, index) ? 2 : 1, tensorIndex,
-             handleIndex++);
-  // The session's own Device buffers come after the graph inputs and
-  // outputs: the run-time buffer pool numbers buffers in the plan's order
-  // (udoncl.mutable_buffer_bytes), inputs and outputs first.
-  auto createdSession = func::CallOp::create(
-      builder, location, "udononnxBindingStateCreateSession", TypeRange{i32},
-      ValueRange{state()});
-  returnIfNonzero(create, createdSession.getResult(0));
-  if (!graph.sequenceStates.empty()) {
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStateOwnedSymbol));
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePendingSymbol));
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePoisonedSymbol));
-    resetBank();
-    // New buffers: nothing is filled, and no caller holds a past input.
-    storeFillAge(constant(0));
-    if (fillAge)
-      store(builder, location, constant(0),
-            addressOf(builder, location, sequenceStateExposedSymbol));
-  }
-  func::ReturnOp::create(builder, location, constant(0));
-
-  builder.setInsertionPointToEnd(module.getBody());
-  auto bindAll = func::FuncOp::create(
-      builder, location, "__udononnx_transitional_bind_all",
-      FunctionType::get(module.getContext(), {}, {i32}));
-  markExport(bindAll);
-  entry = bindAll.addEntryBlock();
-  builder.setInsertionPointToEnd(entry);
-  auto beginStaticBind = func::CallOp::create(
-      builder, location, "udononnxBindingStateBeginStaticBind", TypeRange{i32},
-      state());
-  returnIfNonzero(bindAll, beginStaticBind.getResult(0));
-  auto returnIfViewFailed = [&](Value status) {
-    Block *next = bindAll.addBlock();
-    Block *failure = bindAll.addBlock();
-    Value succeeded = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, status, constant(0));
-    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                             failure, ValueRange{});
-    builder.setInsertionPointToEnd(failure);
-    Value stale = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, status, constant(3));
-    Value mapped = arith::SelectOp::create(builder, location, stale,
-                                           constant(3), constant(1));
-    auto completed = func::CallOp::create(
-        builder, location, "udononnxBindingStateCompleteStaticBind",
-        TypeRange{i32}, ValueRange{state(), mapped});
-    func::ReturnOp::create(builder, location, completed.getResult(0));
-    builder.setInsertionPointToEnd(next);
-  };
-  auto bindOne = [&](bool output, size_t publicIndex, unsigned tensorIndex,
-                     size_t ioHandleIndex) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    Value bindings = addressOf(
-        builder, location, output ? bindingOutputSymbol : bindingInputSymbol);
-    Value target =
-        pointerAdd(builder, location, bindings,
-                   constant(publicIndex * UDONCL_UDON_ABI_ONNX_TENSOR_BYTES));
-    Value handle = handleAddress(ioHandleIndex);
-    auto viewed = func::CallOp::create(
-        builder, location, "udonclDeviceBufferView", TypeRange{i32},
-        ValueRange{handle, constant(0), constant(tensor.type.getNumElements()),
-                   constant(udonclDataType(tensor.type.getElementType())),
-                   target});
-    returnIfViewFailed(viewed.getResult(0));
-    store(builder, location, constant(tensor.type.getRank()),
-          pointerAdd(builder, location, target,
-                     constant(UDONCL_UDON_ABI_ONNX_TENSOR_RANK_OFFSET)));
-    for (int64_t axis = 0; axis != maximumTensorRank; ++axis) {
-      int64_t dimension =
-          axis < tensor.type.getRank() ? tensor.type.getShape()[axis] : 0;
-      Value field = pointerAdd(
-          builder, location, target,
-          constant(UDONCL_UDON_ABI_ONNX_TENSOR_DIMENSIONS_OFFSET +
-                   axis * UDONCL_UDON_ABI_ONNX_TENSOR_DIMENSION_STRIDE));
-      store(builder, location,
-            arith::ConstantIntOp::create(builder, location, dimension, 64),
-            field);
-    }
-  };
-  handleIndex = 0;
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
-    bindOne(false, index, tensorIndex, handleIndex++);
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
-    bindOne(true, index, tensorIndex, handleIndex++);
-  if (!graph.sequenceStates.empty()) {
-    store(builder, location, constant(1),
-          addressOf(builder, location, sequenceStateOwnedSymbol));
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePendingSymbol));
-    resetBank();
-    storeFillAge(constant(0));
-  }
-  auto completedStaticBind = func::CallOp::create(
-      builder, location, "udononnxBindingStateCompleteStaticBind",
-      TypeRange{i32}, ValueRange{state(), constant(0)});
-  func::ReturnOp::create(builder, location, completedStaticBind.getResult(0));
-
-  auto createResolve = [&](StringRef name, StringRef callee, bool input) {
-    builder.setInsertionPointToEnd(module.getBody());
-    auto resolve = func::FuncOp::create(
-        builder, location, name,
-        FunctionType::get(module.getContext(), {i32, pointer, pointer, pointer},
-                          {i32}));
-    markExport(resolve);
-    Block *resolveEntry = resolve.addEntryBlock();
-    builder.setInsertionPointToEnd(resolveEntry);
-    if (input && fillAge) {
-      // A caller holding a past input may write it whenever it likes, so the
-      // binding stops vouching for any fill from now on.
-      Value exposed = addressOf(builder, location, sequenceStateExposedSymbol);
-      Value pastInput = arith::ConstantIntOp::create(builder, location, 0, 1);
-      for (const SequenceStateRecord &sequence : graph.sequenceStates)
-        pastInput = arith::OrIOp::create(
-            builder, location, pastInput,
-            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                  resolveEntry->getArgument(0),
-                                  constant(sequence.inputIndex)));
-      store(builder, location,
-            arith::SelectOp::create(builder, location, pastInput, constant(1),
-                                    loadI32(builder, location, exposed)),
-            exposed);
-      storeFillAge(arith::SelectOp::create(builder, location, pastInput,
-                                           constant(0), loadFillAge()));
-    }
-    auto resolved = func::CallOp::create(
-        builder, location, callee, TypeRange{i32},
-        ValueRange{state(), resolveEntry->getArgument(0),
-                   resolveEntry->getArgument(1), resolveEntry->getArgument(2),
-                   resolveEntry->getArgument(3)});
-    func::ReturnOp::create(builder, location, resolved.getResult(0));
-  };
-  createResolve("__udononnx_transitional_resolve_input",
-                "udononnxBindingStateResolveInput", true);
-  createResolve("__udononnx_transitional_resolve_output",
-                "udononnxBindingStateResolveOutput", false);
-
-  // The run enqueues the graph and waits for its completion marker.
-  auto createEnqueue = [&](StringRef name, StringRef callee) {
-    builder.setInsertionPointToEnd(module.getBody());
-    auto function =
-        func::FuncOp::create(builder, location, name,
-                             FunctionType::get(module.getContext(), {}, {i32}));
-    markExport(function);
-    function->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
-    Block *enqueueEntry = function.addEntryBlock();
-    Block *enqueue = function.addBlock();
-    Block *busy = function.addBlock();
-    Block *waitEvent = function.addBlock();
-    Block *enqueueFailed = function.addBlock();
-    builder.setInsertionPointToEnd(enqueueEntry);
-    if (!graph.sequenceStates.empty()) {
-      Block *stateReady = function.addBlock();
-      Block *invalidState = function.addBlock();
-      Value owned =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStateOwnedSymbol));
-      Value pending =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStatePendingSymbol));
-      Value poisoned =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStatePoisonedSymbol));
-      Value isOwned = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq, owned, constant(1));
-      Value hasNoPending = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq, pending, constant(0));
-      Value isHealthy = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq, poisoned, constant(0));
-      Value valid = arith::AndIOp::create(
-          builder, location, isOwned,
-          arith::AndIOp::create(builder, location, hasNoPending, isHealthy));
-      cf::CondBranchOp::create(builder, location, valid, stateReady,
-                               ValueRange{}, invalidState, ValueRange{});
-      builder.setInsertionPointToEnd(invalidState);
-      func::ReturnOp::create(builder, location, constant(12));
-      builder.setInsertionPointToEnd(stateReady);
-    }
-    Value active = loadI32(builder, location,
-                           addressOf(builder, location, bindingEventSymbol));
-    Value available = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, active, constant(0));
-    cf::CondBranchOp::create(builder, location, available, enqueue,
-                             ValueRange{}, busy, ValueRange{});
-    builder.setInsertionPointToEnd(busy);
-    func::ReturnOp::create(builder, location, constant(7));
-    builder.setInsertionPointToEnd(enqueue);
-    auto call = func::CallOp::create(
-        builder, location, callee, TypeRange{i32},
-        ValueRange{state(), constant(0), nullPointer(builder, location),
-                   addressOf(builder, location, bindingEventSymbol)});
-    Value accepted =
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                              call.getResult(0), constant(0));
-    cf::CondBranchOp::create(builder, location, accepted, waitEvent,
-                             ValueRange{}, enqueueFailed, ValueRange{});
-    builder.setInsertionPointToEnd(enqueueFailed);
-    func::ReturnOp::create(builder, location, call.getResult(0));
-    builder.setInsertionPointToEnd(waitEvent);
-    Value eventInteger = loadI32(
-        builder, location, addressOf(builder, location, bindingEventSymbol));
-    auto waited = func::CallOp::create(
-        builder, location, "clWaitForEvents", TypeRange{i32},
-        ValueRange{constant(1),
-                   addressOf(builder, location, bindingEventSymbol)});
-    Value waitSucceeded =
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                              waited.getResult(0), constant(0));
-    Value completionStatus = arith::SelectOp::create(
-        builder, location, waitSucceeded, constant(0), constant(9));
-    auto completed = func::CallOp::create(
-        builder, location, "udononnxBindingStateCompleteEvent", TypeRange{i32},
-        ValueRange{state(), intToPointer(builder, location, eventInteger),
-                   completionStatus});
-    auto released = func::CallOp::create(
-        builder, location, "clReleaseEvent", TypeRange{i32},
-        intToPointer(builder, location, eventInteger));
-    store(builder, location, constant(0),
-          addressOf(builder, location, bindingEventSymbol));
-    Value releaseSucceeded =
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                              released.getResult(0), constant(0));
-    Value finalStatus =
-        arith::SelectOp::create(builder, location, releaseSucceeded,
-                                completed.getResult(0), constant(5));
-    if (!graph.sequenceStates.empty()) {
-      Value succeeded =
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                finalStatus, constant(0));
-      Value pending = addressOf(builder, location, sequenceStatePendingSymbol);
-      store(builder, location,
-            arith::SelectOp::create(builder, location, succeeded, constant(1),
-                                    loadI32(builder, location, pending)),
-            pending);
-    }
-    func::ReturnOp::create(builder, location, finalStatus);
-  };
-  createEnqueue("__udononnx_transitional_enqueue_run",
-                "udononnxBindingStateEnqueueRun");
-
-  if (!graph.sequenceStates.empty()) {
-    builder.setInsertionPointToEnd(module.getBody());
-    auto reset = func::FuncOp::create(
-        builder, location, "__udononnx_transitional_reset_sequence_state",
-        FunctionType::get(module.getContext(), {}, {i32}));
-    markExport(reset);
-    reset->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
-    Block *resetEntry = reset.addEntryBlock();
-    Block *resetReady = reset.addBlock();
-    Block *resetBusy = reset.addBlock();
-    Block *resetInvalid = reset.addBlock();
-    Block *resetCheckState = reset.addBlock();
-    builder.setInsertionPointToEnd(resetEntry);
-    Value resetActive = loadI32(
-        builder, location, addressOf(builder, location, bindingEventSymbol));
-    Value resetIdle = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, resetActive, constant(0));
-    cf::CondBranchOp::create(builder, location, resetIdle, resetCheckState,
-                             ValueRange{}, resetBusy, ValueRange{});
-    builder.setInsertionPointToEnd(resetBusy);
-    func::ReturnOp::create(builder, location, constant(7));
-    builder.setInsertionPointToEnd(resetCheckState);
-    Value resetOwned =
-        loadI32(builder, location,
-                addressOf(builder, location, sequenceStateOwnedSymbol));
-    Value resetValid = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, resetOwned, constant(1));
-    cf::CondBranchOp::create(builder, location, resetValid, resetReady,
-                             ValueRange{}, resetInvalid, ValueRange{});
-    builder.setInsertionPointToEnd(resetInvalid);
-    func::ReturnOp::create(builder, location, constant(12));
-    builder.setInsertionPointToEnd(resetReady);
-    auto resetReturnIfFailed = [&](Value status) {
-      Block *next = reset.addBlock();
-      Block *failure = reset.addBlock();
-      Value succeeded = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq, status, constant(0));
-      cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                               failure, ValueRange{});
-      builder.setInsertionPointToEnd(failure);
-      store(builder, location, constant(1),
-            addressOf(builder, location, sequenceStatePoisonedSymbol));
-      func::ReturnOp::create(builder, location, constant(5));
-      builder.setInsertionPointToEnd(next);
-    };
-    auto resetPhysicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
-      return func::CallOp::create(
-                 builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
-                 ValueRange{constant(logicalId), constant(bytes)})
-          .getResult(0);
-    };
-    // A transfer still waiting in the binding's command slot reaches the
-    // Device before the state is cleared: drain the session queue, then zero
-    // every past state with one word-fill command each. A fill is recorded
-    // on the Device queue at issue and needs no staged zero array.
-    Value queueSlot = allocaI32(builder, location);
-    auto gotQueue = func::CallOp::create(
-        builder, location, "udononnxBindingStateGetCommandQueue",
-        TypeRange{i32}, ValueRange{state(), queueSlot});
-    resetReturnIfFailed(gotQueue.getResult(0));
-    auto finished = func::CallOp::create(
-        builder, location, "clFinish", TypeRange{i32},
-        ValueRange{loadPointer(builder, location, queueSlot)});
-    resetReturnIfFailed(finished.getResult(0));
-    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
-      unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
-      const TensorRecord &input = graph.tensors[inputTensorIndex];
-      int64_t inputBytes = input.type.getNumElements() *
-                           elementByteSize(input.type.getElementType());
-      // The buffer holds a whole present; only the past tensor is cleared.
-      Value destination =
-          resetPhysicalBuffer(sequence.inputIndex + 1,
-                              deviceAllocationBytes(graph, inputTensorIndex));
-      auto filled = func::CallOp::create(
-          builder, location, "__vrc_opencl_buffer_fill", TypeRange{i32},
-          ValueRange{destination, constant(0), constant(inputBytes),
-                     addressOf(builder, location, sequenceStateZeroSymbol),
-                     constant(4)});
-      auto awaited =
-          func::CallOp::create(builder, location, "__vrc_opencl_await",
-                               TypeRange{i32}, filled.getResult(0));
-      resetReturnIfFailed(awaited.getResult(0));
-    }
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePendingSymbol));
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePoisonedSymbol));
-    resetBank();
-    // Every past input now holds zeros, unless a caller holds one.
-    if (fillAge)
-      storeFillAge(arith::SelectOp::create(
-          builder, location,
-          arith::CmpIOp::create(
-              builder, location, arith::CmpIPredicate::eq,
-              loadI32(builder, location,
-                      addressOf(builder, location, sequenceStateExposedSymbol)),
-              constant(0)),
-          constant(1), constant(0)));
-    func::ReturnOp::create(builder, location, constant(0));
-
-    // The advance commits the rows the pending run appended. The plain
-    // advance commits all of them; with a `rows` argument
-    // (sequenceStatePartialAdvanceStep) only the first `rows`, and the rows
-    // after them, which the run computed from padding, are never carried:
-    // the next run's carried rows start `rows` rows into the previous
-    // present instead of a whole step.
-    int64_t partialStep = sequenceStatePartialAdvanceStep(graph);
-    auto emitAdvance = [&](StringRef name, bool rowsArgument) -> LogicalResult {
-      builder.setInsertionPointToEnd(module.getBody());
-      SmallVector<Type> parameters;
-      if (rowsArgument)
-        parameters.push_back(i32);
-      auto advance = func::FuncOp::create(
-          builder, location, name,
-          FunctionType::get(module.getContext(), parameters, {i32}));
-      // Only a C Host that runs part of a sequence calls the partial
-      // advance, so like materialization it is not a Udon export.
-      if (!rowsArgument)
-        markExport(advance);
-      // An advance that only flips banks issues no Device command and never
-      // suspends; the Udon async lowering supports no coroutine without a
-      // suspension point.
-      if (plan.sequenceStateBanks.size() != graph.sequenceStates.size())
-        advance->setAttr("vrc.async_effect",
-                         builder.getStringAttr("may_suspend"));
-      Block *advanceEntry = advance.addEntryBlock();
-      builder.setInsertionPointToEnd(advanceEntry);
-      Block *advanceReady = advance.addBlock();
-      Block *advanceBusy = advance.addBlock();
-      Block *advanceInvalid = advance.addBlock();
-      Value active = loadI32(builder, location,
-                             addressOf(builder, location, bindingEventSymbol));
-      Value idle = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq, active, constant(0));
-      Value owned =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStateOwnedSymbol));
-      Value pending =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStatePendingSymbol));
-      Value poisoned =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStatePoisonedSymbol));
-      Value valid = arith::AndIOp::create(
-          builder, location,
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                owned, constant(1)),
-          arith::AndIOp::create(
-              builder, location,
-              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                    pending, constant(1)),
-              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                    poisoned, constant(0))));
-      Block *checkState = advance.addBlock();
-      cf::CondBranchOp::create(builder, location, idle, checkState,
-                               ValueRange{}, advanceBusy, ValueRange{});
-      builder.setInsertionPointToEnd(advanceBusy);
-      func::ReturnOp::create(builder, location, constant(7));
-      builder.setInsertionPointToEnd(checkState);
-      cf::CondBranchOp::create(builder, location, valid, advanceReady,
-                               ValueRange{}, advanceInvalid, ValueRange{});
-      builder.setInsertionPointToEnd(advanceInvalid);
-      func::ReturnOp::create(builder, location, constant(12));
-      builder.setInsertionPointToEnd(advanceReady);
-      // The rows this advance commits of every state: a whole step unless
-      // the caller passes fewer.
-      Value rows;
-      if (rowsArgument) {
-        rows = advanceEntry->getArgument(0);
-        Block *rowsValid = advance.addBlock();
-        Block *rowsInvalid = advance.addBlock();
-        cf::CondBranchOp::create(
-            builder, location,
-            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ule,
-                                  rows, constant(partialStep)),
-            rowsValid, ValueRange{}, rowsInvalid, ValueRange{});
-        builder.setInsertionPointToEnd(rowsInvalid);
-        func::ReturnOp::create(builder, location, constant(1));
-        builder.setInsertionPointToEnd(rowsValid);
-      } else if (partialStep) {
-        rows = constant(partialStep);
-      }
-      auto advanceReturnIfNonzero = [&](Value status,
-                                        int64_t failureStatus = -1) {
-        Block *next = advance.addBlock();
-        Block *failure = advance.addBlock();
-        Value succeeded = arith::CmpIOp::create(
-            builder, location, arith::CmpIPredicate::eq, status, constant(0));
-        cf::CondBranchOp::create(builder, location, succeeded, next,
-                                 ValueRange{}, failure, ValueRange{});
-        builder.setInsertionPointToEnd(failure);
-        if (failureStatus == 5)
-          store(builder, location, constant(1),
-                addressOf(builder, location, sequenceStatePoisonedSymbol));
-        func::ReturnOp::create(builder, location,
-                               failureStatus < 0 ? status
-                                                 : constant(failureStatus));
-        builder.setInsertionPointToEnd(next);
-      };
-      Value sessionSlot = allocaI32(builder, location);
-      auto gotSession = func::CallOp::create(
-          builder, location, "udononnxBindingStateGetSession", TypeRange{i32},
-          ValueRange{state(), sessionSlot});
-      advanceReturnIfNonzero(gotSession.getResult(0));
-      auto physicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
-        return func::CallOp::create(
-                   builder, location, "__vrc_opencl_buffer_alloc",
-                   TypeRange{i32},
-                   ValueRange{constant(logicalId), constant(bytes)})
-            .getResult(0);
-      };
-      auto packUnsigned = [](ArrayRef<int64_t> values, int64_t first,
-                             int64_t fallback) {
-        int64_t low = first < static_cast<int64_t>(values.size())
-                          ? values[first]
-                          : fallback;
-        int64_t high = first + 1 < static_cast<int64_t>(values.size())
-                           ? values[first + 1]
-                           : fallback;
-        return (low & 65535) | ((high & 65535) << 16);
-      };
-      for (auto [stateIndex, sequence] :
-           llvm::enumerate(graph.sequenceStates)) {
-        // A banked state moves nothing: the bank flip below makes the rows
-        // the last run wrote the carried rows of the next run.
-        if (isBankedSequenceState(plan, stateIndex))
-          continue;
-        unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
-        unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
-        const TensorRecord &input = graph.tensors[inputTensorIndex];
-        const TensorRecord &output = graph.tensors[outputTensorIndex];
-        // The copying advance is one udononnx_slice_f32 dispatch, which
-        // addresses at most 16384 words; a banked state has no such limit.
-        if (input.type.getNumElements() > 16384 ||
-            output.type.getNumElements() > 16384)
-          return emitError(location)
-                 << "ONNX sequence state that is not banked exceeds the "
-                    "16384 elements of its copying advance";
-        Value source =
-            physicalBuffer(graph.inputs.size() + sequence.outputIndex + 1,
-                           deviceAllocationBytes(graph, outputTensorIndex));
-        Value destination =
-            physicalBuffer(sequence.inputIndex + 1,
-                           deviceAllocationBytes(graph, inputTensorIndex));
-        SmallVector<int64_t> starts(input.type.getRank(), 0);
-        SmallVector<int64_t> steps(input.type.getRank(), 1);
-        starts[sequence.axis] = rowsArgument ? 0 : sequence.step;
-        SmallVector<Value> packedStarts{constant(packUnsigned(starts, 0, 0)),
-                                        constant(packUnsigned(starts, 2, 0)),
-                                        constant(packUnsigned(starts, 4, 0))};
-        // The slice starts `rows` rows into the present: the axis's half of
-        // its packed start word is filled in at run time.
-        if (rowsArgument) {
-          Value &word = packedStarts[sequence.axis / 2];
-          Value shifted = sequence.axis % 2
-                              ? Value(arith::ShLIOp::create(builder, location,
-                                                            rows, constant(16)))
-                              : rows;
-          word = arith::OrIOp::create(builder, location, word, shifted);
-        }
-        auto dispatched = func::CallOp::create(
-            builder, location, "__vrc_opencl_dispatch_udononnx_slice_f32",
-            TypeRange{i32},
-            ValueRange{source, destination,
-                       constant(input.type.getNumElements()),
-                       constant(input.type.getRank()),
-                       constant(packUnsigned(output.type.getShape(), 0, 1)),
-                       constant(packUnsigned(output.type.getShape(), 2, 1)),
-                       constant(packUnsigned(output.type.getShape(), 4, 1)),
-                       constant(packUnsigned(input.type.getShape(), 0, 1)),
-                       constant(packUnsigned(input.type.getShape(), 2, 1)),
-                       constant(packUnsigned(input.type.getShape(), 4, 1)),
-                       packedStarts[0], packedStarts[1], packedStarts[2],
-                       constant(packUnsigned(steps, 0, 1)),
-                       constant(packUnsigned(steps, 2, 1)),
-                       constant(packUnsigned(steps, 4, 1))});
-        auto awaited =
-            func::CallOp::create(builder, location, "__vrc_opencl_await",
-                                 TypeRange{i32}, dispatched.getResult(0));
-        advanceReturnIfNonzero(awaited.getResult(0), 5);
-      }
-      if (banked) {
-        // The pending run wrote the present into the past input from bank 1
-        // and into the present output otherwise.
-        Value bank = addressOf(builder, location, sequenceStateBankSymbol);
-        Value fromInput = arith::CmpIOp::create(
-            builder, location, arith::CmpIPredicate::eq,
-            loadI32(builder, location, bank), constant(1));
-        store(builder, location,
-              arith::SelectOp::create(builder, location, fromInput, constant(2),
-                                      constant(1)),
-              bank);
-        // The next run reads its carried rows this many rows into that
-        // present.
-        if (partialStep)
-          store(builder, location, rows,
-                addressOf(builder, location, sequenceStateAdvancedRowsSymbol));
-      }
-      if (fillAge && partialStep) {
-        // The age counts committed rows (sequenceStateFillAgeRows). Past
-        // the limit no state has zero rows left, so it stays there and
-        // never overflows.
-        Value age = loadFillAge();
-        Value known = arith::CmpIOp::create(
-            builder, location, arith::CmpIPredicate::ne, age, constant(0));
-        Value counted = arith::MinUIOp::create(
-            builder, location,
-            arith::AddIOp::create(builder, location, age, rows),
-            constant(sequenceStateFillAgeLimit(graph)));
-        storeFillAge(
-            arith::SelectOp::create(builder, location, known, counted, age));
-      } else if (fillAge) {
-        // One more advance since the fill. Past the limit no state has zero
-        // rows left, so the count stops there and never overflows.
-        Value age = loadFillAge();
-        Value counting = arith::AndIOp::create(
-            builder, location,
-            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
-                                  age, constant(0)),
-            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::slt,
-                                  age,
-                                  constant(sequenceStateFillAgeLimit(graph))));
-        storeFillAge(arith::SelectOp::create(
-            builder, location, counting,
-            arith::AddIOp::create(builder, location, age, constant(1)), age));
-      }
-      store(builder, location, constant(0),
-            addressOf(builder, location, sequenceStatePendingSymbol));
-      func::ReturnOp::create(builder, location, constant(0));
-      return success();
-    };
-    if (failed(emitAdvance("__udononnx_transitional_advance_sequence_state",
-                           /*rowsArgument=*/false)))
-      return failure();
-    if (partialStep &&
-        failed(
-            emitAdvance("__udononnx_transitional_advance_sequence_state_rows",
-                        /*rowsArgument=*/true)))
-      return failure();
-  }
-
-  builder.setInsertionPointToEnd(module.getBody());
-  auto dispose =
-      func::FuncOp::create(builder, location, "__udononnx_transitional_dispose",
-                           FunctionType::get(module.getContext(), {}, {i32}));
-  markExport(dispose);
-  entry = dispose.addEntryBlock();
-  Block *disposeState = dispose.addBlock();
-  Block *disposeBusy = dispose.addBlock();
-  builder.setInsertionPointToEnd(entry);
-  Value eventInteger = loadI32(
-      builder, location, addressOf(builder, location, bindingEventSymbol));
-  Value idle = arith::CmpIOp::create(
-      builder, location, arith::CmpIPredicate::eq, eventInteger, constant(0));
-  cf::CondBranchOp::create(builder, location, idle, disposeState, ValueRange{},
-                           disposeBusy, ValueRange{});
-  builder.setInsertionPointToEnd(disposeBusy);
-  func::ReturnOp::create(builder, location, constant(7));
-  builder.setInsertionPointToEnd(disposeState);
-  auto disposed =
-      func::CallOp::create(builder, location, "udononnxBindingStateDispose",
-                           TypeRange{i32}, state());
-  returnIfNonzero(dispose, disposed.getResult(0));
-  if (!graph.sequenceStates.empty()) {
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStateOwnedSymbol));
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePendingSymbol));
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePoisonedSymbol));
-    resetBank();
-    storeFillAge(constant(0));
-  }
-  for (size_t index = 0; index != graph.inputs.size() + graph.outputs.size();
-       ++index) {
-    Value handle = handleAddress(index);
-    Value allocated =
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
-                              loadI32(builder, location, handle), constant(0));
-    Block *release = dispose.addBlock();
-    Block *next = dispose.addBlock();
-    cf::CondBranchOp::create(builder, location, allocated, release,
-                             ValueRange{}, next, ValueRange{});
-    builder.setInsertionPointToEnd(release);
-    auto released = func::CallOp::create(
-        builder, location, "udonclDeviceBufferDestroy", TypeRange{i32}, handle);
-    Value releaseSucceeded =
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                              released.getResult(0), constant(0));
-    Block *releaseFailure = dispose.addBlock();
-    cf::CondBranchOp::create(builder, location, releaseSucceeded, next,
-                             ValueRange{}, releaseFailure, ValueRange{});
-    builder.setInsertionPointToEnd(releaseFailure);
-    func::ReturnOp::create(builder, location, constant(5));
-    builder.setInsertionPointToEnd(next);
-  }
-  func::ReturnOp::create(builder, location, constant(0));
-
-  return declareBindingRuntime(module);
 }
 
 LogicalResult createRuntimeDispatchers(ModuleOp module,
@@ -2654,9 +1853,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     // session owns to physical tokens depends only on the binding table and
     // on the buffers Initialize created, not on the run. The tokens are kept
     // in globals under the session binding version they were resolved for;
-    // a run of an unchanged table (the transitional session has checked
-    // that its buffers are alive) reads them instead of resolving every buffer
-    // again.
+    // a run of an unchanged table (the session has checked that its buffers
+    // are alive) reads them instead of resolving every buffer again.
     Value bindingVersion =
         func::CallOp::create(builder, location, "udononnxSessionBindingVersion",
                              TypeRange{i32}, ValueRange{entry->getArgument(1)})
@@ -2940,13 +2138,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                                TypeRange{i32}, enqueued.getResult(0));
       returnOpenCLErrorIfNonzero(waited.getResult(0));
     };
-    // The buffer of a banked present while a dispatch for bank 1 is emitted.
-    llvm::DenseMap<unsigned, Value> bankOverrides;
-    int64_t activeBank = 0;
     auto buffer = [&](int64_t tensorIndex) -> Value {
       unsigned storageIndex = storage[static_cast<unsigned>(tensorIndex)];
-      if (Value overridden = bankOverrides.lookup(storageIndex))
-        return overridden;
       if (buffers[storageIndex])
         return buffers[storageIndex];
       return {};
@@ -2976,118 +2169,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                             : tensor.type.getDimSize(tensor.dynamic->axis);
       return result;
     });
-    // Banked sequence states (sequenceStateBanks in ONNXHostPlan.h). The
-    // bank, read once per run, decides where the carried rows are and where
-    // the present goes; every dispatch that touches either buffer is
-    // emitted once per bank it distinguishes.
-    struct BankedState {
-      unsigned past;
-      unsigned present;
-      unsigned concat;
-      DeviceFusionLeafView view;
-    };
-    SmallVector<BankedState> bankedStates;
-    // A binding that may commit part of a run reads the carried rows as many
-    // rows into the previous present as the last advance committed
-    // (sequenceStatePartialAdvanceStep), at most a whole step.
-    bool partialAdvance = sequenceStatePartialAdvanceStep(graph) != 0;
-    for (unsigned stateIndex : plan.sequenceStateBanks) {
-      const SequenceStateRecord &sequence = graph.sequenceStates[stateIndex];
-      unsigned past = graph.inputs[sequence.inputIndex];
-      unsigned present = graph.outputs[sequence.outputIndex];
-      const NodeRecord *concat =
-          llvm::find_if(graph.nodes, [&](const NodeRecord &node) {
-            return node.output == present;
-          });
-      if (concat == graph.nodes.end() || storage[past] != past ||
-          storage[present] != present || !buffers[past] || !buffers[present])
-        return emitError(location)
-               << "banked ONNX sequence state lacks its public buffers";
-      ArrayRef<int64_t> presentShape = graph.tensors[present].type.getShape();
-      bankedStates.push_back(
-          {past,
-           present,
-           static_cast<unsigned>(concat - graph.nodes.begin()),
-           {past, SmallVector<int64_t>(presentShape), sequence.axis,
-            sequence.step, partialAdvance}});
-    }
-    auto bankedConcat = [&](unsigned nodeIndex) -> const BankedState * {
-      for (const BankedState &bank : bankedStates)
-        if (bank.concat == nodeIndex)
-          return &bank;
-      return nullptr;
-    };
-    auto touchesBank = [&](unsigned nodeIndex) {
-      const NodeRecord &node = graph.nodes[nodeIndex];
-      SmallVector<unsigned> tensors;
-      if (fusion.isRoot(nodeIndex))
-        tensors = fusion.leaves(nodeIndex);
-      for (int64_t input : node.inputs)
-        if (input >= 0)
-          tensors.push_back(static_cast<unsigned>(input));
-      tensors.push_back(node.output);
-      return llvm::any_of(tensors, [&](unsigned tensor) {
-        return llvm::any_of(bankedStates, [&](const BankedState &bank) {
-          return storage[tensor] == bank.past ||
-                 storage[tensor] == bank.present;
-        });
-      });
-    };
-    Value bankValue, advancedRows;
-    if (!bankedStates.empty())
-      bankValue =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStateBankSymbol));
-    if (!bankedStates.empty() && partialAdvance)
-      advancedRows = loadI32(
-          builder, location,
-          addressOf(builder, location, sequenceStateAdvancedRowsSymbol));
-    // The zero rows of every state this run skips
-    // (ONNXHostSequenceExtents.h), read once from the fill age:
-    // max(0, carried - (age - 1) * rows per unit) when the age is known,
-    // else 0.
-    DeviceSequenceExtents extents = deviceSequenceExtents(graph);
-    SmallVector<Value> zeroRows(graph.sequenceStates.size());
-    if (extents.used()) {
-      Value age =
-          loadI32(builder, location,
-                  addressOf(builder, location, sequenceStateFillAgeSymbol));
-      Value advances =
-          arith::SubIOp::create(builder, location, age, constant(1));
-      Value known = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::ne, age, constant(0));
-      SmallVector<bool> used(graph.sequenceStates.size(), false);
-      for (const auto &state : extents.skippedRows)
-        if (state)
-          used[*state] = true;
-      for (const auto &prefix : extents.constantPrefix)
-        if (prefix)
-          used[prefix->prefix.state] = true;
-      // States of one carried length and step share the value.
-      std::map<std::pair<int64_t, int64_t>, Value> shared;
-      for (auto [stateIndex, sequence] :
-           llvm::enumerate(graph.sequenceStates)) {
-        if (!used[stateIndex])
-          continue;
-        Value &sharedRows = shared[{sequence.capacity, sequence.step}];
-        if (sharedRows) {
-          zeroRows[stateIndex] = sharedRows;
-          continue;
-        }
-        Value rows = arith::SubIOp::create(
-            builder, location, constant(sequence.capacity - sequence.step),
-            arith::MulIOp::create(
-                builder, location, advances,
-                constant(sequenceStateFillAgeRows(graph, stateIndex))));
-        Value positive = arith::CmpIOp::create(
-            builder, location, arith::CmpIPredicate::sgt, rows, constant(0));
-        zeroRows[stateIndex] = arith::SelectOp::create(
-            builder, location,
-            arith::AndIOp::create(builder, location, known, positive), rows,
-            constant(0));
-        sharedRows = zeroRows[stateIndex];
-      }
-    }
     // The value of every bounded dimension in this run (set by the session
     // run), and the run-time extent and pitch of a tensor's dynamic axis.
     SmallVector<Value> dimensionValues;
@@ -3176,46 +2257,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                                                              scalar.index))));
       return scalars;
     };
-    auto constantPrefix =
-        [&](unsigned nodeIndex) -> const DeviceConstantPrefix * {
-      const auto &prefix = extents.constantPrefix[nodeIndex];
-      return prefix ? &*prefix : nullptr;
-    };
     auto emitNodeDispatch = [&](const NodeRecord &node,
                                 unsigned nodeIndex) -> LogicalResult {
       Value output = buffer(node.output);
       if (!output)
         return emitError(location)
                << "Device ONNX graph output lacks physical storage";
-      if (activeBank != 0) {
-        if (const BankedState *bank = bankedConcat(nodeIndex)) {
-          // Bank 1 reads the previous present in the present output and
-          // writes the past input; bank 2 the other way around.
-          Value previous =
-              activeBank == 1 ? buffers[bank->present] : buffers[bank->past];
-          Value next =
-              activeBank == 1 ? buffers[bank->past] : buffers[bank->present];
-          const DeviceConstantPrefix *prefix = constantPrefix(nodeIndex);
-          FailureOr<DeviceFusionDispatch> viewed =
-              fusedKernels.dispatch(nodeIndex, bank->view, prefix);
-          if (failed(viewed))
-            return failure();
-          SmallVector<Value> arguments;
-          for (unsigned leaf : viewed->leaves) {
-            arguments.push_back(leaf == bank->past ? previous : buffer(leaf));
-            if (!arguments.back())
-              return emitError(location)
-                     << "Device ONNX fusion operand lacks physical storage";
-          }
-          arguments.push_back(next);
-          if (prefix)
-            arguments.push_back(zeroRows[prefix->prefix.state]);
-          if (bank->view.dynamicOffset)
-            arguments.push_back(advancedRows);
-          dispatch(viewed->callee, arguments);
-          return success();
-        }
-      }
       // A node runs a fused kernel also outside every group when its library
       // kernel cannot run it: a Softmax whose schedule has two passes
       // (deviceSoftmaxSchedule), or a node beyond the limits of its library
@@ -3223,9 +2270,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       if (fusion.isRoot(nodeIndex) ||
           deviceSoftmaxSchedule(graph, node).chunks ||
           isSynthesizedDeviceNode(graph, node)) {
-        const DeviceConstantPrefix *prefix = constantPrefix(nodeIndex);
         FailureOr<DeviceFusionDispatch> fused =
-            fusedKernels.dispatch(nodeIndex, prefix);
+            fusedKernels.dispatch(nodeIndex);
         if (failed(fused))
           return failure();
         SmallVector<Value> arguments;
@@ -3251,8 +2297,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           dispatch(fused->statisticsCallee, withScalars(arguments));
         }
         arguments.push_back(output);
-        if (prefix)
-          arguments.push_back(zeroRows[prefix->prefix.state]);
         // An in-place Concat whose input and output a session bound to one
         // buffer (the run checked their pitches) writes only the rows after
         // the input; with two buffers it runs as any Concat.
@@ -3260,8 +2304,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             llvm::find_if(inPlace, [&](const InPlaceConcat &candidate) {
               return candidate.node == nodeIndex;
             });
-        if (pair != inPlace.end() && !prefix &&
-            fused->statisticsCallee.empty()) {
+        if (pair != inPlace.end() && fused->statisticsCallee.empty()) {
           FailureOr<DeviceFusionDispatch> partial =
               fusedKernels.dispatchInPlace(nodeIndex);
           if (failed(partial))
@@ -3711,9 +2754,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         // kernel with one batch instead of wrapping its indices.
         bool smallOperands = shape->m * shape->k <= deviceSgemmOperandWords &&
                              shape->k * shape->n <= deviceSgemmOperandWords;
-        // The first K terms the product skips (ONNXHostSequenceExtents.h);
-        // only the strided-batched kernels take them.
-        std::optional<unsigned> skipped = extents.skippedRows[nodeIndex];
         // With an axis of a bounded dimension, m, n or k is that axis's
         // run-time extent; the kernel is chosen for the largest extent. An
         // operand whose dynamic axis is its rows has its buffer's pitch
@@ -3755,7 +2795,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                        constant(0), constant(0), floating(1.0f), constant(0)});
           return success();
         }
-        if (shape->outputBatches == 1 && smallOperands && !skipped) {
+        if (shape->outputBatches == 1 && smallOperands) {
           dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
                               output, constant(shape->m), constant(shape->n),
@@ -3776,8 +2816,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                   constant(shape->leftBatches == 1 ? 0 : shape->m * shape->k),
                   constant(shape->rightBatches == 1 ? 0 : shape->k * shape->n),
                   constant(shape->m * shape->n), constant(shape->outputBatches),
-                  constant(0), constant(0), floating(1.0f),
-                  skipped ? zeroRows[*skipped] : constant(0)});
+                  constant(0), constant(0), floating(1.0f), constant(0)});
         }
         return success();
       }
@@ -3843,49 +2882,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       // The root of a fusion group computes its interior nodes.
       if (isDeviceAlias(graph, node) || fusion.isInterior(nodeIndex))
         continue;
-      if (bankedStates.empty() || !touchesBank(nodeIndex)) {
-        if (failed(emitNodeDispatch(node, nodeIndex)))
-          return failure();
-        continue;
-      }
-      // Bank 1 moves every present into its past input. The Concat of a
-      // banked state also reads its carried rows differently in banks 1 and
-      // 2; everything else is the same in banks 0 and 2.
-      SmallVector<int64_t, 3> variants{1};
-      if (bankedConcat(nodeIndex))
-        variants.push_back(2);
-      variants.push_back(0);
-      Block *joined = run.addBlock();
-      for (auto [position, variant] : llvm::enumerate(variants)) {
-        if (position + 1 != variants.size()) {
-          Block *selected = run.addBlock();
-          Block *other = run.addBlock();
-          Value matches =
-              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                    bankValue, constant(variant));
-          cf::CondBranchOp::create(builder, location, matches, selected,
-                                   ValueRange{}, other, ValueRange{});
-          builder.setInsertionPointToEnd(selected);
-          activeBank = variant;
-          bankOverrides.clear();
-          if (variant == 1)
-            for (const BankedState &bank : bankedStates)
-              bankOverrides[bank.present] = buffers[bank.past];
-          if (failed(emitNodeDispatch(node, nodeIndex)))
-            return failure();
-          cf::BranchOp::create(builder, location, joined);
-          builder.setInsertionPointToEnd(other);
-          continue;
-        }
-        activeBank = 0;
-        bankOverrides.clear();
-        if (failed(emitNodeDispatch(node, nodeIndex)))
-          return failure();
-        cf::BranchOp::create(builder, location, joined);
-      }
-      activeBank = 0;
-      bankOverrides.clear();
-      builder.setInsertionPointToEnd(joined);
+      if (failed(emitNodeDispatch(node, nodeIndex)))
+        return failure();
     }
     for (unsigned tensorIndex : graph.outputs) {
       Value source = buffer(tensorIndex);
@@ -4181,13 +3179,8 @@ struct FinalizeONNXHostPass
       createReadExport(module, *graph, builder.getI64Type(), "int64");
       createBindingExports(module, *graph);
     }
-    // Transitional (removed in stage 3): only a library built with
-    // TRANSITIONAL_SEQUENCE_STATE (udoncl.onnx_sequence_states) keeps its KV
-    // cache in a private binding; every other Host binds its buffers through
-    // the UdonONNX session API.
-    if (isTransitionalSequenceStateHost(module)
-            ? failed(createPhysicalBindingExports(module, *graph, *plan))
-            : failed(declareBindingRuntime(module))) {
+    // The Host binds its buffers through the UdonONNX session API.
+    if (failed(declareBindingRuntime(module))) {
       signalPassFailure();
       return;
     }

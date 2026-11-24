@@ -67,55 +67,11 @@ inline constexpr llvm::StringLiteral onnxHostOutputMetadataSymbol =
     "__udon_onnx_output_metadata";
 inline constexpr llvm::StringLiteral onnxHostModelNameSymbol =
     "__udon_onnx_model_name";
-inline constexpr llvm::StringLiteral onnxHostBindingStateSymbol =
-    "__udon_onnx_binding_state";
-inline constexpr llvm::StringLiteral onnxHostBindingInputSymbol =
-    "__udon_onnx_binding_inputs";
-inline constexpr llvm::StringLiteral onnxHostBindingOutputSymbol =
-    "__udon_onnx_binding_outputs";
-inline constexpr llvm::StringLiteral onnxHostBindingEventSymbol =
-    "__udon_onnx_binding_event";
-inline constexpr llvm::StringLiteral onnxHostBindingIoHandlesSymbol =
-    "__udon_onnx_io_handles";
-inline constexpr llvm::StringLiteral onnxHostSequenceStateOwnedSymbol =
-    "__udon_onnx_sequence_state_owned";
-inline constexpr llvm::StringLiteral onnxHostSequenceStatePendingSymbol =
-    "__udon_onnx_sequence_state_pending";
-inline constexpr llvm::StringLiteral onnxHostSequenceStatePoisonedSymbol =
-    "__udon_onnx_sequence_state_poisoned";
-inline constexpr llvm::StringLiteral onnxHostSequenceStateZeroSymbol =
-    "__udon_onnx_sequence_state_zero";
-/// Where the next run of the banked sequence states finds the carried rows:
-/// 0 in the past input, laid out as the ONNX past tensor (after create,
-/// bind-all and reset); 1 in the present output, and 2 in the present-sized
-/// past input, each as the rows after the step of the previous present.
-inline constexpr llvm::StringLiteral onnxHostSequenceStateBankSymbol =
-    "__udon_onnx_sequence_state_bank";
-/// The rows the last advance committed of the run it advanced, when the
-/// binding may commit part of a run (sequenceStatePartialAdvanceStep): in
-/// banks 1 and 2 the carried rows start this many rows into the previous
-/// present, not a whole step.
-inline constexpr llvm::StringLiteral onnxHostSequenceStateAdvancedRowsSymbol =
-    "__udon_onnx_sequence_state_advanced_rows";
-/// How many advances ago the binding filled every past input with zeros,
-/// plus one; 0 when the binding cannot vouch for the past inputs' contents.
-/// A run derives the zero rows of each state from it
-/// (ONNXHostSequenceExtents.h).
-inline constexpr llvm::StringLiteral onnxHostSequenceStateFillAgeSymbol =
-    "__udon_onnx_sequence_state_fill_age";
-/// 1 once a caller has resolved a past input, through which it may write the
-/// input at any time; the fill age then stays unknown.
-inline constexpr llvm::StringLiteral onnxHostSequenceStateExposedSymbol =
-    "__udon_onnx_sequence_state_exposed";
 inline constexpr llvm::StringLiteral onnxHostHasRunSymbol =
     "__udon_onnx_has_run";
 
 inline constexpr int32_t onnxHostMetadataStorageBytes = 64;
 inline constexpr int32_t onnxHostModelStorageBytes = 64;
-inline constexpr int32_t onnxHostBindingStateStorageBytes = 256;
-inline constexpr int32_t onnxHostBindingTensorStorageBytes = 128;
-inline constexpr int32_t onnxHostBindingBufferHandleBytes = 8;
-inline constexpr int32_t onnxHostMaximumTensorRank = 8;
 
 inline std::string onnxHostIoNameSymbol(bool output, unsigned index) {
   return (llvm::Twine("__udon_onnx_") + (output ? "output" : "input") +

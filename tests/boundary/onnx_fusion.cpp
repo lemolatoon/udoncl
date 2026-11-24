@@ -3,9 +3,8 @@
 // produce the output words of the unfused library dispatches it replaces, bit
 // for bit: UdonDNN OpTensor and activation and the UdonONNXOperators unary
 // kernel run on the same renderer, and the re-indexing nodes, which only copy
-// words, are applied on the Host. A banked sequence state runs several steps
-// through its two banks against the copying advance. A two-pass Softmax
-// regroups its sums, so it is compared within tolerance and for determinism.
+// words, are applied on the Host. A two-pass Softmax regroups its sums, so it
+// is compared within tolerance and for determinism.
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
 #include <algorithm>
 #include <cfloat>
@@ -164,12 +163,10 @@ Comparison compare(const char *name, const Buffer &fused,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 17) {
+  if (argc != 13) {
     std::cerr << "usage: onnx-fusion-kernels <op-tensor> <activation> <unary> "
                  "<softmax> <rotated> <gated> <keys> <mixed> <masked> "
-                 "<banked-view> <banked-past> <partial-view> <partial-past> "
-                 "<long-statistics> "
-                 "<long-elementwise> <vertex>\n";
+                 "<long-statistics> <long-elementwise> <vertex>\n";
     return 2;
   }
   try {
@@ -195,25 +192,14 @@ int main(int argc, char **argv) {
           1, 2},
          {fusedId + 4, rowWords, 0, "udononnx_fused_4", argv[9], surfaceWidth,
           1, 2},
-         // The banked Concat kernels take the zero rows of the state.
-         {fusedId + 5, rowWords, 1, "banked_udononnx_fused_0", argv[10],
-          surfaceWidth, 1, 2},
-         {fusedId + 6, rowWords, 1, "banked_udononnx_fused_1", argv[11],
-          surfaceWidth, 1, 2},
-         // With two rows per run the view kernel also takes the rows the
-         // last advance committed.
-         {fusedId + 7, rowWords, 2, "partial_udononnx_fused_0", argv[12],
-          surfaceWidth, 1, 2},
-         {fusedId + 8, rowWords, 1, "partial_udononnx_fused_1", argv[13],
-          surfaceWidth, 1, 2},
          // The renderer binds every input as a texture of the draw surface,
          // so the one-row statistics kernel draws two rows to see all of x;
          // its second row is outside the guard and writes zeros.
-         {fusedId + 10, longElements, 0, "two_pass_udononnx_fused_0", argv[14],
+         {fusedId + 10, longElements, 0, "two_pass_udononnx_fused_0", argv[10],
           surfaceWidth, 2, 2},
-         {fusedId + 11, longElements, 0, "two_pass_udononnx_fused_1", argv[15],
+         {fusedId + 11, longElements, 0, "two_pass_udononnx_fused_1", argv[11],
           surfaceWidth, 2, 3}},
-        argv[16]);
+        argv[12]);
 
     std::mt19937 generator(0x5eed);
     auto uniform = [&](float scale) {
@@ -365,162 +351,6 @@ int main(int argc, char **argv) {
                             : results[index].infinite > 0) &&
                 results[index].nonZero > counts[index] / 2;
 
-    // present = concat(past, -token) of a banked key cache of two heads and
-    // capacity 8. Step 0 runs from bank 0 and reads the past input; every
-    // later step reads the carried rows from the previous present, which
-    // alternates between the two banks. The reference advances by copying
-    // present[1:] into the past, the negation is the library Neg kernel.
-    constexpr uint32_t heads = 2, capacity = 8, width = 8;
-    constexpr uint32_t carried = capacity - 1;
-    constexpr uint32_t presentWords = heads * capacity * width;
-    Buffer pastReference(surfaceWords, 0.0f);
-    for (uint32_t index = 0; index < heads * carried * width; ++index)
-      pastReference[index] = uniform(50.0f);
-    for (uint32_t index = 0; index < specialCount; ++index)
-      pastReference[(index * 5) % (heads * carried * width)] = specials[index];
-    Buffer bank = pastReference;
-    for (uint32_t step = 0; step < 4; ++step) {
-      Buffer token(surfaceWords, 0.0f);
-      for (uint32_t index = 0; index < heads * width; ++index)
-        token[index] = uniform(20.0f);
-      token[step] = fromBits(0x7fc12345u);
-      token[width + step] = step % 2 ? -infinity : infinity;
-      token[step + 4] = -0.0f;
-      token[width + step + 4] = 1.0e-40f;
-      Buffer negatedToken = unary(session, token, 3, heads * width);
-      Buffer presentReference(surfaceWords, 0.0f);
-      for (uint32_t head = 0; head < heads; ++head)
-        for (uint32_t line = 0; line < capacity; ++line)
-          for (uint32_t column = 0; column < width; ++column)
-            presentReference[(head * capacity + line) * width + column] =
-                line < carried
-                    ? pastReference[(head * carried + line) * width + column]
-                    : negatedToken[head * width + column];
-      // The binding does not vouch for this past: no zero rows.
-      int32_t unknownRows = 0;
-      Buffer present =
-          draw(session, step == 0 ? fusedId + 6 : fusedId + 5, rowWords,
-               {&bank, &token}, &unknownRows, sizeof unknownRows);
-      Comparison stepResult = compare(("step" + std::to_string(step)).c_str(),
-                                      present, presentReference, presentWords);
-      passed &= stepResult.exact == presentWords && stepResult.tailZero &&
-                stepResult.nan > 0 && stepResult.infinite > 0;
-      for (uint32_t head = 0; head < heads; ++head)
-        for (uint32_t line = 0; line < carried; ++line)
-          for (uint32_t column = 0; column < width; ++column)
-            pastReference[(head * carried + line) * width + column] =
-                presentReference[(head * capacity + line + 1) * width + column];
-      bank = present;
-    }
-    // After the binding's reset every past row is +0, and a run passes the
-    // zero rows Z = carried - advances (ONNXHostSequenceExtents.h). Both
-    // kernels write the rows below Z as +0 without reading them, which must
-    // equal the present that copies the fill. The buffers the kernels read
-    // hold NaN there instead, so a kernel that read them would differ.
-    std::fill(pastReference.begin(), pastReference.end(), 0.0f);
-    bank = pastReference;
-    for (uint32_t step = 0; step < 4; ++step) {
-      int32_t zeroRows = static_cast<int32_t>(carried - step);
-      Buffer poisoned = bank;
-      uint32_t bankRows = step == 0 ? carried : capacity;
-      for (uint32_t head = 0; head < heads; ++head)
-        for (uint32_t line = 0; line < bankRows; ++line)
-          for (uint32_t column = 0; column < width; ++column) {
-            // The carried row r of a bank is row r + 1 of the previous
-            // present; the past input of step 0 holds row r itself.
-            uint32_t carriedRow = step == 0 ? line : line - 1;
-            if (line >= (step == 0 ? 0u : 1u) &&
-                carriedRow < static_cast<uint32_t>(zeroRows))
-              poisoned[(head * bankRows + line) * width + column] =
-                  fromBits(0x7fc00001u);
-          }
-      Buffer token(surfaceWords, 0.0f);
-      for (uint32_t index = 0; index < heads * width; ++index)
-        token[index] = uniform(20.0f);
-      token[step] = -0.0f;
-      token[width + step] = step % 2 ? -infinity : infinity;
-      Buffer negatedToken = unary(session, token, 3, heads * width);
-      Buffer presentReference(surfaceWords, 0.0f);
-      for (uint32_t head = 0; head < heads; ++head)
-        for (uint32_t line = 0; line < capacity; ++line)
-          for (uint32_t column = 0; column < width; ++column)
-            presentReference[(head * capacity + line) * width + column] =
-                line < carried
-                    ? pastReference[(head * carried + line) * width + column]
-                    : negatedToken[head * width + column];
-      Buffer present =
-          draw(session, step == 0 ? fusedId + 6 : fusedId + 5, rowWords,
-               {&poisoned, &token}, &zeroRows, sizeof zeroRows);
-      Comparison zeroResult = compare(("zero" + std::to_string(step)).c_str(),
-                                      present, presentReference, presentWords);
-      passed &= zeroResult.exact == presentWords && zeroResult.tailZero;
-      for (uint32_t head = 0; head < heads; ++head)
-        for (uint32_t line = 0; line < carried; ++line)
-          for (uint32_t column = 0; column < width; ++column)
-            pastReference[(head * carried + line) * width + column] =
-                presentReference[(head * capacity + line + 1) * width + column];
-      bank = presentReference;
-    }
-    // The same cache with two new rows per run, of which an advance may
-    // commit fewer (__udononnx_transitional_advance_sequence_state_rows):
-    // the next run's carried rows are rows [committed, committed + 6) of the
-    // previous present, so the uncommitted rows are never carried. The view
-    // kernel takes the committed rows after the zero rows; the bank-0 kernel
-    // reads the past input itself.
-    {
-      constexpr uint32_t step = 2, partialCarried = capacity - step;
-      constexpr uint32_t committed[] = {1, 2, 0, 1, 2};
-      Buffer partialPast(surfaceWords, 0.0f);
-      for (uint32_t index = 0; index < heads * partialCarried * width; ++index)
-        partialPast[index] = uniform(50.0f);
-      for (uint32_t index = 0; index < specialCount; ++index)
-        partialPast[(index * 7) % (heads * partialCarried * width)] =
-            specials[index];
-      Buffer partialBank = partialPast;
-      for (uint32_t run = 0; run < 5; ++run) {
-        Buffer token(surfaceWords, 0.0f);
-        for (uint32_t index = 0; index < heads * step * width; ++index)
-          token[index] = uniform(20.0f);
-        token[run] = fromBits(0x7fc12345u);
-        token[step * width + run] = run % 2 ? -infinity : infinity;
-        token[run + 4] = -0.0f;
-        token[step * width + run + 4] = 1.0e-40f;
-        Buffer negatedToken = unary(session, token, 3, heads * step * width);
-        Buffer presentReference(surfaceWords, 0.0f);
-        for (uint32_t head = 0; head < heads; ++head)
-          for (uint32_t line = 0; line < capacity; ++line)
-            for (uint32_t column = 0; column < width; ++column)
-              presentReference[(head * capacity + line) * width + column] =
-                  line < partialCarried
-                      ? partialPast[(head * partialCarried + line) * width +
-                                    column]
-                      : negatedToken[(head * step + line - partialCarried) *
-                                         width +
-                                     column];
-        // The binding does not vouch for this past: no zero rows.
-        int32_t scalars[2] = {
-            0, static_cast<int32_t>(run == 0 ? 0 : committed[run - 1])};
-        Buffer present =
-            run == 0 ? draw(session, fusedId + 8, rowWords,
-                            {&partialBank, &token}, scalars, sizeof scalars[0])
-                     : draw(session, fusedId + 7, rowWords,
-                            {&partialBank, &token}, scalars, sizeof scalars);
-        Comparison partialResult =
-            compare(("partial" + std::to_string(run)).c_str(), present,
-                    presentReference, presentWords);
-        passed &= partialResult.exact == presentWords &&
-                  partialResult.tailZero && partialResult.nan > 0 &&
-                  partialResult.infinite > 0;
-        for (uint32_t head = 0; head < heads; ++head)
-          for (uint32_t line = 0; line < partialCarried; ++line)
-            for (uint32_t column = 0; column < width; ++column)
-              partialPast[(head * partialCarried + line) * width + column] =
-                  presentReference[(head * capacity + line + committed[run]) *
-                                       width +
-                                   column];
-        partialBank = present;
-      }
-    }
     // long = softmax(x + mask) over rows of 512, in two passes: the
     // statistics kernel writes chunk maxima and sums that the elementwise
     // kernel combines. Row 0 holds the special values (NaN), row 1 is masked

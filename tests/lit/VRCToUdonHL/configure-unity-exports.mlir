@@ -57,19 +57,19 @@ module attributes {udoncl.program = "probe",
 
 // -----
 
-// A generated binding function is reachable from an export but never one.
+// An internal export is reachable from an export but never one itself.
 module attributes {udoncl.program = "onnx_probe",
     udoncl.unity_library_config = {}} {
   func.func @component_run() -> i32 attributes {udoncl.export} {
-    %status = func.call @__udononnx_transitional_enqueue_run() : () -> i32
+    %status = func.call @__udononnx_internal_run() : () -> i32
     return %status : i32
   }
-  func.func @__udononnx_transitional_enqueue_run() -> i32 attributes {
+  func.func @__udononnx_internal_run() -> i32 attributes {
       udoncl.export, udoncl.internal_export} {
     %zero = arith.constant 0 : i32
     return %zero : i32
   }
-  func.func @__udononnx_transitional_dispose() -> i32 attributes {
+  func.func @__udononnx_internal_dispose() -> i32 attributes {
       udoncl.export, udoncl.internal_export} {
     %zero = arith.constant 0 : i32
     return %zero : i32
@@ -79,9 +79,9 @@ module attributes {udoncl.program = "onnx_probe",
 // CHECK-LABEL: module attributes
 // CHECK: func.func @component_run
 // CHECK-SAME: vrc.public_name = "ComponentRun"
-// CHECK: func.func private @__udononnx_transitional_enqueue_run
+// CHECK: func.func private @__udononnx_internal_run
 // CHECK-NOT: vrc.export_id
-// CHECK-NOT: @__udononnx_transitional_dispose
+// CHECK-NOT: @__udononnx_internal_dispose
 
 // -----
 

@@ -1080,44 +1080,8 @@ int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex) {
           ? 4
           : planElementByteSize(tensor.type.getElementType());
   int64_t bytes = tensor.type.getNumElements() * elementBytes;
-  for (const SequenceStateRecord &state : graph.sequenceStates)
-    if (graph.inputs[state.inputIndex] == tensorIndex)
-      bytes = std::max(bytes, deviceAllocationBytes(
-                                  graph, graph.outputs[state.outputIndex]));
   return needsQ4Surface(graph, tensorIndex) ? std::max(bytes, q4SurfaceBytes)
                                             : bytes;
-}
-
-SmallVector<unsigned> sequenceStateBanks(const GraphRecord &graph) {
-  SmallVector<unsigned> banks;
-  if (graph.sequenceStates.empty() || !supportsDeviceGraph(graph))
-    return banks;
-  for (auto [stateIndex, state] : llvm::enumerate(graph.sequenceStates)) {
-    unsigned past = graph.inputs[state.inputIndex];
-    unsigned present = graph.outputs[state.outputIndex];
-    if (llvm::count(graph.inputs, past) != 1 ||
-        llvm::count(graph.outputs, present) != 1 ||
-        llvm::is_contained(graph.outputs, past))
-      continue;
-    const NodeRecord *concat = nullptr;
-    bool otherReader = false;
-    for (const NodeRecord &node : graph.nodes) {
-      if (node.output == present)
-        concat = &node;
-      for (auto [operand, input] : llvm::enumerate(node.inputs))
-        if (input == static_cast<int64_t>(past) &&
-            (node.output != present || operand != 0))
-          otherReader = true;
-    }
-    std::optional<DeviceFusionKind> kind =
-        concat ? deviceFusionKind(graph, *concat) : std::nullopt;
-    if (otherReader || !kind || *kind != DeviceFusionKind::Concat ||
-        concat->inputs.size() != 2 ||
-        concat->inputs[0] != static_cast<int64_t>(past))
-      continue;
-    banks.push_back(static_cast<unsigned>(stateIndex));
-  }
-  return banks;
 }
 
 namespace {
@@ -1430,10 +1394,6 @@ SmallVector<unsigned> ownedDeviceBuffers(const GraphRecord &graph,
   return owned;
 }
 
-bool isTransitionalSequenceStateHost(ModuleOp module) {
-  return module->hasAttr("udoncl.onnx_sequence_states");
-}
-
 FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
                                        const GraphRecord &graph) {
   auto plan = module->getAttrOfType<DictionaryAttr>(hostGraphPlanAttr);
@@ -1487,21 +1447,6 @@ FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
   }
   for (int64_t value : bufferBytes.asArrayRef())
     result.mutableBufferBytes.push_back(value);
-  // Absent in plans that bank no state.
-  if (Attribute banksAttr = plan.get("sequence_state_banks")) {
-    auto banks = dyn_cast<DenseI64ArrayAttr>(banksAttr);
-    if (!banks)
-      return module.emitError("ONNX Host graph plan has invalid sequence "
-                              "state banks");
-    SmallVector<unsigned> bankable = sequenceStateBanks(graph);
-    for (int64_t value : banks.asArrayRef()) {
-      if (value < 0 || !llvm::is_contained(bankable, value) ||
-          llvm::is_contained(result.sequenceStateBanks, value))
-        return module.emitError("ONNX Host graph plan has invalid sequence "
-                                "state banks");
-      result.sequenceStateBanks.push_back(static_cast<unsigned>(value));
-    }
-  }
   return result;
 }
 } // namespace vrc

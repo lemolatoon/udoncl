@@ -213,60 +213,12 @@ assert "func.func private @udononnxBindingInitializeTensorMetadata" not in host.
 assert "func.func private @udononnxBindingInitializeModel" not in host.stdout
 assert "udonhl.store" in host.stdout
 assert "arith.cmpi ne" in host.stdout
-# Without TRANSITIONAL_SEQUENCE_STATE the Host binds its buffers through the
-# UdonONNX session API: no private binding is generated, and the binding's
-# buffers it would allocate are gone with it.
-assert "__udononnx_transitional_" not in host.stdout
+# The Host binds its buffers through the UdonONNX session API: it allocates
+# no buffer for them.
 assert "vrc.static_public_resource_binding" not in host.stdout
 assert 'resource_source = "call_allocation"' not in host.stdout
 assert "func.func @udononnxGeneratedBindMemory" in host.stdout
 assert "func.func @udononnxGeneratedRun" in host.stdout
-# A library built with TRANSITIONAL_SEQUENCE_STATE (the identification ran)
-# keeps the private binding of the TinyLlama Conversation and Chat Hosts.
-transitional_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-infer-onnx-shapes",
-     "--udoncl-externalize-onnx-initializers",
-     "--udoncl-externalize-onnx-graph-constants",
-     "--udoncl-identify-onnx-sequence-state",
-     "--udoncl-lower-onnx-to-host", source],
-    text=True,
-    capture_output=True,
-    check=True,
-).stdout
-transitional = subprocess.run(
-    [
-        host_opt,
-        "--udoncl-validate-onnx-host-graph",
-        "--udoncl-plan-onnx-host-graph",
-        "--udoncl-materialize-onnx-host-globals",
-        "--udoncl-materialize-onnx-host-model-registry",
-        "--udoncl-attach-onnx-host-metadata",
-        "--udoncl-finalize-onnx-host",
-        "--udoncl-cleanup-onnx-host-source",
-        "-",
-    ],
-    input=transitional_portable,
-    text=True,
-    capture_output=True,
-)
-assert transitional.returncode == 0, (transitional.stdout, transitional.stderr)
-assert "func.func @__udononnx_transitional_create" in transitional.stdout
-assert "func.func @__udononnx_transitional_bind_all" in transitional.stdout
-for removed in ("bind_tensor", "copy_output_to_input",
-                "materialize_sequence_state"):
-    assert f"@__udononnx_transitional_{removed}" not in transitional.stdout
-bind_all_start = transitional.stdout.index(
-    "func.func @__udononnx_transitional_bind_all")
-bind_all_end = transitional.stdout.index("func.func", bind_all_start + 10)
-bind_all = transitional.stdout[bind_all_start:bind_all_end]
-assert "call @udononnxBindingStateBeginStaticBind" in bind_all
-assert "call @udononnxBindingStateCompleteStaticBind" in bind_all
-assert bind_all.count("call @udonclDeviceBufferView") == 3
-assert "udonhl.alloca" not in bind_all
-assert "vrc.static_public_resource_binding" not in transitional.stdout
-assert "__udononnx_transitional_enqueue_initialize" not in transitional.stdout
-assert "func.func @__udononnx_transitional_enqueue_run" in transitional.stdout
-assert "func.func @__udononnx_transitional_dispose" in transitional.stdout
 assert "call @udononnxSessionResolveInput" in host.stdout
 assert "call @udononnxSessionResolveOutput" in host.stdout
 assert "call @clEnqueueMarkerWithWaitList" in host.stdout
@@ -281,16 +233,8 @@ assert "udoncl.onnx_operator_counts" in host.stdout
 assert "logical_bytes" in host.stdout
 assert "capacity_bytes" in host.stdout
 assert "udoncl.mutable_handle_capacity" in host.stdout
-# The model storage and the input and output metadata; the state of the
-# private transitional binding is materialized only for a library built with
-# TRANSITIONAL_SEQUENCE_STATE.
+# The model storage and the input and output metadata.
 assert host.stdout.count("vrc.buffer_view_layout") == 3
-for symbol in ("__udon_onnx_binding_state", "__udon_onnx_binding_inputs",
-               "__udon_onnx_binding_outputs", "__udon_onnx_binding_event",
-               "__udon_onnx_io_handles"):
-    assert symbol not in host.stdout, symbol
-    assert f'sym_name = "{symbol}"' in transitional.stdout, symbol
-assert transitional.stdout.count("vrc.buffer_view_layout") == 6
 metadata_global = next(
     line
     for line in host.stdout.splitlines()
@@ -298,169 +242,6 @@ metadata_global = next(
 )
 assert "vrc.buffer_view_layout" in metadata_global
 assert "count = 0 : i32" in metadata_global
-binding_global = next(
-    line
-    for line in transitional.stdout.splitlines()
-    if 'sym_name = "__udon_onnx_binding_inputs"' in line
-)
-assert "vrc.buffer_view_layout" in binding_global
-assert "schema_version = 1 : i32" in binding_global
-assert "count = 2 : i32" in binding_global
-assert "stride_bytes = 88 : i32" in binding_global
-assert "offsets = array<i32: 0>" in binding_global
-output_binding_global = next(
-    line
-    for line in transitional.stdout.splitlines()
-    if 'sym_name = "__udon_onnx_binding_outputs"' in line
-)
-assert "count = 1 : i32" in output_binding_global
-
-sequence_state_source = source.with_name("onnx_sequence_state.mlir")
-sequence_state = subprocess.run(
-    [*onnx_opt, "--udoncl-identify-onnx-sequence-state", sequence_state_source],
-    text=True,
-    capture_output=True,
-)
-assert sequence_state.returncode == 0, (
-    sequence_state.stdout,
-    sequence_state.stderr,
-)
-assert "udoncl.onnx_sequence_states" in sequence_state.stdout
-assert "input_index = 1 : i64" in sequence_state.stdout
-assert "output_index = 0 : i64" in sequence_state.stdout
-assert "input_index = 2 : i64" in sequence_state.stdout
-assert "output_index = 2 : i64" in sequence_state.stdout
-assert sequence_state.stdout.count("axis = 2 : i64") == 2
-assert sequence_state.stdout.count("step = 1 : i64") == 2
-assert sequence_state.stdout.count("capacity = 8 : i64") == 2
-assert "input_index = 3 : i64" not in sequence_state.stdout
-
-sequence_state_standard_return = subprocess.run(
-    [
-        host_opt,
-        "--standard-func-return",
-        sequence_state_source,
-    ],
-    text=True,
-    capture_output=True,
-)
-assert sequence_state_standard_return.returncode == 0, (
-    sequence_state_standard_return.stdout,
-    sequence_state_standard_return.stderr,
-)
-sequence_state_after_standard_return = subprocess.run(
-    [*onnx_opt, "--udoncl-identify-onnx-sequence-state", "-"],
-    input=sequence_state_standard_return.stdout,
-    text=True,
-    capture_output=True,
-)
-assert sequence_state_after_standard_return.returncode == 0, (
-    sequence_state_after_standard_return.stdout,
-    sequence_state_after_standard_return.stderr,
-)
-assert "input_index = 1 : i64" in sequence_state_after_standard_return.stdout
-assert "output_index = 0 : i64" in sequence_state_after_standard_return.stdout
-assert "input_index = 2 : i64" in sequence_state_after_standard_return.stdout
-assert "output_index = 2 : i64" in sequence_state_after_standard_return.stdout
-assert sequence_state_after_standard_return.stdout.count("axis = 2 : i64") == 2
-assert sequence_state_after_standard_return.stdout.count("step = 1 : i64") == 2
-assert sequence_state_after_standard_return.stdout.count("capacity = 8 : i64") == 2
-
-sequence_state_portable = subprocess.run(
-    [
-        *onnx_opt,
-        "--udoncl-identify-onnx-sequence-state",
-        "--udoncl-externalize-onnx-initializers",
-        "--udoncl-externalize-onnx-graph-constants",
-        "--udoncl-lower-onnx-to-host",
-        sequence_state_source,
-    ],
-    text=True,
-    capture_output=True,
-    check=True,
-).stdout
-def sequence_state_finalize(*plan_options):
-    plan = "--udoncl-plan-onnx-host-graph"
-    if plan_options:
-        plan += "=" + " ".join(plan_options)
-    result = subprocess.run(
-        [
-            host_opt,
-            "--udoncl-validate-onnx-host-graph",
-            plan,
-            "--udoncl-materialize-onnx-host-globals",
-            "--udoncl-materialize-onnx-host-model-registry",
-            "--udoncl-attach-onnx-host-metadata",
-            "--udoncl-finalize-onnx-host",
-            "--udoncl-cleanup-onnx-host-source",
-            "-",
-        ],
-        input=sequence_state_portable,
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    return result
-
-
-# By default both states are banked: the advance flips the bank and copies
-# nothing, and every past input holds a whole present (8192 bytes).
-sequence_state_banked = sequence_state_finalize()
-banked_advance_body = sequence_state_banked.stdout.split(
-    "func.func @__udononnx_transitional_advance_sequence_state", 1
-)[1].split("func.func", 1)[0]
-assert "call @__vrc_opencl_" not in banked_advance_body
-assert "__udon_onnx_sequence_state_bank" in banked_advance_body
-assert (
-    "__udononnx_transitional_materialize_sequence_state"
-    not in sequence_state_banked.stdout
-)
-assert (
-    "udoncl.mutable_buffer_bytes = array<i64: 1024, 8192, 8192, 8, 8192, 8, "
-    "8192>" in sequence_state_banked.stdout
-)
-# Without banks the advance copies the carried rows of each state.
-sequence_state_host = sequence_state_finalize("bank-sequence-state=false")
-assert "__udon_onnx_sequence_state_bank" not in sequence_state_host.stdout
-assert "func.func @__udononnx_transitional_advance_sequence_state" in (
-    sequence_state_host.stdout
-)
-assert "func.func @__udononnx_transitional_reset_sequence_state" in (
-    sequence_state_host.stdout
-)
-reset_body = sequence_state_host.stdout.split(
-    "func.func @__udononnx_transitional_reset_sequence_state", 1
-)[1].split("func.func", 1)[0]
-# The queue is drained once, then each state is cleared by one word-fill
-# command with the 4-byte zero pattern; nothing is uploaded.
-assert reset_body.count("call @udononnxBindingStateGetCommandQueue") == 1
-assert reset_body.count("call @clFinish") == 1
-assert reset_body.count("call @__vrc_opencl_buffer_fill") == 2
-assert "call @__vrc_opencl_buffer_upload" not in reset_body
-assert reset_body.count("call @__vrc_opencl_await") == 2
-assert "arith.constant 4 : i32" in reset_body
-assert reset_body.index("call @clFinish") < reset_body.index(
-    "call @__vrc_opencl_buffer_fill"
-)
-assert "call @__vrc_opencl_buffer_copy" not in reset_body
-assert "call @__vrc_opencl_buffer_readback" not in reset_body
-assert "arith.constant 7168 : i32" in reset_body
-assert "arith.constant 7 : i32" in reset_body
-assert "arith.constant 12 : i32" in reset_body
-advance_body = sequence_state_host.stdout.split(
-    "func.func @__udononnx_transitional_advance_sequence_state", 1
-)[1].split("func.func", 1)[0]
-assert advance_body.count("call @__vrc_opencl_dispatch_udononnx_slice_f32") == 2
-assert advance_body.count("call @__vrc_opencl_await") == 2
-assert "call @__vrc_opencl_buffer_copy" not in advance_body
-assert "1792" in advance_body
-assert "4194312" in advance_body
-assert "4194311" in advance_body
-assert "__udon_onnx_sequence_state_owned" in sequence_state_host.stdout
-assert "__udon_onnx_sequence_state_pending" in sequence_state_host.stdout
-assert "__udon_onnx_sequence_state_poisoned" in sequence_state_host.stdout
-assert "arith.constant 7 : i32" in advance_body
-assert "arith.constant 12 : i32" in advance_body
 
 static_source = source.parents[1] / "fixtures" / "onnx-static-initializer.mlir"
 static_portable = subprocess.run(

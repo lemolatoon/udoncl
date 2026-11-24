@@ -6,7 +6,6 @@ set(VRC_ONNX_LOCAL_PASS_SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/ExternalizeONNXGraphConstants.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/ExternalizeONNXInitializers.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/FoldONNXRepeatedMatMulOperand.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/IdentifyONNXSequenceState.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/InferONNXShapes.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/MaterializeONNXConstants.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/MergeONNXSiblingMatMulNBits.cpp"

@@ -3,8 +3,7 @@
 
 /* The internal surface of the UdonONNX runtime library: the model registry
  * and the generated dispatchers the linked model Host supplies, which the
- * session API (udononnxruntime.h) and the transitional binding
- * (udononnx_transitional.h) are built on. It is installed next to the
+ * session API (udononnxruntime.h) is built on. It is installed next to the
  * runtime sources, not as a public header. */
 
 #include <stddef.h>

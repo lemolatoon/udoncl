@@ -21,10 +21,6 @@ struct ONNXHostPlan {
   int64_t operatorScratchBytes;
   llvm::SmallVector<int64_t> mutableBufferBytes;
   int64_t mutableHandleCapacity;
-  /// Indices into GraphRecord::sequenceStates of the states that alternate
-  /// between two banks instead of being copied on advance; see
-  /// sequenceStateBanks().
-  llvm::SmallVector<unsigned> sequenceStateBanks;
 };
 
 struct ONNXHostDeviceSliceShape {
@@ -271,18 +267,8 @@ DeviceRowReduction deviceSoftmaxSchedule(const GraphRecord &graph,
                                          const NodeRecord &node);
 int64_t operatorScratchBytes(const GraphRecord &graph);
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex);
-/// Bytes of the Device buffer that holds `tensorIndex`. The input of a
-/// sequence state also holds a whole present tensor: it is one of the two
-/// banks of a banked state.
+/// Bytes of the Device buffer that holds `tensorIndex`.
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
-/// The sequence states whose carried rows stay where the last run wrote
-/// them. Every run's Concat writes its present into one of two banks, the
-/// public output buffer or the (present-sized) public input buffer, and reads
-/// the previous rows from the other bank through a view, so advancing the
-/// state copies nothing. A state qualifies when the graph runs on the Device,
-/// the Concat that produces the present is a two-input Concat a fused kernel
-/// can evaluate, and nothing but that Concat's first operand reads the past.
-llvm::SmallVector<unsigned> sequenceStateBanks(const GraphRecord &graph);
 int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex);
 /// True if the Device runs `node`: a library kernel holds it, or it is a node
 /// a synthesized kernel evaluates (isSynthesizedDeviceNode).
@@ -312,11 +298,6 @@ llvm::SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
                                               llvm::ArrayRef<unsigned> storage);
 mlir::FailureOr<HostPlanRecord> readHostPlan(mlir::ModuleOp module,
                                              const GraphRecord &graph);
-/// Whether the library was built with TRANSITIONAL_SEQUENCE_STATE: the
-/// sequence-state identification ran (and recorded its states, possibly
-/// none). Only such a library gets the private transitional binding and its
-/// state (removed in stage 3).
-bool isTransitionalSequenceStateHost(mlir::ModuleOp module);
 } // namespace vrc
 
 #endif

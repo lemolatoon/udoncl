@@ -31,7 +31,6 @@ func.func @main_graph(
 // CHECK: sym_name = "__udon_onnx_device_buffer_owned_2"
 // CHECK-NOT: sym_name = "__udon_onnx_has_run"
 // CHECK-NOT: func.func @udononnxGeneratedGetModelCount
-// CHECK-NOT: func.func @__udononnx_transitional_create
 
 // FUSED: udoncl.onnx_host_globals_materialized
 // FUSED: sym_name = "__udon_onnx_model_storage"

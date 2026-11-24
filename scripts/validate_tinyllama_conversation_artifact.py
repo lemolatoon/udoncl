@@ -176,8 +176,6 @@ def validate_artifact(
         {"input": 3 + offset, "output": 1 + offset, "axis": 2}
         for offset in range(44)
     ], "the presents are not in-place Concat pairs of their pasts")
-    require("transitional_sequence_state" not in binding,
-            "artifact still has the transitional sequence-state binding")
     buffers = manifest.get("device", {}).get("buffers")
     require(isinstance(buffers, list), "artifact has no Device buffers")
     require(not any(item.get("public_access") for item in buffers),

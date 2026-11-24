@@ -170,13 +170,9 @@ function(udoncl_add_onnx_mlir target)
 endfunction()
 
 function(udoncl_add_onnx_host_library target)
-  # TRANSITIONAL_SEQUENCE_STATE: identify KV sequence state and let the
-  # generated binding bank and advance it. Transitional, only for the
-  # TinyLlama Conversation and Chat model libraries.
-  set(_options TRANSITIONAL_SEQUENCE_STATE)
   set(_one_value MODEL)
   set(_multi_value DIMENSIONS DIMENSION_BOUNDS INPUT_SHAPES)
-  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}"
+  cmake_parse_arguments(PARSE_ARGV 1 _ARG "" "${_one_value}"
                         "${_multi_value}")
   if(_ARG_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR
@@ -260,9 +256,6 @@ function(udoncl_add_onnx_host_library target)
   foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
     list(APPEND _compile_command --input-shape "${_shape}")
   endforeach()
-  if(_ARG_TRANSITIONAL_SEQUENCE_STATE)
-    list(APPEND _compile_command --transitional-sequence-state)
-  endif()
   execute_process(
     COMMAND ${_compile_command}
     RESULT_VARIABLE _result

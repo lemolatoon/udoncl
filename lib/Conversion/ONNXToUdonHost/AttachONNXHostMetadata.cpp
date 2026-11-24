@@ -85,30 +85,6 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
   if (!inPlace.empty())
     fields.push_back(builder.getNamedAttr("in_place_concats",
                                           builder.getArrayAttr(inPlace)));
-  // Transitional (removed in stage 3): a library built with
-  // TRANSITIONAL_SEQUENCE_STATE names the symbols of the private binding
-  // FinalizeONNXHost generates for it, the sequence-state ones when the graph
-  // has sequence state.
-  if (module->hasAttr("udoncl.onnx_sequence_states")) {
-    SmallVector<NamedAttribute> symbols;
-    auto symbol = [&](StringRef key, StringRef name) {
-      symbols.push_back(builder.getNamedAttr(key, builder.getStringAttr(name)));
-    };
-    symbol("create_symbol", "__udononnx_transitional_create");
-    symbol("bind_all_symbol", "__udononnx_transitional_bind_all");
-    symbol("resolve_input_symbol", "__udononnx_transitional_resolve_input");
-    symbol("resolve_output_symbol", "__udononnx_transitional_resolve_output");
-    symbol("enqueue_run_symbol", "__udononnx_transitional_enqueue_run");
-    if (!graph.sequenceStates.empty()) {
-      symbol("reset_sequence_state_symbol",
-             "__udononnx_transitional_reset_sequence_state");
-      symbol("advance_sequence_state_symbol",
-             "__udononnx_transitional_advance_sequence_state");
-    }
-    symbol("dispose_symbol", "__udononnx_transitional_dispose");
-    fields.push_back(builder.getNamedAttr("transitional_sequence_state",
-                                          builder.getDictionaryAttr(symbols)));
-  }
   module->setAttr("udoncl.onnx_binding", builder.getDictionaryAttr(fields));
 }
 

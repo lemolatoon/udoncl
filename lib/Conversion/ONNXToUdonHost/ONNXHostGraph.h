@@ -43,14 +43,6 @@ struct ONNXHostNode {
   std::optional<mlir::Location> location;
 };
 
-struct ONNXHostSequenceState {
-  unsigned inputIndex;
-  unsigned outputIndex;
-  int64_t axis;
-  int64_t step;
-  int64_t capacity;
-};
-
 struct ONNXHostGraph {
   /// Every bounded dimension and its inclusive bound, in name order.
   llvm::SmallVector<std::pair<std::string, int64_t>> dimensionBounds;
@@ -58,13 +50,11 @@ struct ONNXHostGraph {
   llvm::SmallVector<unsigned> inputs;
   llvm::SmallVector<unsigned> outputs;
   llvm::SmallVector<ONNXHostNode> nodes;
-  llvm::SmallVector<ONNXHostSequenceState> sequenceStates;
 };
 
 using DynamicAxisRecord = ONNXHostDynamicAxis;
 using TensorRecord = ONNXHostTensor;
 using NodeRecord = ONNXHostNode;
-using SequenceStateRecord = ONNXHostSequenceState;
 using GraphRecord = ONNXHostGraph;
 
 inline constexpr llvm::StringLiteral onnxHostGraphValidatedAttr =

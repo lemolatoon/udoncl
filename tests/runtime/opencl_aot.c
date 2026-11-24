@@ -5,7 +5,7 @@
 #include <udonblas.h>
 #include <udondnn.h>
 #include <udononnxoperators.h>
-#include <udononnx_transitional.h>
+#include <udononnxruntime_internal.h>
 
 size_t udononnx_matmul_nbits_cpu_gid;
 #include "../../libraries/udononnxoperators/device/matmul_nbits.cl"
@@ -32,20 +32,6 @@ udononnxStatus_t udononnxGeneratedGetModel(size_t index,
   if (model)
     *model = 0;
   return UDONONNX_STATUS_INVALID_VALUE;
-}
-
-udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id,
-                            udononnxTransitionalSession_t *session,
-                            cl_command_queue queue, cl_uint wait_count,
-                            const cl_event *wait_list, cl_event *completion) {
-  (void)graph_id;
-  (void)session;
-  (void)queue;
-  (void)wait_count;
-  (void)wait_list;
-  (void)completion;
-  return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,

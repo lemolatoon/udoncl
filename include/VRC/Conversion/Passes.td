@@ -137,9 +137,7 @@ def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"
   let description = [{
     Records `udoncl.onnx_host_plan` on the module: whether the Device runs the
     whole graph, the fusion group of every node (`device_fusion_roots`, the
-    node whose dispatch computes it), the buffer of every tensor, and the
-    sequence states that alternate between two banks
-    (`sequence_state_banks`, indices into `udoncl.onnx_sequence_states`). Every
+    node whose dispatch computes it) and the buffer of every tensor. Every
     later pass reads these decisions from the plan, so they agree on which
     nodes have a dispatch and which results have a buffer.
   }];
@@ -147,11 +145,7 @@ def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"
   let options = [
     Option<"fuseDeviceNodes", "fuse-device-nodes", "bool", /*default=*/"true",
            "Fuse trees of per-element and re-indexing Device nodes into one "
-           "synthesized kernel each">,
-    Option<"bankSequenceState", "bank-sequence-state", "bool",
-           /*default=*/"true",
-           "Alternate qualifying sequence states between two Device banks "
-           "instead of copying the carried rows on every advance">
+           "synthesized kernel each">
   ];
 }
 def MaterializeONNXHostGlobalsPass : Pass<"udoncl-materialize-onnx-host-globals", "mlir::ModuleOp"> {
@@ -514,11 +508,7 @@ def DescribeONNXBindingManifestPass : Pass<"vrc-describe-onnx-binding-manifest",
     `vrc.onnx_binding_manifest`: the `abi`, `model_index` and `model_name`,
     the graph `inputs` and `outputs` (each with its `index`, `name`,
     `data_type`, `rank`, `dimensions`, `logical_bytes` and
-    `capacity_bytes`), and, for a library built with
-    TRANSITIONAL_SEQUENCE_STATE (removed in stage 3), the
-    `transitional_sequence_state` symbols of its private binding. The
-    sequence-state symbols are recorded only when the graph has sequence
-    state.
+    `capacity_bytes`).
 
     A module without ONNX binding metadata gets no description; metadata
     without one of these fields is an error. A description from an earlier
@@ -533,15 +523,8 @@ def RequireStaticUnityResourceLoweringPass : Pass<"vrc-require-static-unity-reso
     still allocates a Device buffer without having been assessed, with an
     error that lists the blockers vrc-report-static-unity-resource-lowering
     would report. A module without Device buffers (no allocation in the IR and
-    none in `vrc.static_device_resource_inventory`) passes.
-
-    Transitional exception (removed in stage 3): a module whose ONNX binding
-    is the private sequence-state binding of a library built with
-    TRANSITIONAL_SEQUENCE_STATE (`udoncl.onnx_binding` has a
-    `transitional_sequence_state` that names an
-    `advance_sequence_state_symbol`; only the TinyLlama Conversation and Chat
-    programs) keeps the run-time buffer pool. The error names the program
-    (`udoncl.program`) when the module has one.
+    none in `vrc.static_device_resource_inventory`) passes. The error names
+    the program (`udoncl.program`) when the module has one.
   }];
 }
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {

@@ -4,7 +4,6 @@
 #define VRC_CONVERSION_ONNXTOUDONHOST_ONNXHOSTFUSIONKERNEL_H
 
 #include "ONNXHostFusion.h"
-#include "ONNXHostSequenceExtents.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
@@ -18,10 +17,9 @@ struct DeviceRowReduction;
 
 /// How the Host dispatches one fusion group: a call to `callee` with the
 /// buffer token of every tensor of `leaves`, in order, then the token of the
-/// root's result. Every shape is static, so the kernel takes no scalar but
-/// the zero-row extent of a constant result prefix (see dispatch()), which
-/// follows the result token, and the offset of a view with a run-time offset
-/// (DeviceFusionLeafView), which comes last.
+/// root's result. A kernel over static shapes takes no scalar but the offset
+/// of a view with a run-time offset (DeviceFusionLeafView), which follows the
+/// result token.
 ///
 /// A two-pass row reduction (deviceSoftmaxSchedule) first calls
 /// `statisticsCallee` with the leaf tokens and then a scratch buffer of at
@@ -67,14 +65,11 @@ struct DeviceFusionDispatch {
 
 /// A leaf that the kernel reads in a larger buffer: the element at
 /// coordinates c of the leaf tensor is the element at c, with `offset` added
-/// on `axis`, of a row-major tensor of `shape`. A banked sequence state reads
-/// its carried rows this way from the previous present.
+/// on `axis`, of a row-major tensor of `shape`.
 ///
 /// With `dynamicOffset` the offset is a run-time value instead: the kernel
 /// takes it as an i32 after its other scalars and reads with
-/// min(value, offset), so `offset` is the largest one a run may pass. A
-/// banked state that may commit part of a run
-/// (sequenceStatePartialAdvanceStep) reads its carried rows this way.
+/// min(value, offset), so `offset` is the largest one a run may pass.
 struct DeviceFusionLeafView {
   unsigned tensor;
   llvm::SmallVector<int64_t> shape;
@@ -99,23 +94,14 @@ public:
   /// outside every group that its library kernel cannot run: a Softmax whose
   /// schedule has two passes, or a node beyond the limits of its library
   /// kernel (isSynthesizedDeviceNode), which the kernel evaluates on its own.
-  ///
-  /// With `prefix`, the kernel takes the zero-row extent Z of the prefix's
-  /// state as an i32 after the result token and writes the elements of the
-  /// root's result whose coordinate on the prefix axis is below Z as
-  /// `prefix->bits` instead of evaluating the expression there
-  /// (ONNXHostSequenceExtents.h). The statistics pass of a two-pass row
-  /// reduction always reads the whole row.
-  mlir::FailureOr<DeviceFusionDispatch>
-  dispatch(unsigned rootNode, const DeviceConstantPrefix *prefix = nullptr);
+  mlir::FailureOr<DeviceFusionDispatch> dispatch(unsigned rootNode);
 
   /// The dispatch of the expression of `rootNode` with the leaf `view.tensor`
   /// read through `view`; its buffer argument holds the whole view shape.
   /// `rootNode` may also be a node outside every group, which the kernel then
-  /// evaluates on its own. `prefix` is as above.
+  /// evaluates on its own.
   mlir::FailureOr<DeviceFusionDispatch>
-  dispatch(unsigned rootNode, const DeviceFusionLeafView &view,
-           const DeviceConstantPrefix *prefix = nullptr);
+  dispatch(unsigned rootNode, const DeviceFusionLeafView &view);
 
   /// The dispatch of the Concat `rootNode` of an in-place Concat pair
   /// (InPlaceConcat in ONNXHostPlan.h) when its first operand is the leading
@@ -139,7 +125,7 @@ private:
   mlir::FailureOr<DeviceFusionDispatch>
   synthesize(unsigned rootNode, const DeviceFusionLeafView *view,
              const DeviceRowReduction *schedule, FusedKernelRole role,
-             const DeviceConstantPrefix *prefix, bool inPlace = false);
+             bool inPlace = false);
 
   mlir::ModuleOp module;
   const DeviceFusion &fusion;

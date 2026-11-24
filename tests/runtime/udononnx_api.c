@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <VRC/Runtime/OpenCL/Backend.h>
-#include <udononnx_transitional.h>
+#include <udononnxruntime_internal.h>
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -96,21 +96,6 @@ udononnxGeneratedDispose(uint32_t graph_id,
   bound_input = 0;
   bound_output = 0;
   return dispose_status;
-}
-
-/* The transitional binding is not used here. */
-udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id,
-                            udononnxTransitionalSession_t *session,
-                            cl_command_queue queue, cl_uint wait_count,
-                            const cl_event *wait_list, cl_event *completion) {
-  (void)graph_id;
-  (void)session;
-  (void)queue;
-  (void)wait_count;
-  (void)wait_list;
-  (void)completion;
-  return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 
 size_t udoncl_cl_buffer_limit(void) { return 1024 * 1024; }

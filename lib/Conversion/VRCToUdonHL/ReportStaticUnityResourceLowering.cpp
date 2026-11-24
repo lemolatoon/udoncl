@@ -163,23 +163,6 @@ struct ReportStaticUnityResourceLoweringPass
   }
 };
 
-/// Whether the module's ONNX binding is the transitional sequence-state
-/// binding (udoncl.onnx_binding.transitional_sequence_state names an advance
-/// symbol): the only exception to the required static Unity resource
-/// lowering, kept by the TinyLlama Conversation and Chat programs until
-/// stage 3 binds their KV cache through the public UdonONNX API.
-bool banksOnnxSequenceState(ModuleOp module) {
-  auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
-  auto transitional =
-      binding ? binding.getAs<DictionaryAttr>("transitional_sequence_state")
-              : DictionaryAttr();
-  auto advance =
-      transitional
-          ? transitional.getAs<StringAttr>("advance_sequence_state_symbol")
-          : StringAttr();
-  return advance && !advance.getValue().empty();
-}
-
 /// Whether the module still allocates a Device buffer at run time.
 bool allocatesDeviceBuffers(ModuleOp module) {
   bool allocates = false;
@@ -221,10 +204,6 @@ struct RequireStaticUnityResourceLoweringPass
         inventory ? inventory.getAs<ArrayAttr>("resources") : ArrayAttr();
     if ((!resources || resources.empty()) && !allocatesDeviceBuffers(module))
       return;
-    // Transitional exception (removed in stage 3): a Host on the private
-    // sequence-state binding keeps the run-time Device buffer pool.
-    if (banksOnnxSequenceState(module))
-      return;
     InFlightDiagnostic error = module.emitError(
         "every Unity Device buffer must resolve at compile time to one "
         "assigned buffer, but the static Unity resource lowering ");
@@ -238,8 +217,7 @@ struct RequireStaticUnityResourceLoweringPass
         separator = "; ";
       });
     }
-    // Only the transitional sequence-state programs are exempt; name the
-    // program that is not.
+    // Name the program that is not lowered.
     if (auto program = module->getAttrOfType<StringAttr>("udoncl.program"))
       error << " (program \"" << program.getValue() << "\")";
     signalPassFailure();

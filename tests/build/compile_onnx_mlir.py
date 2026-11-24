@@ -26,7 +26,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
 
     def run_pipeline(self, content, dimensions=(), input_shapes=(),
                      lower_to_host=False, static_data_directory=None,
-                     transitional_sequence_state=False, dimension_bounds=()):
+                     dimension_bounds=()):
         def run(command, check):
             self.assertTrue(check)
             prefix = ('--udoncl-externalize-onnx-initializers='
@@ -47,7 +47,6 @@ class CompileONNXMLIRTests(unittest.TestCase):
             compiler.canonicalize(
                 self.model, self.output, self.frontend, dimensions,
                 input_shapes, lower_to_host, static_data_directory,
-                transitional_sequence_state=transitional_sequence_state,
                 dimension_bounds=dimension_bounds)
         return call.call_args.args[0]
 
@@ -102,9 +101,6 @@ class CompileONNXMLIRTests(unittest.TestCase):
                        '--udoncl-cleanup-onnx-host-source',
                        '--emit-bytecode'):
             self.assertIn(option, command)
-        # A plain graph: its past and present tensors are ordinary inputs
-        # and outputs.
-        self.assertNotIn('--udoncl-identify-onnx-sequence-state', command)
         self.assertLess(command.index('--udoncl-simplify-onnx-views'),
                         command.index('--udoncl-materialize-onnx-constants'))
         # The repeated-operand fold matches the Expand and Reshape views the
@@ -144,14 +140,6 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.assertLess(command.index('--udoncl-finalize-onnx-host'),
                         command.index('--udoncl-cleanup-onnx-host-source'))
         self.assertEqual(self.output.read_bytes(), b'host bytecode')
-
-    def test_transitional_sequence_state_is_opt_in(self):
-        command = self.run_pipeline(b'host bytecode', lower_to_host=True,
-                                    transitional_sequence_state=True)
-        identify = command.index('--udoncl-identify-onnx-sequence-state')
-        self.assertLess(command.index('--udoncl-simplify-onnx-empty-concat'),
-                        identify)
-        self.assertLess(identify, command.index('--udoncl-lower-onnx-to-host'))
 
     def test_host_lowering_moves_static_payloads_transactionally(self):
         sidecar = self.root / 'out/static-tensors'

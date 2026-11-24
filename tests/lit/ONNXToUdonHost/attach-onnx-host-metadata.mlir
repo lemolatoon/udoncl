@@ -1,4 +1,4 @@
-// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-attach-onnx-host-metadata %s | %FileCheck --implicit-check-not='@udon_onnx_session_run' --implicit-check-not='@__udononnx_transitional_create' --implicit-check-not='udoncl.onnx_host_finalized' %s
+// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-attach-onnx-host-metadata %s | %FileCheck --implicit-check-not='@udon_onnx_session_run' --implicit-check-not='udoncl.onnx_host_finalized' %s
 // RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-attach-onnx-host-metadata --vrc-describe-onnx-binding-manifest %s | %FileCheck --check-prefix=MANIFEST %s
 
 func.func private @__udon_onnx_add(
@@ -30,8 +30,6 @@ func.func @main_graph(
 // CHECK-SAME: udoncl.onnx_operator_counts = {Add = 1 : i64}
 // CHECK: func.func @main_graph
 
-// The attached metadata describes the manifest entry of the ONNX binding. A
-// library built without TRANSITIONAL_SEQUENCE_STATE has no private binding,
-// so the entry names no physical symbols.
+// The attached metadata describes the manifest entry of the ONNX binding.
 
 // MANIFEST: vrc.onnx_binding_manifest = {abi = "udononnx-runtime-v3", inputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 0 : i64, logical_bytes = 16 : i64, name = "left", rank = 2 : i64}, {capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 1 : i64, logical_bytes = 16 : i64, name = "right", rank = 2 : i64}], model_index = 0 : i64, model_name = "model_0", outputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 0 : i64, logical_bytes = 16 : i64, name = "sum", rank = 2 : i64}]}

@@ -93,7 +93,6 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "RenderTexture",
             "__vrc_",
             "__udoncl_",
-            "__udononnx_transitional_",
         ):
             self.assertNotIn(forbidden, source)
 
@@ -345,16 +344,6 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "in-place Concat"):
                 VALIDATOR.validate_artifact(artifact)
 
-    def test_rejects_transitional_binding(self):
-        with tempfile.TemporaryDirectory() as directory:
-            artifact = self.make_artifact(Path(directory))
-            manifest_path = artifact / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["onnx_binding"]["transitional_sequence_state"] = {}
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "transitional"):
-                VALIDATOR.validate_artifact(artifact)
-
     def test_rejects_old_three_export_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self.make_artifact(Path(directory))
@@ -491,7 +480,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         ):
             self.assertIn(required, controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
-                          "__udoncl_", "__udononnx_transitional_", "1701", "29871"):
+                          "__udoncl_", "1701", "29871"):
             self.assertNotIn(forbidden, controller)
         for required in (
             "UDONCL_PUBLIC_TINYLLAMA_CHAT_UNITY_BUNDLE",
@@ -556,8 +545,8 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         ):
             self.assertIn(required, controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
-                          "__udoncl_", "__udononnx_transitional_", "TrySetPromptTokens",
-                          "StartReset(", "29871"):
+                          "__udoncl_", "TrySetPromptTokens", "StartReset(",
+                          "29871"):
             self.assertNotIn(forbidden, controller)
         for required in (
             "UDONCL_PUBLIC_TINYLLAMA_CHAT_UNITY_BUNDLE",

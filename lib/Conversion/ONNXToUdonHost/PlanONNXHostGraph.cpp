@@ -116,10 +116,6 @@ struct PlanONNXHostGraphPass
     ownedIds.reserve(owned.size());
     for (unsigned value : owned)
       ownedIds.push_back(value);
-    SmallVector<int64_t> bankIds;
-    if (bankSequenceState)
-      for (unsigned value : sequenceStateBanks(*graph))
-        bankIds.push_back(value);
     SmallVector<NamedAttribute> planEntries{
         builder.getNamedAttr("device_graph", builder.getBoolAttr(deviceGraph)),
         builder.getNamedAttr("device_fusion_roots",
@@ -136,9 +132,6 @@ struct PlanONNXHostGraphPass
         builder.getNamedAttr("mutable_handle_capacity",
                              builder.getI64IntegerAttr(handleCapacity)),
     };
-    if (!bankIds.empty())
-      planEntries.push_back(builder.getNamedAttr(
-          "sequence_state_banks", builder.getDenseI64ArrayAttr(bankIds)));
     module->setAttr(hostGraphPlanAttr, builder.getDictionaryAttr(planEntries));
   }
 };

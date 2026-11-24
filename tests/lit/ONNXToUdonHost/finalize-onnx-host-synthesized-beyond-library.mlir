@@ -5,17 +5,15 @@
 
 // Per-element, re-indexing and Softmax nodes beyond the element limits of
 // their library kernels still run on the Device, as synthesized kernels that
-// launch the rows their result needs. A sequence state of capacity 4096 with
-// four heads of 64 holds 1048576 words per present (the library Concat
-// addresses 16384, the library Transpose and Mul 131072): its banked Concat
-// launches 8192 x 128 fragments. The transposed, scaled present is one group
-// of the same size, and a Softmax over rows of 4096 (beyond the 512 of the
-// library kernel) runs in two passes with its mask Add fused. Without fusion
-// every such node is a synthesized kernel of its own.
+// launch the rows their result needs. A present of 4096 rows with four heads
+// of 64 holds 1048576 words (the library Concat addresses 16384, the library
+// Transpose and Mul 131072): its Concat launches 8192 x 128 fragments. The
+// transposed, scaled present is one group of the same size, and a Softmax
+// over rows of 4096 (beyond the 512 of the library kernel) runs in two passes
+// with its mask Add fused. Without fusion every such node is a synthesized
+// kernel of its own.
 
-module attributes {udoncl.onnx_sequence_states = [
-    {axis = 2 : i64, capacity = 4096 : i64, input_index = 1 : i64,
-     output_index = 0 : i64, step = 1 : i64}]} {
+module {
   func.func private @clEnqueueMarkerWithWaitList(
       !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
 
@@ -93,27 +91,26 @@ module attributes {udoncl.onnx_sequence_states = [
 // PLAN: device_fusion_roots = array<i64: 0, 2, 2, 4, 4>
 // PLAN-SAME: device_graph = true
 
-// The Concat and the scaled keys read the present of the active bank; the
-// statistics and elementwise passes of the Softmax follow.
+// The Concat writes the present that the scaled keys read; the statistics
+// and elementwise passes of the Softmax follow.
 // CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
 // CHECK-NOT: call @__vrc_opencl_dispatch_udononnx_transpose
 // CHECK-NOT: call @__vrc_opencl_dispatch_udonaten
 // CHECK-NOT: call @__vrc_opencl_dispatch_udondnn
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_3(%[[SCORES:[^,]*]], %[[MASK:[^,]*]], %[[SCRATCH:[^)]*]])
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_4(%[[SCORES]], %[[MASK]], %[[SCRATCH]], %{{[^)]*}})
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%{{[^,]*}}, %{{[^,]*}}, %[[PRESENT:[^)]*]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[PRESENT]], %{{[^)]*}})
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[SCORES:[^,]*]], %[[MASK:[^,]*]], %[[SCRATCH:[^)]*]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_3(%[[SCORES]], %[[MASK]], %[[SCRATCH]], %{{[^)]*}})
 // CHECK-LABEL: gpu.module @udononnx_fused_kernels
-// The Concat and the scaled keys also take the zero rows of the state
-// (finalize-onnx-host-sequence-zero-rows.mlir).
-// CHECK: gpu.func @udononnx_fused_0(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<1048576xf32>, %{{.*}}: i32)
+// CHECK: gpu.func @udononnx_fused_0(%{{.*}}: memref<1048320xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<1048576xf32>)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 128, 1>
 // CHECK-SAME: vrc.words = 1048576
-// CHECK: gpu.func @udononnx_fused_2(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<1048576xf32>, %{{.*}}: i32)
+// CHECK: gpu.func @udononnx_fused_1(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<1048576xf32>)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 128, 1>
-// CHECK: gpu.func @udononnx_fused_4(%{{.*}}: memref<131072xf32>, %{{.*}}: memref<4096xf32>, %{{.*}}: memref<8192xf32>, %{{.*}}: memref<131072xf32>)
+// CHECK: gpu.func @udononnx_fused_3(%{{.*}}: memref<131072xf32>, %{{.*}}: memref<4096xf32>, %{{.*}}: memref<8192xf32>, %{{.*}}: memref<131072xf32>)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 16, 1>
 
-// PROVEN-COUNT-5: vrc.gather_proven
+// PROVEN-COUNT-4: vrc.gather_proven
 
 // UNFUSED: device_graph = true
 // UNFUSED-LABEL: func.func @udononnxGeneratedEnqueueRun

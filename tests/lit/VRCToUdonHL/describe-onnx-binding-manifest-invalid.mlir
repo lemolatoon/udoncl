@@ -17,22 +17,7 @@ module attributes {
   udoncl.onnx_binding = {
     abi = "udononnx-runtime-v3", model_index = 0 : i32, model_name = "model_0",
     inputs = [{capacity_bytes = 4 : i64, data_type = "float32", index = 0 : i32, logical_bytes = 4 : i64, name = "x", rank = 1 : i32}],
-    outputs = [],
-    transitional_sequence_state = {}
-  }
-} {
-}
-
-// -----
-
-// Every symbol of a private binding but the sequence-state ones is named.
-
-// expected-error @below {{ONNX binding metadata has no transitional bind_all_symbol}}
-module attributes {
-  udoncl.onnx_binding = {
-    abi = "udononnx-runtime-v3", model_index = 0 : i32, model_name = "model_0",
-    inputs = [], outputs = [],
-    transitional_sequence_state = {create_symbol = "c"}
+    outputs = []
   }
 } {
 }
