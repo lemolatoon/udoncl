@@ -11,10 +11,6 @@ module {
   func.func private @udonclDeviceBufferView(!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
   func.func private @udonclBufferViewResolve(!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
 
-  func.func private @udononnxCopyBufferView(%destination: !udonhl.ptr<0>, %source: !udonhl.ptr<0>) {
-    return
-  }
-
   func.func private @initializeSession(%fail: i1, %session: !udonhl.ptr<0>, %bindings: !udonhl.ptr<0>) -> i32 {
     %zero = arith.constant 0 : i32
     %error = arith.constant 7 : i32
@@ -30,14 +26,17 @@ module {
     return %status : i32
   }
 
-  func.func private @copyTensorView(%session: !udonhl.ptr<0>, %index: i32, %source: !udonhl.ptr<0>) {
+  func.func private @viewTensor(%session: !udonhl.ptr<0>, %index: i32, %handle: !udonhl.ptr<0>) {
+    %zero = arith.constant 0 : i32
     %eight = arith.constant 8 : i32
+    %elements = arith.constant 16 : i32
+    %dtype = arith.constant 6 : i32
     %stride = arith.constant 88 : i32
     %bindings_cell = "udonhl.ptr_add"(%session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     %bindings_base = "udonhl.load"(%bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     %offset = arith.muli %index, %stride : i32
     %tensor = "udonhl.ptr_add"(%bindings_base, %offset) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
-    func.call @udononnxCopyBufferView(%tensor, %source) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %tensor) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     return
   }
 
@@ -97,13 +96,11 @@ module {
     %resource = func.call @clCreateBuffer() : () -> !udonhl.ptr<0>
     %handle = "udonhl.alloca"(%eight) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %adopted = func.call @udonclDeviceBufferAdopt(%context, %resource, %bytes, %handle) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
-    %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
-    %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
     %opaque = func.call @loadUnrelatedOpaquePointer(%session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
     %binding = udonhl.address_of @persistent_binding : !udonhl.ptr<0>
     %initialized = func.call @initializeNullablePointer(%session, %binding, %true) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
-    func.call @udononnxCopyBufferView(%binding, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %binding) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     cf.cond_br %clear_after_write, ^clear, ^done
   ^clear:
     %empty_view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
@@ -149,7 +146,6 @@ module {
     %one = arith.constant 1 : i32
     %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
-    %twenty = arith.constant 20 : i32
     %eighty_eight = arith.constant 88 : i32
     %elements = arith.constant 16 : i32
     %dtype = arith.constant 6 : i32
@@ -158,8 +154,6 @@ module {
     %resource = func.call @clCreateBuffer() : () -> !udonhl.ptr<0>
     %handle = "udonhl.alloca"(%eight) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %adopted = func.call @udonclDeviceBufferAdopt(%context, %resource, %bytes, %handle) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
-    %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
-    %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
 
     %session = udonhl.address_of @session : !udonhl.ptr<0>
     %bindings = udonhl.address_of @bindings : !udonhl.ptr<0>
@@ -168,7 +162,7 @@ module {
     cf.cond_br %initialized, ^use, ^failure
 
   ^use:
-    func.call @copyTensorView(%session, %one, %view) : (!udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> ()
+    func.call @viewTensor(%session, %one, %handle) : (!udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> ()
 
     %tensor = "udonhl.ptr_add"(%bindings, %eighty_eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     %raw_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>

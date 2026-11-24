@@ -1,7 +1,7 @@
 module {
   func.func private @clCreateBuffer() -> !udonhl.ptr<0>
   func.func private @udonclDeviceBufferAdopt(!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
-  func.func private @udononnxCopyBufferView(!udonhl.ptr<0>, !udonhl.ptr<0>)
+  func.func private @udonclBufferViewResolve(!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
 
   func.func @MismatchedHandleFields() attributes {udoncl.export} {
     %zero = arith.constant 0 : i32
@@ -10,7 +10,6 @@ module {
     %twelve = arith.constant 12 : i32
     %sixteen = arith.constant 16 : i32
     %twenty = arith.constant 20 : i32
-    %eighty_eight = arith.constant 88 : i32
     %bytes = arith.constant 64 : i32
     %dtype = arith.constant 6 : i32
     %context = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
@@ -33,8 +32,10 @@ module {
     "udonhl.store"(%bytes, %view12) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
     %view16 = "udonhl.ptr_add"(%view, %sixteen) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     "udonhl.store"(%dtype, %view16) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
-    %tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
-    func.call @udononnxCopyBufferView(%tensor, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %raw = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %offset = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %length = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %resolved = func.call @udonclBufferViewResolve(%view, %raw, %offset, %length) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     return
   }
 }

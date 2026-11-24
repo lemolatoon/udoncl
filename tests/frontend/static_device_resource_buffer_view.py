@@ -54,7 +54,6 @@ rejected = subprocess.run(
 assert rejected.returncode != 0, rejected.stdout
 for callee in (
     "udonclDeviceBufferView",
-    "udononnxCopyBufferView",
     "udonclBufferViewResolve",
     "clReleaseMemObject",
 ):
@@ -62,22 +61,22 @@ for callee in (
     assert re.search(r"resource_ids = \[\d+ : i32\]", line), line
     assert "unknown = false" in line, line
 
-copy_lines = [
-    line for line in first.splitlines()
-    if "call @udononnxCopyBufferView" in line
+analyzed, hidden = first.split("func.func @HiddenDynamicBinding", 1)
+view_lines = [
+    line for line in analyzed.splitlines()
+    if "call @udonclDeviceBufferView" in line
     and "vrc.static_device_operand_provenance" in line
 ]
 resolve_lines = [
-    line for line in first.splitlines()
+    line for line in analyzed.splitlines()
     if "call @udonclBufferViewResolve" in line
 ]
-assert len(copy_lines) == 2 and all(
-    re.search(r"resource_ids = \[\d+ : i32\]", line) for line in copy_lines
-), copy_lines
-assert len(resolve_lines) == 5 and all(
+assert len(view_lines) == 3 and all(
+    re.search(r"resource_ids = \[\d+ : i32\]", line) for line in view_lines
+), view_lines
+assert len(resolve_lines) == 6 and all(
     re.search(r"resource_ids = \[\d+ : i32\]", line) for line in resolve_lines
 ), resolve_lines
-hidden = first.split("func.func @HiddenDynamicBinding", 1)[1]
 assert "vrc.static_device_operand_provenance" not in hidden, hidden
 
 layout_source = source.with_name("static_device_resource_buffer_view_layout.mlir")

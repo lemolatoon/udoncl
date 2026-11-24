@@ -21,18 +21,18 @@ def run():
 
 first = run()
 assert first == run()
-copy_lines = [
+view_lines = [
     line for line in first.splitlines()
-    if "call @udononnxCopyBufferView" in line
+    if "call @udonclDeviceBufferView" in line
     and "vrc.static_device_operand_provenance" in line
 ]
 resolve_lines = [
     line for line in first.splitlines()
     if "call @udonclBufferViewResolve" in line
 ]
-assert len(copy_lines) == 2, copy_lines
+assert len(view_lines) == 2, view_lines
 assert len(resolve_lines) == 2, resolve_lines
-for lines in (copy_lines, resolve_lines):
+for lines in (view_lines, resolve_lines):
     assert any("resource_ids = [0 : i32]" in line for line in lines), lines
     assert any("resource_ids = [1 : i32]" in line for line in lines), lines
 release = next(

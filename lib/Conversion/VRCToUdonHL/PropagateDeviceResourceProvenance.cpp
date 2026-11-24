@@ -2364,52 +2364,6 @@ struct PropagateDeviceResourceProvenancePass
             for (Value result : call.getResults())
               updateFact(result, Fact::scalar(), facts, worklist, queued,
                          reached);
-          } else if (calleeName == "udononnxCopyBufferView") {
-            if (call.getNumOperands() != 2) {
-              call.emitError("udononnxCopyBufferView requires two operands");
-              invalid = true;
-              continue;
-            }
-            auto destination = objectValues.find(call.getOperand(0));
-            auto source = objectValues.find(call.getOperand(1));
-            auto exactDestination = destination == objectValues.end()
-                                        ? std::nullopt
-                                        : exactObject(destination->second);
-            auto exactSource = source == objectValues.end()
-                                   ? std::nullopt
-                                   : exactObject(source->second);
-            if (!exactSource || !canHoldView(*exactSource) ||
-                !localViews[*exactSource].initialized ||
-                !localViews[*exactSource].resource.resource ||
-                localViews[*exactSource].resource.unknown) {
-              if (collectingGlobalSummaries)
-                continue;
-              call.emitError("udononnxCopyBufferView requires an initialized "
-                             "source view subobject in @")
-                  << function.getSymName() << ": " << call.getOperand(1);
-              invalid = true;
-              continue;
-            }
-            if (!exactDestination || !canHoldView(*exactDestination)) {
-              if (collectingGlobalSummaries)
-                continue;
-              call.emitError("udononnxCopyBufferView requires an exact "
-                             "destination view subobject in @")
-                  << function.getSymName() << " from root @"
-                  << invocation.root.getValue() << ": " << call.getOperand(0);
-              invalid = true;
-              continue;
-            }
-            localViews[*exactDestination] = localViews[*exactSource];
-            recordGlobalViewWrite(*exactDestination,
-                                  localViews[*exactDestination]);
-            recordCase(operandCases, call, invocation, 0,
-                       localViews[*exactDestination].resource);
-            recordCase(operandCases, call, invocation, 1,
-                       localViews[*exactSource].resource);
-            for (Value result : call.getResults())
-              updateFact(result, Fact::scalar(), facts, worklist, queued,
-                         reached);
           } else if (calleeName == "udonclBufferViewResolve") {
             if (call.getNumOperands() != 4) {
               call.emitError("udonclBufferViewResolve requires four operands");

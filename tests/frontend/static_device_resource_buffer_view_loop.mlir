@@ -2,7 +2,6 @@ module {
   func.func private @clCreateBuffer() -> !udonhl.ptr<0>
   func.func private @udonclDeviceBufferAdopt(!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
   func.func private @udonclDeviceBufferView(!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
-  func.func private @udononnxCopyBufferView(!udonhl.ptr<0>, !udonhl.ptr<0>)
   func.func private @udonclBufferViewResolve(!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
 
   func.func @ResolveFiniteViewArray() attributes {udoncl.export, vrc.export_id = 1 : i32} {
@@ -11,7 +10,6 @@ module {
     %two = arith.constant 2 : i32
     %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
-    %twenty = arith.constant 20 : i32
     %eighty_eight = arith.constant 88 : i32
     %one_hundred_seventy_six = arith.constant 176 : i32
     %elements = arith.constant 16 : i32
@@ -21,12 +19,10 @@ module {
     %resource = func.call @clCreateBuffer() : () -> !udonhl.ptr<0>
     %handle = "udonhl.alloca"(%eight) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %adopted = func.call @udonclDeviceBufferAdopt(%context, %resource, %bytes, %handle) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
-    %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
-    %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %views = "udonhl.alloca"(%one_hundred_seventy_six) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
-    func.call @udononnxCopyBufferView(%views, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %first_viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %views) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %second = "udonhl.ptr_add"(%views, %eighty_eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
-    func.call @udononnxCopyBufferView(%second, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %second_viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %second) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %raw = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %offset = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %length = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
