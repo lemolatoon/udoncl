@@ -283,6 +283,30 @@ def InferStaticDeviceResourceRequirementsPass : Pass<"vrc-infer-static-device-re
   let summary = "Infer keyed capacity and memory requirements for static allocation contexts";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def PlanHostDeviceHandlesPass : Pass<"vrc-plan-host-device-handles", "mlir::ModuleOp"> {
+  let summary = "Plan one OpenCL buffer handle per static allocation context";
+  let description = [{
+    Static Device resource discovery gives every allocation the Host may make
+    its own allocation context, one per unrolled loop iteration and per call
+    path, and each context is live at most once. The OpenCL runtime of a
+    Unity library therefore needs exactly one buffer handle per context.
+
+    The pass records that plan as `vrc.host_device_handle_plan`: `handles`
+    is the number of contexts of `vrc.static_device_resource_discovery`, and
+    `buffer_bytes` has the capacity
+    vrc-infer-static-device-resource-requirements inferred for each of them,
+    in context order:
+
+    ```mlir
+    vrc.host_device_handle_plan = {buffer_bytes = array<i64: 128, 128>,
+                                   handles = 2 : i64}
+    ```
+
+    It runs after vrc-infer-static-device-resource-requirements
+    (`vrc-plan-host-device-handle-pipeline`); udonclc writes the plan of a C
+    Host as the extra buffers of its Host buffer plan.
+  }];
+}
 def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-provenance", "mlir::ModuleOp"> {
   let summary = "Propagate context-sensitive static device resource identities through Host SSA";
   let description = [{

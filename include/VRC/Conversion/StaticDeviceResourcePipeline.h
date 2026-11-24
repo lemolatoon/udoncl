@@ -7,6 +7,17 @@ class OpPassManager;
 
 namespace vrc {
 
+/// The allocation contexts of a recovered Unity Host and their inferred
+/// requirements: the discovery pipeline through
+/// vrc-infer-static-device-resource-requirements.
+void buildStaticDeviceResourceRequirementsPipeline(
+    mlir::OpPassManager &manager);
+
+/// The requirements pipeline, then vrc-plan-host-device-handles: one OpenCL
+/// buffer handle per allocation context (vrc.host_device_handle_plan).
+void buildHostDeviceHandlePlanPipeline(mlir::OpPassManager &manager);
+void registerHostDeviceHandlePlanPipeline();
+
 /// The static Device resource analysis of a recovered Unity Host, from the
 /// Device resource operand contracts of the runtime entry points to the
 /// public resource aliases of the assigned Unity Textures.

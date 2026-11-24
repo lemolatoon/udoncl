@@ -7,7 +7,7 @@ using namespace mlir;
 
 namespace vrc {
 
-void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
+void buildStaticDeviceResourceRequirementsPipeline(OpPassManager &manager) {
   manager.addPass(createAttachDeviceResourceOperandContractsPass());
   // A constant-trip loop of allocations has one context per iteration.
   manager.addPass(createUnrollStaticResourceLoopsPass());
@@ -22,6 +22,10 @@ void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
   manager.addPass(createDiscoverStaticDeviceResourcesPass());
   manager.addPass(createPlanStaticDeviceResourceContextSpecializationPass());
   manager.addPass(createInferStaticDeviceResourceRequirementsPass());
+}
+
+void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
+  buildStaticDeviceResourceRequirementsPipeline(manager);
   manager.addPass(createPropagateDeviceResourceProvenancePass());
   // UDONCL_PUBLIC variables resolve to the allocation their global cell
   // holds.
@@ -43,6 +47,19 @@ void registerStaticDeviceResourceDiscoveryPipeline() {
       "resolve their provenance and public bindings, and assign Unity "
       "Textures",
       buildStaticDeviceResourceDiscoveryPipeline);
+}
+
+void buildHostDeviceHandlePlanPipeline(OpPassManager &manager) {
+  buildStaticDeviceResourceRequirementsPipeline(manager);
+  manager.addPass(createPlanHostDeviceHandlesPass());
+}
+
+void registerHostDeviceHandlePlanPipeline() {
+  PassPipelineRegistration<>(
+      "vrc-plan-host-device-handle-pipeline",
+      "Discover the static allocation contexts of a recovered Unity Host and "
+      "plan one OpenCL buffer handle per context",
+      buildHostDeviceHandlePlanPipeline);
 }
 
 void buildStaticUnityResourceReadinessPipeline(OpPassManager &manager) {
