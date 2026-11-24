@@ -278,7 +278,16 @@ assert "udoncl.onnx_operator_counts" in host.stdout
 assert "logical_bytes" in host.stdout
 assert "capacity_bytes" in host.stdout
 assert "udoncl.mutable_handle_capacity" in host.stdout
-assert host.stdout.count("vrc.buffer_view_layout") == 6
+# The model storage and the input and output metadata; the state of the
+# private transitional binding is materialized only for a library built with
+# TRANSITIONAL_SEQUENCE_STATE.
+assert host.stdout.count("vrc.buffer_view_layout") == 3
+for symbol in ("__udon_onnx_binding_state", "__udon_onnx_binding_inputs",
+               "__udon_onnx_binding_outputs", "__udon_onnx_binding_event",
+               "__udon_onnx_io_handles"):
+    assert symbol not in host.stdout, symbol
+    assert f'sym_name = "{symbol}"' in transitional.stdout, symbol
+assert transitional.stdout.count("vrc.buffer_view_layout") == 6
 metadata_global = next(
     line
     for line in host.stdout.splitlines()
@@ -288,7 +297,7 @@ assert "vrc.buffer_view_layout" in metadata_global
 assert "count = 0 : i32" in metadata_global
 binding_global = next(
     line
-    for line in host.stdout.splitlines()
+    for line in transitional.stdout.splitlines()
     if 'sym_name = "__udon_onnx_binding_inputs"' in line
 )
 assert "vrc.buffer_view_layout" in binding_global
@@ -298,7 +307,7 @@ assert "stride_bytes = 88 : i32" in binding_global
 assert "offsets = array<i32: 0>" in binding_global
 output_binding_global = next(
     line
-    for line in host.stdout.splitlines()
+    for line in transitional.stdout.splitlines()
     if 'sym_name = "__udon_onnx_binding_outputs"' in line
 )
 assert "count = 1 : i32" in output_binding_global
@@ -646,9 +655,7 @@ for symbol in device_symbols:
     assert owned_symbol in initialize_body
     assert owned_symbol in dispose_body
     assert_owned_global_lifecycle(unary_host.stdout, owned_symbol)
-assert "storage_type = i32" in global_definition(
-    unary_host.stdout, "__udon_onnx_binding_event"
-)
+assert "__udon_onnx_binding_event" not in unary_host.stdout
 assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_unary_f32") == 3
 assert "call @udononnxCos" not in unary_host.stdout
 assert "call @udononnxSin" not in unary_host.stdout

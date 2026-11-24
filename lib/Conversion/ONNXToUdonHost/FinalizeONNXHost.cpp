@@ -1539,13 +1539,6 @@ LogicalResult declareBindingRuntime(ModuleOp module) {
   return declarations.result();
 }
 
-/// Whether the library was built with TRANSITIONAL_SEQUENCE_STATE: the
-/// sequence-state identification ran (and recorded its states, possibly
-/// none).
-bool isTransitionalSequenceStateHost(ModuleOp module) {
-  return module->hasAttr("udoncl.onnx_sequence_states");
-}
-
 LogicalResult createPhysicalBindingExports(ModuleOp module,
                                            const GraphRecord &graph,
                                            const HostPlanRecord &plan) {

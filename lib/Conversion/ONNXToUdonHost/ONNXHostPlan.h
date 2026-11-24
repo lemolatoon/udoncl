@@ -266,6 +266,11 @@ llvm::SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
                                               llvm::ArrayRef<unsigned> storage);
 mlir::FailureOr<HostPlanRecord> readHostPlan(mlir::ModuleOp module,
                                              const GraphRecord &graph);
+/// Whether the library was built with TRANSITIONAL_SEQUENCE_STATE: the
+/// sequence-state identification ran (and recorded its states, possibly
+/// none). Only such a library gets the private transitional binding and its
+/// state (removed in stage 3).
+bool isTransitionalSequenceStateHost(mlir::ModuleOp module);
 } // namespace vrc
 
 #endif

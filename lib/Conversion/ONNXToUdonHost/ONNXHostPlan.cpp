@@ -1199,6 +1199,10 @@ SmallVector<unsigned> ownedDeviceBuffers(const GraphRecord &graph,
   return owned;
 }
 
+bool isTransitionalSequenceStateHost(ModuleOp module) {
+  return module->hasAttr("udoncl.onnx_sequence_states");
+}
+
 FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
                                        const GraphRecord &graph) {
   auto plan = module->getAttrOfType<DictionaryAttr>(hostGraphPlanAttr);

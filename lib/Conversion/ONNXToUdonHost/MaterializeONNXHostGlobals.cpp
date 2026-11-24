@@ -133,36 +133,26 @@ void createI64ArrayGlobal(ModuleOp module, StringRef symbol,
   createByteGlobal(module, symbol, bytes, 8);
 }
 
-void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
-  Builder builder(module.getContext());
-  auto setBufferViewLayout = [&](Operation *global, int32_t count,
-                                 int32_t stride, ArrayRef<int32_t> offsets) {
-    global->setAttr(
-        "vrc.buffer_view_layout",
-        builder.getDictionaryAttr({
-            builder.getNamedAttr("count", builder.getI32IntegerAttr(count)),
-            builder.getNamedAttr("offsets",
-                                 builder.getDenseI32ArrayAttr(offsets)),
-            builder.getNamedAttr("schema_version",
-                                 builder.getI32IntegerAttr(1)),
-            builder.getNamedAttr("stride_bytes",
-                                 builder.getI32IntegerAttr(stride)),
-        }));
-  };
-  setBufferViewLayout(createZeroGlobal(module, onnxHostModelStorageSymbol,
-                                       onnxHostModelStorageBytes),
-                      0, 0, {});
-  setBufferViewLayout(
-      createZeroGlobal(module, onnxHostInputMetadataSymbol,
-                       std::max<size_t>(graph.inputs.size(), 1) *
-                           onnxHostMetadataStorageBytes),
-      0, 0, {});
-  setBufferViewLayout(
-      createZeroGlobal(module, onnxHostOutputMetadataSymbol,
-                       std::max<size_t>(graph.outputs.size(), 1) *
-                           onnxHostMetadataStorageBytes),
-      0, 0, {});
-  createStringGlobal(module, onnxHostModelNameSymbol, "model");
+void setBufferViewLayout(Operation *global, int32_t count, int32_t stride,
+                         ArrayRef<int32_t> offsets) {
+  Builder builder(global->getContext());
+  global->setAttr(
+      "vrc.buffer_view_layout",
+      builder.getDictionaryAttr({
+          builder.getNamedAttr("count", builder.getI32IntegerAttr(count)),
+          builder.getNamedAttr("offsets",
+                               builder.getDenseI32ArrayAttr(offsets)),
+          builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(1)),
+          builder.getNamedAttr("stride_bytes",
+                               builder.getI32IntegerAttr(stride)),
+      }));
+}
+
+/// The state of the private transitional binding (removed in stage 3). Only
+/// a library built with TRANSITIONAL_SEQUENCE_STATE has that binding; every
+/// other Host binds its buffers through the UdonONNX session API.
+void createTransitionalBindingGlobals(ModuleOp module,
+                                      const GraphRecord &graph) {
   setBufferViewLayout(createZeroGlobal(module, onnxHostBindingStateSymbol,
                                        onnxHostBindingStateStorageBytes),
                       0, 0, {});
@@ -184,6 +174,26 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
           onnxHostBindingBufferHandleBytes,
       4);
   createI32Global(module, onnxHostBindingEventSymbol);
+}
+
+void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph,
+                                bool transitional) {
+  setBufferViewLayout(createZeroGlobal(module, onnxHostModelStorageSymbol,
+                                       onnxHostModelStorageBytes),
+                      0, 0, {});
+  setBufferViewLayout(
+      createZeroGlobal(module, onnxHostInputMetadataSymbol,
+                       std::max<size_t>(graph.inputs.size(), 1) *
+                           onnxHostMetadataStorageBytes),
+      0, 0, {});
+  setBufferViewLayout(
+      createZeroGlobal(module, onnxHostOutputMetadataSymbol,
+                       std::max<size_t>(graph.outputs.size(), 1) *
+                           onnxHostMetadataStorageBytes),
+      0, 0, {});
+  createStringGlobal(module, onnxHostModelNameSymbol, "model");
+  if (transitional)
+    createTransitionalBindingGlobals(module, graph);
   if (!graph.sequenceStates.empty()) {
     createI32Global(module, onnxHostSequenceStateOwnedSymbol);
     createI32Global(module, onnxHostSequenceStatePendingSymbol);
@@ -218,12 +228,16 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
   };
   for (StringRef symbol :
        {onnxHostModelStorageSymbol, onnxHostInputMetadataSymbol,
-        onnxHostOutputMetadataSymbol, onnxHostModelNameSymbol,
-        onnxHostBindingStateSymbol, onnxHostBindingInputSymbol,
-        onnxHostBindingOutputSymbol, onnxHostBindingEventSymbol,
-        onnxHostBindingIoHandlesSymbol})
+        onnxHostOutputMetadataSymbol, onnxHostModelNameSymbol})
     if (failed(reserve(symbol)))
       return failure();
+  if (isTransitionalSequenceStateHost(module))
+    for (StringRef symbol :
+         {onnxHostBindingStateSymbol, onnxHostBindingInputSymbol,
+          onnxHostBindingOutputSymbol, onnxHostBindingEventSymbol,
+          onnxHostBindingIoHandlesSymbol})
+      if (failed(reserve(symbol)))
+        return failure();
   if (!graph.sequenceStates.empty())
     for (StringRef symbol :
          {onnxHostSequenceStateOwnedSymbol, onnxHostSequenceStatePendingSymbol,
@@ -342,7 +356,8 @@ struct MaterializeONNXHostGlobalsPass
     if (!plan->deviceGraph)
       for (const TensorRecord &tensor : graph->tensors)
         createTensorGlobal(module, tensor);
-    createModelMetadataGlobals(module, *graph);
+    createModelMetadataGlobals(module, *graph,
+                               isTransitionalSequenceStateHost(module));
     if (!plan->deviceGraph) {
       for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph->inputs)) {
         (void)tensorIndex;
