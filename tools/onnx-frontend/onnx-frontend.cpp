@@ -37,6 +37,7 @@ int main(int argc, char **argv) {
   llvm::InitLLVM init(argc, argv);
   mlir::registerAllPasses();
   vrc::registerSpecializeONNXInputsPass();
+  vrc::registerBoundONNXShapeOperandsPass();
   vrc::registerSimplifyONNXEmptyConcatPass();
   vrc::registerSimplifyONNXViewsPass();
   vrc::registerFoldONNXRepeatedMatMulOperandPass();

@@ -47,6 +47,7 @@ def canonicalize(
             command.extend([
                 '--udoncl-canonicalize-onnx-library-patterns',
                 '--udoncl-infer-onnx-shapes',
+                '--udoncl-bound-onnx-shape-operands',
                 '--udoncl-simplify-onnx-empty-concat',
                 '--udoncl-simplify-onnx-views',
                 '--udoncl-fold-onnx-repeated-matmul-operand',

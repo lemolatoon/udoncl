@@ -53,6 +53,33 @@ def ExternalizeONNXGraphConstantsPass : Pass<"udoncl-externalize-onnx-graph-cons
            /*default=*/"", "Directory receiving external static tensor payloads">
   ];
 }
+def BoundONNXShapeOperandsPass : Pass<"udoncl-bound-onnx-shape-operands", "mlir::ModuleOp"> {
+  let summary = "Rewrite shape operands that depend on bounded ONNX dimensions into extent-free forms";
+  let description = [{
+    Runs after udoncl-infer-onnx-shapes on graphs with bounded dimensions
+    (`udoncl.dimension_bounds`) and does nothing otherwise. A shape operand
+    of a run-time operator that depends on a bounded dimension becomes a
+    constant without it: a Reshape takes 0 (copy the input extent) or -1 on
+    the dynamic axis, an Expand takes 1 where its input already has the
+    extent, and a Slice end that reaches the whole extent becomes INT64_MAX.
+
+    Data computed from constants and tensor shapes alone (Range,
+    ConstantOfShape, Trilu, comparisons, ...) that reaches run-time data and
+    depends on a bounded dimension is evaluated on the Host at every extent
+    of the dimension. When every value is the leading block of the value at
+    the bound along its one dynamic axis, it becomes
+    `onnx.Custom {function_name = "UdonclBoundedPrefix"}` of the value at the
+    bound, with the axis and its extent `symbol + offset`; anything else is
+    an error naming the operator and the dimension. A ScatterND whose
+    data-independent indices name every element of its data in order for
+    every extent is replaced by its updates.
+
+    Postcondition: no value that is still used depends on a bounded
+    dimension through a shape computation (Shape, Dim, Range,
+    ConstantOfShape, ...).
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect"];
+}
 def SimplifyONNXEmptyConcatPass : Pass<"udoncl-simplify-onnx-empty-concat", "mlir::ModuleOp"> {
   let summary = "Remove statically empty operands from ONNX Concat operations";
 }

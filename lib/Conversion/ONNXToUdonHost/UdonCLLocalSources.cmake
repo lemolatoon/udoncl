@@ -1,6 +1,7 @@
 # Every UdonCL-specific ONNX pass is compiled directly into the
 # repository-owned pass driver.
 set(VRC_ONNX_LOCAL_PASS_SOURCES
+  "${CMAKE_CURRENT_LIST_DIR}/BoundONNXShapeOperands.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/CanonicalizeONNXLibraryPatterns.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/ExternalizeONNXGraphConstants.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/ExternalizeONNXInitializers.cpp"

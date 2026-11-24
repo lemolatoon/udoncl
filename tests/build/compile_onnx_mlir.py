@@ -86,7 +86,8 @@ class CompileONNXMLIRTests(unittest.TestCase):
 
     def test_host_lowering_is_one_repo_owned_pipeline(self):
         command = self.run_pipeline(b'host bytecode', lower_to_host=True)
-        for option in ('--udoncl-simplify-onnx-empty-concat',
+        for option in ('--udoncl-bound-onnx-shape-operands',
+                       '--udoncl-simplify-onnx-empty-concat',
                        '--udoncl-simplify-onnx-views',
                        '--udoncl-fold-onnx-repeated-matmul-operand',
                        '--udoncl-materialize-onnx-constants',
