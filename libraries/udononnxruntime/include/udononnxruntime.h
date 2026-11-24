@@ -47,7 +47,10 @@ udononnxStatus_t udononnxCreateSession(cl_context context,
  * axis is UDONONNX_STATUS_NOT_SUPPORTED, an extent beyond the bound or a
  * smaller buffer UDONONNX_STATUS_INVALID_VALUE. Building for Udon, `name`
  * must be a compile-time constant, every graph input and output must be
- * bound, and each to exactly one buffer. */
+ * bound, and each to exactly one buffer. Two tensors with elements share a
+ * buffer only when the output is Concat(input, ...) along the bounded axis
+ * and both are bound with the same layout (in-place Concat): the input is
+ * then the leading block of the output and a run writes only the rest. */
 udononnxStatus_t udononnxBindInput(udononnxSession_t *session, const char *name,
                                    cl_mem memory, int rank, const int64_t *dims,
                                    const int64_t *buffer_dims);
@@ -59,7 +62,9 @@ udononnxStatus_t udononnxBindOutput(udononnxSession_t *session,
 /* Runs the graph on the bound buffers: it returns once the run is enqueued
  * on the session's in-order queue, so every later command on that queue
  * observes the outputs. UDONONNX_STATUS_MISSING_BINDING while a graph input
- * or output is unbound. */
+ * or output is unbound; UDONONNX_STATUS_INVALID_VALUE when the bound extents
+ * disagree on a bounded dimension (a present that is not past + 1) or one
+ * buffer holds an in-place Concat pair with two different pitches. */
 udononnxStatus_t udononnxRun(udononnxSession_t *session);
 
 /* Releases the Device buffers the session owns and forgets the bound ones.

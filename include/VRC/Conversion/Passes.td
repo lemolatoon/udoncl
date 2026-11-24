@@ -490,11 +490,9 @@ def DescribeCanonicalUnityBuffersPass : Pass<"vrc-describe-canonical-unity-buffe
     A public buffer whose origin the module states also carries `source`:
     `{kind = "host_variable", symbol}` for the resource of a UDONCL_PUBLIC
     Host variable (`vrc.static_declared_public_resources`), with
-    `onnx_tensor` when a UdonONNX session binds it to that graph tensor
-    (`vrc.onnx_session_bindings`), or
-    `{kind = "onnx_tensor", tensor}` for the graph input or output of the
-    ONNX binding (`udoncl.onnx_binding`) with the buffer's public name,
-    access and index.
+    `onnx_tensors` naming every graph tensor a UdonONNX session binds it to
+    (`vrc.onnx_session_bindings`): one, or the input and the result of an
+    in-place Concat.
 
     A module whose lowering is not applied gets no description. A
     description from an earlier run is replaced.
