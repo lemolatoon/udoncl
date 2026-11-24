@@ -16,7 +16,6 @@ namespace Lemolatoon.Udoncl.Generated
         public float[] logits;
         public float[] presentScratch;
         public float[] presentKv;
-        public int[] outputBufferIds;
         public bool completed;
         public int status;
         public int libraryStatus;
@@ -44,8 +43,6 @@ namespace Lemolatoon.Udoncl.Generated
                 || presentScratch.Length != PresentValues
                 || presentKv == null
                 || presentKv.Length != PresentCount * PresentValues
-                || outputBufferIds == null
-                || outputBufferIds.Length != PresentCount + 1
             )
             {
                 status = UdonclTinyLlamaPrefillBinding.StatusInvalidArgument;
@@ -109,14 +106,108 @@ namespace Lemolatoon.Udoncl.Generated
 
         private void StartNextPresent()
         {
-            status = binding.StartReadFloatBuffer(
-                outputBufferIds[1 + presentIndex],
-                presentScratch,
-                this,
-                nameof(OnPresentComplete)
-            );
+            status = StartReadPresent(presentIndex);
             if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 completed = true;
+        }
+
+        // Starts reading present index (ONNX output 1 + index, present.0.key
+        // first) into presentScratch; OnPresentComplete follows. Each is read
+        // through the method named after the Host variable bound to it.
+        private int StartReadPresent(int index)
+        {
+            switch (index)
+            {
+                case 0:
+                    return binding.StartReadPresent0Key(presentScratch, this, nameof(OnPresentComplete));
+                case 1:
+                    return binding.StartReadPresent0Value(presentScratch, this, nameof(OnPresentComplete));
+                case 2:
+                    return binding.StartReadPresent1Key(presentScratch, this, nameof(OnPresentComplete));
+                case 3:
+                    return binding.StartReadPresent1Value(presentScratch, this, nameof(OnPresentComplete));
+                case 4:
+                    return binding.StartReadPresent2Key(presentScratch, this, nameof(OnPresentComplete));
+                case 5:
+                    return binding.StartReadPresent2Value(presentScratch, this, nameof(OnPresentComplete));
+                case 6:
+                    return binding.StartReadPresent3Key(presentScratch, this, nameof(OnPresentComplete));
+                case 7:
+                    return binding.StartReadPresent3Value(presentScratch, this, nameof(OnPresentComplete));
+                case 8:
+                    return binding.StartReadPresent4Key(presentScratch, this, nameof(OnPresentComplete));
+                case 9:
+                    return binding.StartReadPresent4Value(presentScratch, this, nameof(OnPresentComplete));
+                case 10:
+                    return binding.StartReadPresent5Key(presentScratch, this, nameof(OnPresentComplete));
+                case 11:
+                    return binding.StartReadPresent5Value(presentScratch, this, nameof(OnPresentComplete));
+                case 12:
+                    return binding.StartReadPresent6Key(presentScratch, this, nameof(OnPresentComplete));
+                case 13:
+                    return binding.StartReadPresent6Value(presentScratch, this, nameof(OnPresentComplete));
+                case 14:
+                    return binding.StartReadPresent7Key(presentScratch, this, nameof(OnPresentComplete));
+                case 15:
+                    return binding.StartReadPresent7Value(presentScratch, this, nameof(OnPresentComplete));
+                case 16:
+                    return binding.StartReadPresent8Key(presentScratch, this, nameof(OnPresentComplete));
+                case 17:
+                    return binding.StartReadPresent8Value(presentScratch, this, nameof(OnPresentComplete));
+                case 18:
+                    return binding.StartReadPresent9Key(presentScratch, this, nameof(OnPresentComplete));
+                case 19:
+                    return binding.StartReadPresent9Value(presentScratch, this, nameof(OnPresentComplete));
+                case 20:
+                    return binding.StartReadPresent10Key(presentScratch, this, nameof(OnPresentComplete));
+                case 21:
+                    return binding.StartReadPresent10Value(presentScratch, this, nameof(OnPresentComplete));
+                case 22:
+                    return binding.StartReadPresent11Key(presentScratch, this, nameof(OnPresentComplete));
+                case 23:
+                    return binding.StartReadPresent11Value(presentScratch, this, nameof(OnPresentComplete));
+                case 24:
+                    return binding.StartReadPresent12Key(presentScratch, this, nameof(OnPresentComplete));
+                case 25:
+                    return binding.StartReadPresent12Value(presentScratch, this, nameof(OnPresentComplete));
+                case 26:
+                    return binding.StartReadPresent13Key(presentScratch, this, nameof(OnPresentComplete));
+                case 27:
+                    return binding.StartReadPresent13Value(presentScratch, this, nameof(OnPresentComplete));
+                case 28:
+                    return binding.StartReadPresent14Key(presentScratch, this, nameof(OnPresentComplete));
+                case 29:
+                    return binding.StartReadPresent14Value(presentScratch, this, nameof(OnPresentComplete));
+                case 30:
+                    return binding.StartReadPresent15Key(presentScratch, this, nameof(OnPresentComplete));
+                case 31:
+                    return binding.StartReadPresent15Value(presentScratch, this, nameof(OnPresentComplete));
+                case 32:
+                    return binding.StartReadPresent16Key(presentScratch, this, nameof(OnPresentComplete));
+                case 33:
+                    return binding.StartReadPresent16Value(presentScratch, this, nameof(OnPresentComplete));
+                case 34:
+                    return binding.StartReadPresent17Key(presentScratch, this, nameof(OnPresentComplete));
+                case 35:
+                    return binding.StartReadPresent17Value(presentScratch, this, nameof(OnPresentComplete));
+                case 36:
+                    return binding.StartReadPresent18Key(presentScratch, this, nameof(OnPresentComplete));
+                case 37:
+                    return binding.StartReadPresent18Value(presentScratch, this, nameof(OnPresentComplete));
+                case 38:
+                    return binding.StartReadPresent19Key(presentScratch, this, nameof(OnPresentComplete));
+                case 39:
+                    return binding.StartReadPresent19Value(presentScratch, this, nameof(OnPresentComplete));
+                case 40:
+                    return binding.StartReadPresent20Key(presentScratch, this, nameof(OnPresentComplete));
+                case 41:
+                    return binding.StartReadPresent20Value(presentScratch, this, nameof(OnPresentComplete));
+                case 42:
+                    return binding.StartReadPresent21Key(presentScratch, this, nameof(OnPresentComplete));
+                case 43:
+                    return binding.StartReadPresent21Value(presentScratch, this, nameof(OnPresentComplete));
+            }
+            return UdonclTinyLlamaPrefillBinding.StatusInvalidArgument;
         }
 
         public void OnPresentComplete()

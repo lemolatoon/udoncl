@@ -22,7 +22,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string ControllerProgram =
             GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
         private ValidatedOnnxOracle oracle;
-        private int[] outputBufferIds;
 
         [OneTimeSetUp]
         public void ImportPrefillArtifact()
@@ -91,28 +90,39 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(128000, oracle.Outputs[0].ElementCount);
             for (int index = 1; index < oracle.Outputs.Count; ++index)
                 Assert.AreEqual(1024, oracle.Outputs[index].ElementCount);
-            // Outputs are paired with public buffers by name, not by manifest
-            // position (Device allocation order need not be the ONNX order).
+            // The controller reads logits and then the presents in ONNX
+            // order, each through the method named after its Host variable.
+            // Each output's public buffer is found by name; distinct names
+            // over equal counts make the pairing one to one.
             int publicOutputs = 0;
             foreach (ValidatedDeviceBuffer buffer in artifact.DeviceBuffers)
                 if (buffer.PublicAccess == "output")
                     ++publicOutputs;
             Assert.AreEqual(oracle.Outputs.Count, publicOutputs);
-            HashSet<int> pairedIds = new HashSet<int>();
-            outputBufferIds = new int[oracle.Outputs.Count];
+            HashSet<string> pairedNames = new HashSet<string>();
             for (int index = 0; index < oracle.Outputs.Count; ++index)
             {
                 ValidatedOnnxOracleOutput output = oracle.Outputs[index];
+                Assert.AreEqual(index, output.Index, output.Name + " is out of order.");
+                int present = index - 1;
+                Assert.AreEqual(
+                    index == 0
+                        ? "logits"
+                        : "present." + present / 2 + (present % 2 == 0 ? ".key" : ".value"),
+                    output.Name
+                );
                 ValidatedDeviceBuffer buffer = OnnxPublicBuffers.Find(
                     artifact.DeviceBuffers,
                     "output",
                     output.Index,
                     output.Name
                 );
-                Assert.IsTrue(pairedIds.Add(buffer.Id), output.Name + " shares a public buffer.");
+                Assert.IsTrue(
+                    pairedNames.Add(buffer.Name),
+                    output.Name + " shares a public buffer."
+                );
                 Assert.AreEqual("float32", buffer.ElementType);
                 Assert.AreEqual(output.ElementCount * sizeof(float), buffer.LogicalBytes);
-                outputBufferIds[index] = buffer.Id;
             }
         }
 
@@ -159,11 +169,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 oracle.Inputs[2].ReadInt64Values()
             );
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "logits", logits);
-            UdonclArtifactImporter.SetUdonProgramVariable(
-                controller,
-                "outputBufferIds",
-                outputBufferIds
-            );
             UdonclArtifactImporter.SetUdonProgramVariable(
                 controller,
                 "presentScratch",

@@ -1445,17 +1445,26 @@ def main():
         'binding.GetRunStatus()',
         'binding.TryGetRunResult(',
         'binding.StartReadLogits(',
-        'outputBufferIds[1 + presentIndex],',
+        'status = StartReadPresent(presentIndex);',
         'binding.GetLastReadbackStatus()',
         'presentKv[presentIndex * PresentValues + index]',
         'binding.TryShutdown(',
     ]:
         assert source_contract in prefill_controller, source_contract
+    # Every present is read through the method named after its Host
+    # variable, in ONNX order.
+    for layer in range(22):
+        for kind in ('Key', 'Value'):
+            call = (f'binding.StartReadPresent{layer}{kind}(presentScratch, '
+                    'this, nameof(OnPresentComplete));')
+            assert call in prefill_controller, call
     assert 'const int PresentCount = 44;' in prefill_controller
     assert 'const int PresentValues = 1024;' in prefill_controller
     assert 'new float[45056]' not in prefill_controller
     for forbidden in [
         'TryWritePastKeyValues',
+        'StartReadFloatBuffer',
+        'BufferId',
         'IUdonVM',
         'InspectHeap',
         'GetProgramVariable',
@@ -1479,7 +1488,7 @@ def main():
         'foreach (ValidatedDeviceBuffer buffer in artifact.DeviceBuffers)',
         # Outputs are paired with public buffers by name, not position.
         'OnnxPublicBuffers.Find(',
-        '"outputBufferIds",',
+        'pairedNames.Add(buffer.Name)',
         'oracle.RequireFloat32Close(0, actualLogits,',
         'oracle.RequireFloat32Close(\n                    index,\n                    actualPresent,',
     ]:
@@ -1489,6 +1498,8 @@ def main():
         'InspectHeap',
         '29958',
         'output-000.f32.bytes',
+        'BufferIds',
+        'buffer.Id',
     ]:
         assert forbidden not in prefill_lifecycle, forbidden
     assert {
