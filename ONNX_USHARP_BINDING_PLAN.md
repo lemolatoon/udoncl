@@ -10,6 +10,8 @@ Status: approved implementation plan (2026-11-04)
 > `udoncl_add_unity_library` arguments set the rest; see README.md.
 > The config text below is history.
 
+> **Superseded by stage 2 (2026-11):** ONNX Hosts bind model tensors through the UdonONNX session API (`udononnxCreateSession`, `udononnxBindInput`/`udononnxBindOutput`, `udononnxRun`, `udononnxReleaseSession`; see docs/architecture/operator-ownership.md), U# transfers buffers only through the named methods of the compiler-written binding, and the generated `udon_onnx_binding_*` functions survive only as the private transitional binding of the TinyLlama Conversation and Chat Hosts; the binding text below is history.
+
 This document is the source of truth for suspendable C host exports and their
 low-level U# bindings. It replaces the earlier plan that made a generated
 high-level ONNX Session wrapper the first implementation target. `PLAN.md`

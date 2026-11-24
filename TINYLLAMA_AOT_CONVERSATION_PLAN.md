@@ -1,5 +1,7 @@
 # TinyLlama AOT Conversation Plan
 
+> **Superseded by stage 2 (2026-11):** ONNX Hosts bind model tensors through the UdonONNX session API (`udononnxCreateSession`, `udononnxBindInput`/`udononnxBindOutput`, `udononnxRun`, `udononnxReleaseSession`; see docs/architecture/operator-ownership.md), U# transfers buffers only through the named methods of the compiler-written binding, and the generated `udon_onnx_binding_*` functions survive only as the private transitional binding of the TinyLlama Conversation and Chat Hosts; the binding text below is history.
+
 ## 1. Purpose and completion boundary
 
 This file is the source of truth for running the pinned real TinyLlama 1.1B Q4
