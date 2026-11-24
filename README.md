@@ -583,7 +583,7 @@ static cl_context context;
 static cl_command_queue queue;
 static udonclBufferHandle_t input_buffer;
 static udonclBufferHandle_t output_buffer;
-static udononnxSession_t session;
+static udononnxLegacySession_t session;
 
 /* *memory = clCreateBuffer(...), then wrap the cl_mem as an ONNX tensor of
    the model's shape (udonclDeviceBufferAdopt, udonclDeviceBufferView,
@@ -605,13 +605,13 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
                          &input_buffer, &input_tensor, model->inputs[0].rank,
                          model->inputs[0].dimensions);
   /* ... logits (CL_MEM_WRITE_ONLY, 10 elements) likewise ... */
-  status = udononnxCreateSession(&session, model, context, input_bindings,
+  status = udononnxLegacySessionCreate(&session, model, context, input_bindings,
                                  output_bindings);
   /* Uploads the model weights. */
-  status = udononnxEnqueueInitialize(&session, queue, 0, 0, &completion);
+  status = udononnxLegacySessionEnqueueInitialize(&session, queue, 0, 0, &completion);
   status = complete(completion, status);
-  status = udononnxSessionBindInput(&session, 0, input_tensor);
-  status = udononnxSessionBindOutput(&session, 0, output_tensor);
+  status = udononnxLegacySessionBindInput(&session, 0, input_tensor);
+  status = udononnxLegacySessionBindOutput(&session, 0, output_tensor);
   /* ... each step checks its status and releases everything on failure ... */
 }
 
@@ -620,12 +620,12 @@ UDONCL_EXPORT udononnxStatus_t run(void) {
   udononnxStatus_t status;
   if (!session_created)
     return UDONONNX_STATUS_NOT_INITIALIZED;
-  status = udononnxEnqueueRun(&session, queue, 0, 0, &completion);
+  status = udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion);
   return complete(completion, status);
 }
 
 UDONCL_EXPORT udononnxStatus_t shutdown(void) {
-  /* ... udononnxSessionDispose, udonclDeviceBufferDestroy,
+  /* ... udononnxLegacySessionDispose, udonclDeviceBufferDestroy,
      clReleaseCommandQueue, clReleaseContext ... */
 }
 ```

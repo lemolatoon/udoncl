@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-typedef struct udononnxSession udononnxSession_t;
+typedef struct udononnxLegacySession udononnxLegacySession_t;
 typedef struct udononnxModel udononnxModel_t;
 
 #define UDONONNX_BINDING_METADATA_STORAGE_BYTES 64u
@@ -36,15 +36,19 @@ udononnxStatus_t udononnxBindingInitializeModel(
     void *output_metadata, uint32_t output_count,
     const udononnxModel_t **model);
 
-udononnxStatus_t udononnxBindingBindInput(
-    udononnxSession_t *session, uint32_t input_index, uint32_t buffer_slot,
-    uint32_t buffer_generation, uint32_t byte_offset, uint32_t byte_length,
-    udonclDataType_t data_type, uint32_t rank, const int32_t *dimensions);
+udononnxStatus_t
+udononnxBindingBindInput(udononnxLegacySession_t *session, uint32_t input_index,
+                         uint32_t buffer_slot, uint32_t buffer_generation,
+                         uint32_t byte_offset, uint32_t byte_length,
+                         udonclDataType_t data_type, uint32_t rank,
+                         const int32_t *dimensions);
 
-udononnxStatus_t udononnxBindingBindOutput(
-    udononnxSession_t *session, uint32_t output_index, uint32_t buffer_slot,
-    uint32_t buffer_generation, uint32_t byte_offset, uint32_t byte_length,
-    udonclDataType_t data_type, uint32_t rank, const int32_t *dimensions);
+udononnxStatus_t
+udononnxBindingBindOutput(udononnxLegacySession_t *session,
+                          uint32_t output_index, uint32_t buffer_slot,
+                          uint32_t buffer_generation, uint32_t byte_offset,
+                          uint32_t byte_length, udonclDataType_t data_type,
+                          uint32_t rank, const int32_t *dimensions);
 
 udononnxStatus_t
 udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
@@ -78,8 +82,9 @@ udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                                                 uint32_t wait_count,
                                                 const cl_event *wait_list,
                                                 cl_event *completion);
-udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
-                                                udononnxSession_t **session);
+udononnxStatus_t
+udononnxBindingStateGetSession(void *state_storage,
+                               udononnxLegacySession_t **session);
 /* Generated AOT bind-all fast path. Begin validates the same session lifecycle
  * accepted by per-tensor bind calls; Complete records the final status. */
 udononnxStatus_t udononnxBindingStateBeginStaticBind(void *state_storage);

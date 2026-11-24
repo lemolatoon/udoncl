@@ -162,7 +162,7 @@ Binding a model input or output to Device storage is owned by ONNX Runtime
 `Ort::IoBinding::BindInput` / `BindOutput` / `SynchronizeOutputs`): a bound
 tensor stays on the execution provider's device across `Run`, and nothing is
 copied to the CPU unless the caller asks for it. The UdonONNX counterpart is
-the session binding (`udononnxSessionBindInput`, `udononnxSessionBindOutput`,
+the session binding (`udononnxLegacySessionBindInput`, `udononnxLegacySessionBindOutput`,
 `udononnxSessionResolveInput`, `udononnxSessionResolveOutput`) and the
 generated physical helpers in `udoncl/onnx_generated_binding.h`; every bound
 tensor is a borrowed `cl_mem` range. There is no UdonONNX read, write or

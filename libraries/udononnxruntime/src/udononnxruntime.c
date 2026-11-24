@@ -17,7 +17,7 @@ static int udononnxStringEqual(const char *left, const char *right) {
   return *left == *right;
 }
 
-static udononnxStatus_t udononnxRecordFailure(udononnxSession_t *session,
+static udononnxStatus_t udononnxRecordFailure(udononnxLegacySession_t *session,
                                               udononnxStatus_t status);
 
 static void udononnxCopyBufferView(udonclBufferView_t *destination,
@@ -259,11 +259,11 @@ static void udononnxClearBinding(udononnxTensor_t *tensor) {
     tensor->dimensions[axis] = 0;
 }
 
-udononnxStatus_t udononnxCreateSession(udononnxSession_t *session,
-                                       const udononnxModel_t *model,
-                                       cl_context context,
-                                       udononnxTensor_t *input_bindings,
-                                       udononnxTensor_t *output_bindings) {
+udononnxStatus_t
+udononnxLegacySessionCreate(udononnxLegacySession_t *session,
+                            const udononnxModel_t *model, cl_context context,
+                            udononnxTensor_t *input_bindings,
+                            udononnxTensor_t *output_bindings) {
   size_t index;
   uint32_t generation;
   if (!session || !model || !model->name || !model->name[0] || !context ||
@@ -300,21 +300,21 @@ udononnxStatus_t udononnxCreateSession(udononnxSession_t *session,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-static int udononnxSessionUsable(const udononnxSession_t *session) {
+static int udononnxSessionUsable(const udononnxLegacySession_t *session) {
   return session && session->state != UDONONNX_SESSION_EMPTY &&
          session->state != UDONONNX_SESSION_DISPOSED;
 }
 
-size_t udononnxSessionGetInputCount(const udononnxSession_t *session) {
+size_t udononnxSessionGetInputCount(const udononnxLegacySession_t *session) {
   return udononnxSessionUsable(session) ? session->model->input_count : 0;
 }
 
-size_t udononnxSessionGetOutputCount(const udononnxSession_t *session) {
+size_t udononnxSessionGetOutputCount(const udononnxLegacySession_t *session) {
   return udononnxSessionUsable(session) ? session->model->output_count : 0;
 }
 
 const udononnxTensorMetadata_t *
-udononnxSessionGetInputMetadata(const udononnxSession_t *session,
+udononnxSessionGetInputMetadata(const udononnxLegacySession_t *session,
                                 size_t index) {
   return udononnxSessionUsable(session) && index < session->model->input_count
              ? &session->model->inputs[index]
@@ -322,7 +322,7 @@ udononnxSessionGetInputMetadata(const udononnxSession_t *session,
 }
 
 const udononnxTensorMetadata_t *
-udononnxSessionGetOutputMetadata(const udononnxSession_t *session,
+udononnxSessionGetOutputMetadata(const udononnxLegacySession_t *session,
                                  size_t index) {
   return udononnxSessionUsable(session) && index < session->model->output_count
              ? &session->model->outputs[index]
@@ -340,7 +340,7 @@ static int udononnxSessionFind(const udononnxTensorMetadata_t *metadata,
   return -1;
 }
 
-int udononnxSessionFindInput(const udononnxSession_t *session,
+int udononnxSessionFindInput(const udononnxLegacySession_t *session,
                              const char *name) {
   return udononnxSessionUsable(session)
              ? udononnxSessionFind(session->model->inputs,
@@ -348,7 +348,7 @@ int udononnxSessionFindInput(const udononnxSession_t *session,
              : -1;
 }
 
-int udononnxSessionFindOutput(const udononnxSession_t *session,
+int udononnxSessionFindOutput(const udononnxLegacySession_t *session,
                               const char *name) {
   return udononnxSessionUsable(session)
              ? udononnxSessionFind(session->model->outputs,
@@ -357,7 +357,7 @@ int udononnxSessionFindOutput(const udononnxSession_t *session,
 }
 
 static udononnxStatus_t
-udononnxSessionBind(udononnxSession_t *session, size_t index,
+udononnxSessionBind(udononnxLegacySession_t *session, size_t index,
                     udononnxTensor_t tensor,
                     const udononnxTensorMetadata_t *metadata, size_t count,
                     udononnxTensor_t *bindings) {
@@ -382,20 +382,20 @@ udononnxSessionBind(udononnxSession_t *session, size_t index,
   return status;
 }
 
-void udononnxSessionInvalidateBindings(udononnxSession_t *session) {
+void udononnxSessionInvalidateBindings(udononnxLegacySession_t *session) {
   if (session) {
     session->bindings_validated = 0;
     session->binding_version = udononnxNextBindingVersion();
   }
 }
 
-uint32_t udononnxSessionBindingVersion(const udononnxSession_t *session) {
+uint32_t udononnxSessionBindingVersion(const udononnxLegacySession_t *session) {
   return session ? session->binding_version : 0;
 }
 
-udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
-                                          size_t index,
-                                          udononnxTensor_t tensor) {
+udononnxStatus_t
+udononnxLegacySessionBindInput(udononnxLegacySession_t *session, size_t index,
+                               udononnxTensor_t tensor) {
   udononnxStatus_t status;
   if (!session)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -407,9 +407,9 @@ udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
   return udononnxRecordFailure(session, status);
 }
 
-udononnxStatus_t udononnxSessionBindOutput(udononnxSession_t *session,
-                                           size_t index,
-                                           udononnxTensor_t tensor) {
+udononnxStatus_t
+udononnxLegacySessionBindOutput(udononnxLegacySession_t *session, size_t index,
+                                udononnxTensor_t tensor) {
   udononnxStatus_t status;
   if (!session)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -421,7 +421,7 @@ udononnxStatus_t udononnxSessionBindOutput(udononnxSession_t *session,
   return udononnxRecordFailure(session, status);
 }
 
-static udononnxStatus_t udononnxValidateQueue(udononnxSession_t *session,
+static udononnxStatus_t udononnxValidateQueue(udononnxLegacySession_t *session,
                                               cl_command_queue queue) {
   cl_context queue_context = 0;
   if (!queue)
@@ -438,12 +438,11 @@ static int udononnxTensorIsBound(const udononnxTensor_t *tensor) {
          tensor->storage.buffer.generation;
 }
 
-static udononnxStatus_t udononnxSessionResolve(const udononnxSession_t *session,
-                                               size_t index,
-                                               const udononnxTensor_t *bindings,
-                                               size_t count, cl_mem *memory,
-                                               size_t *byte_offset,
-                                               size_t *byte_length) {
+static udononnxStatus_t
+udononnxSessionResolve(const udononnxLegacySession_t *session, size_t index,
+                       const udononnxTensor_t *bindings, size_t count,
+                       cl_mem *memory, size_t *byte_offset,
+                       size_t *byte_length) {
   udonclStatus_t status;
   if (!session || !memory || !byte_offset || !byte_length)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -464,10 +463,10 @@ static udononnxStatus_t udononnxSessionResolve(const udononnxSession_t *session,
                                          : UDONONNX_STATUS_INVALID_VALUE;
 }
 
-udononnxStatus_t udononnxSessionResolveInput(const udononnxSession_t *session,
-                                             size_t index, cl_mem *memory,
-                                             size_t *byte_offset,
-                                             size_t *byte_length) {
+udononnxStatus_t
+udononnxSessionResolveInput(const udononnxLegacySession_t *session,
+                            size_t index, cl_mem *memory, size_t *byte_offset,
+                            size_t *byte_length) {
   if (!session || !session->model)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return udononnxSessionResolve(session, index, session->input_bindings,
@@ -475,10 +474,10 @@ udononnxStatus_t udononnxSessionResolveInput(const udononnxSession_t *session,
                                 byte_offset, byte_length);
 }
 
-udononnxStatus_t udononnxSessionResolveOutput(const udononnxSession_t *session,
-                                              size_t index, cl_mem *memory,
-                                              size_t *byte_offset,
-                                              size_t *byte_length) {
+udononnxStatus_t
+udononnxSessionResolveOutput(const udononnxLegacySession_t *session,
+                             size_t index, cl_mem *memory, size_t *byte_offset,
+                             size_t *byte_length) {
   if (!session || !session->model)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return udononnxSessionResolve(session, index, session->output_bindings,
@@ -515,7 +514,7 @@ udononnxValidateBindingLiveness(const udononnxTensor_t *tensor,
 }
 
 static udononnxStatus_t
-udononnxValidateRunBindingLiveness(const udononnxSession_t *session) {
+udononnxValidateRunBindingLiveness(const udononnxLegacySession_t *session) {
   size_t index;
   udononnxStatus_t status;
   for (index = 0; index < session->model->input_count; ++index) {
@@ -536,7 +535,7 @@ udononnxValidateRunBindingLiveness(const udononnxSession_t *session) {
 }
 
 static udononnxStatus_t
-udononnxValidateRunBindings(udononnxSession_t *session) {
+udononnxValidateRunBindings(udononnxLegacySession_t *session) {
   size_t input, output, bound_outputs = 0;
   udononnxStatus_t status;
   uint32_t epoch = udonclDeviceBufferEpoch();
@@ -584,7 +583,7 @@ udononnxValidateRunBindings(udononnxSession_t *session) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-static udononnxStatus_t udononnxRecordFailure(udononnxSession_t *session,
+static udononnxStatus_t udononnxRecordFailure(udononnxLegacySession_t *session,
                                               udononnxStatus_t status) {
   if (session) {
     session->last_status = status;
@@ -593,11 +592,9 @@ static udononnxStatus_t udononnxRecordFailure(udononnxSession_t *session,
   return status;
 }
 
-udononnxStatus_t udononnxEnqueueInitialize(udononnxSession_t *session,
-                                           cl_command_queue queue,
-                                           cl_uint wait_count,
-                                           const cl_event *wait_list,
-                                           cl_event *completion) {
+udononnxStatus_t udononnxLegacySessionEnqueueInitialize(
+    udononnxLegacySession_t *session, cl_command_queue queue,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
   udononnxStatus_t status;
   if (!session || !completion || (!!wait_count != !!wait_list))
     return udononnxRecordFailure(session, UDONONNX_STATUS_INVALID_VALUE);
@@ -629,10 +626,9 @@ udononnxStatus_t udononnxEnqueueInitialize(udononnxSession_t *session,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-udononnxStatus_t udononnxEnqueueRun(udononnxSession_t *session,
-                                    cl_command_queue queue, cl_uint wait_count,
-                                    const cl_event *wait_list,
-                                    cl_event *completion) {
+udononnxStatus_t udononnxLegacySessionEnqueueRun(
+    udononnxLegacySession_t *session, cl_command_queue queue,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
   udononnxStatus_t status;
   if (!session || !completion || (!!wait_count != !!wait_list))
     return udononnxRecordFailure(session, UDONONNX_STATUS_INVALID_VALUE);
@@ -666,9 +662,10 @@ udononnxStatus_t udononnxEnqueueRun(udononnxSession_t *session,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-udononnxStatus_t udononnxSessionCompleteEvent(udononnxSession_t *session,
-                                              cl_event completion,
-                                              udononnxStatus_t result) {
+udononnxStatus_t
+udononnxLegacySessionCompleteEvent(udononnxLegacySession_t *session,
+                                   cl_event completion,
+                                   udononnxStatus_t result) {
   udononnxSessionState_t pending_state;
   if (!session || !completion)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -691,7 +688,8 @@ udononnxStatus_t udononnxSessionCompleteEvent(udononnxSession_t *session,
   return result;
 }
 
-udononnxStatus_t udononnxSessionDispose(udononnxSession_t *session) {
+udononnxStatus_t
+udononnxLegacySessionDispose(udononnxLegacySession_t *session) {
   udononnxStatus_t status;
   if (!session)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -714,11 +712,12 @@ udononnxStatus_t udononnxSessionDispose(udononnxSession_t *session) {
 }
 
 udononnxStatus_t
-udononnxSessionGetLastStatus(const udononnxSession_t *session) {
+udononnxSessionGetLastStatus(const udononnxLegacySession_t *session) {
   return session ? session->last_status : UDONONNX_STATUS_INVALID_VALUE;
 }
 
-const char *udononnxSessionGetLastError(const udononnxSession_t *session) {
+const char *
+udononnxSessionGetLastError(const udononnxLegacySession_t *session) {
   return session && session->last_error
              ? session->last_error
              : udononnxStatusString(UDONONNX_STATUS_INVALID_VALUE);

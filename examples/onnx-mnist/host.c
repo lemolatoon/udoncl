@@ -22,7 +22,7 @@ static udonclBufferHandle_t input_buffer;
 static udonclBufferHandle_t output_buffer;
 static udononnxTensor_t input_bindings[1];
 static udononnxTensor_t output_bindings[1];
-static udononnxSession_t session;
+static udononnxLegacySession_t session;
 static int session_created;
 static int input_buffer_created;
 static int output_buffer_created;
@@ -30,7 +30,7 @@ static int output_buffer_created;
 static udononnxStatus_t release_resources(void) {
   int failed = 0;
   if (session_created) {
-    if (udononnxSessionDispose(&session) != UDONONNX_STATUS_SUCCESS)
+    if (udononnxLegacySessionDispose(&session) != UDONONNX_STATUS_SUCCESS)
       failed = 1;
     session_created = 0;
   }
@@ -67,7 +67,7 @@ static udononnxStatus_t complete(cl_event event,
   if (!event)
     return UDONONNX_STATUS_OPENCL_ERROR;
   wait_status = clWaitForEvents(1, &event);
-  status = udononnxSessionCompleteEvent(
+  status = udononnxLegacySessionCompleteEvent(
       &session, event,
       wait_status == CL_SUCCESS ? UDONONNX_STATUS_SUCCESS
                                 : UDONONNX_STATUS_EXECUTION_FAILURE);
@@ -139,19 +139,20 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
   output_buffer_created = 1;
-  status = udononnxCreateSession(&session, model, context, input_bindings,
-                                 output_bindings);
+  status = udononnxLegacySessionCreate(&session, model, context, input_bindings,
+                                       output_bindings);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
   session_created = 1;
-  status = udononnxEnqueueInitialize(&session, queue, 0, 0, &completion);
+  status = udononnxLegacySessionEnqueueInitialize(&session, queue, 0, 0,
+                                                  &completion);
   status = complete(completion, status);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  status = udononnxSessionBindInput(&session, 0, input_tensor);
+  status = udononnxLegacySessionBindInput(&session, 0, input_tensor);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  status = udononnxSessionBindOutput(&session, 0, output_tensor);
+  status = udononnxLegacySessionBindOutput(&session, 0, output_tensor);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
   return UDONONNX_STATUS_SUCCESS;
@@ -165,7 +166,7 @@ UDONCL_EXPORT udononnxStatus_t run(void) {
   udononnxStatus_t status;
   if (!session_created)
     return UDONONNX_STATUS_NOT_INITIALIZED;
-  status = udononnxEnqueueRun(&session, queue, 0, 0, &completion);
+  status = udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion);
   return complete(completion, status);
 }
 

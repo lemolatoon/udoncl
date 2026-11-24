@@ -76,7 +76,7 @@ int udoncl_cl_draw(uint32_t buffer, uint32_t generation,
 }
 
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxSession_t *session, cl_command_queue queue,
+    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
     cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
   static const unsigned char initialized = 1;
   cl_int error;
@@ -93,7 +93,7 @@ udononnxStatus_t udononnxGeneratedEnqueueInitialize(
 }
 
 udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
+udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion) {
   cl_mem input, output;
@@ -116,7 +116,7 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
 }
 
 udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxSession_t *session) {
+                                          udononnxLegacySession_t *session) {
   cl_int error;
   if (graph_id != 7 || !session)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -146,14 +146,14 @@ int main(void) {
   udononnxTensor_t input_tensor = {0}, output_tensor = {0},
                    foreign_tensor = {0}, empty_tensor = {0};
   udononnxTensor_t input_bindings[1], output_bindings[2];
-  udononnxSession_t session = {0};
+  udononnxLegacySession_t session = {0};
   const udononnxModel_t *selected = 0;
   const udononnxModel_t *constructed_model = 0;
   _Alignas(udononnxTensorMetadata_t) unsigned char
       metadata_storage[2 * UDONONNX_BINDING_METADATA_STORAGE_BYTES];
   _Alignas(udononnxModel_t) unsigned char
       model_storage[UDONONNX_BINDING_MODEL_STORAGE_BYTES];
-  _Alignas(udononnxSession_t) unsigned char
+  _Alignas(udononnxLegacySession_t) unsigned char
       binding_state[UDONONNX_BINDING_STATE_STORAGE_BYTES] = {0};
   _Alignas(udononnxTensor_t) unsigned char
       binding_inputs[UDONONNX_BINDING_TENSOR_STORAGE_BYTES] = {0};
@@ -161,7 +161,7 @@ int main(void) {
       binding_outputs[UDONONNX_BINDING_TENSOR_STORAGE_BYTES] = {0};
   cl_context binding_context = 0;
   cl_command_queue binding_queue = 0;
-  udononnxSession_t *binding_session = 0;
+  udononnxLegacySession_t *binding_session = 0;
   int64_t dimensions[2] = {2, 2};
   int64_t empty_dimensions[4] = {1, 4, 0, 64};
   int32_t binding_dimensions[2] = {2, 2};
@@ -195,7 +195,7 @@ int main(void) {
   EXPECT(queue && error == CL_SUCCESS);
   other_queue = clCreateCommandQueue(other_context, device, 0, &error);
   EXPECT(other_queue && error == CL_SUCCESS);
-  EXPECT(udononnxSessionBindInput(&session, 0, input_tensor) ==
+  EXPECT(udononnxLegacySessionBindInput(&session, 0, input_tensor) ==
          UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(udononnxGetModelCount() == 1);
   EXPECT(udononnxGetModel(0, &selected) == UDONONNX_STATUS_SUCCESS &&
@@ -220,20 +220,21 @@ int main(void) {
   EXPECT(udononnxFindModel(models, 1, "synthetic-copy", &selected) ==
              UDONONNX_STATUS_SUCCESS &&
          selected == &models[0]);
-  EXPECT(udononnxCreateSession(&session, selected, context, input_bindings,
-                               output_bindings) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxLegacySessionCreate(&session, selected, context,
+                                     input_bindings, output_bindings) ==
+         UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxSessionGetInputCount(&session) == 1);
   EXPECT(udononnxSessionGetOutputCount(&session) == 2);
   EXPECT(udononnxSessionFindInput(&session, "input") == 0);
   EXPECT(udononnxSessionFindOutput(&session, "output") == 0);
   EXPECT(udononnxSessionFindOutput(&session, "optional_aux") == 1);
-  EXPECT(udononnxEnqueueInitialize(&session, queue, 0, 0, &completion) ==
-             UDONONNX_STATUS_SUCCESS &&
+  EXPECT(udononnxLegacySessionEnqueueInitialize(
+             &session, queue, 0, 0, &completion) == UDONONNX_STATUS_SUCCESS &&
          completion);
-  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_BUSY);
+  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_BUSY);
   EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, completion,
-                                      UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, completion,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
 
@@ -265,18 +266,18 @@ int main(void) {
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxCreateTensor(empty_view, 4, empty_dimensions, &empty_tensor) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionBindInput(&session, 0, foreign_tensor) ==
+  EXPECT(udononnxLegacySessionBindInput(&session, 0, foreign_tensor) ==
          UDONONNX_STATUS_CONTEXT_MISMATCH);
   EXPECT(udononnxBindingBindInput(&session, 0, input_buffer.slot,
                                   input_buffer.generation, 0, sizeof(source),
                                   UDONCL_DATA_FLOAT32, 2, binding_dimensions) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
          UDONONNX_STATUS_MISSING_BINDING);
   EXPECT(!run);
-  EXPECT(udononnxSessionBindOutput(&session, 0, input_tensor) ==
+  EXPECT(udononnxLegacySessionBindOutput(&session, 0, input_tensor) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
          UDONONNX_STATUS_INVALID_VALUE);
   EXPECT(udononnxBindingBindOutput(
              &session, 0, output_buffer.slot, output_buffer.generation, 0,
@@ -299,17 +300,18 @@ int main(void) {
     EXPECT(clEnqueueWriteBuffer(queue, input_memory, CL_FALSE, offset, bytes,
                                 source, 0, 0, &write) == CL_SUCCESS);
   }
-  EXPECT(udononnxEnqueueRun(&session, queue, 1, &write, &run) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 1, &write, &run) ==
              UDONONNX_STATUS_SUCCESS &&
          run);
   EXPECT(clReleaseEvent(write) == CL_SUCCESS);
-  EXPECT(udononnxSessionBindInput(&session, 0, input_tensor) ==
+  EXPECT(udononnxLegacySessionBindInput(&session, 0, input_tensor) ==
          UDONONNX_STATUS_BUSY);
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &completion) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion) ==
          UDONONNX_STATUS_BUSY);
-  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_BUSY);
+  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_BUSY);
   EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
   {
@@ -334,34 +336,36 @@ int main(void) {
     uint32_t version = udononnxSessionBindingVersion(&session);
     EXPECT(version != 0 &&
            session.validated_buffer_epoch == udonclDeviceBufferEpoch());
-    EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+    EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
                UDONONNX_STATUS_SUCCESS &&
            run && session.bindings_validated == 1);
     EXPECT(udononnxSessionBindingVersion(&session) == version);
     EXPECT(udononnxSessionBindingVersion(0) == 0);
   }
   EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
   {
     uint32_t before = udononnxSessionBindingVersion(&session);
-    EXPECT(udononnxSessionBindOutput(&session, 0, input_tensor) ==
+    EXPECT(udononnxLegacySessionBindOutput(&session, 0, input_tensor) ==
                UDONONNX_STATUS_SUCCESS &&
            session.bindings_validated == 0);
     EXPECT(udononnxSessionBindingVersion(&session) != before &&
            udononnxSessionBindingVersion(&session) != 0);
   }
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
              UDONONNX_STATUS_INVALID_VALUE &&
          session.bindings_validated == 0);
-  EXPECT(udononnxSessionBindOutput(&session, 0, output_tensor) ==
+  EXPECT(udononnxLegacySessionBindOutput(&session, 0, output_tensor) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
              UDONONNX_STATUS_SUCCESS &&
          run && session.bindings_validated == 1);
   EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
   {
@@ -370,11 +374,12 @@ int main(void) {
     EXPECT(session.bindings_validated == 0 &&
            udononnxSessionBindingVersion(&session) != before);
   }
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &run) ==
              UDONONNX_STATUS_SUCCESS &&
          run && session.bindings_validated == 1);
   EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
   {
@@ -382,33 +387,35 @@ int main(void) {
     EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
     EXPECT(udonclDeviceBufferEpoch() != epoch);
   }
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &completion) ==
+  EXPECT(udononnxLegacySessionEnqueueRun(&session, queue, 0, 0, &completion) ==
              UDONONNX_STATUS_STALE_HANDLE &&
          !completion);
   EXPECT(udononnxSessionGetLastStatus(&session) ==
          UDONONNX_STATUS_STALE_HANDLE);
-  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, run,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_STALE_HANDLE);
 
-  EXPECT(udononnxCreateSession(&session, &empty_model, context, input_bindings,
-                               0) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxEnqueueInitialize(&session, queue, 0, 0, &completion) ==
-             UDONONNX_STATUS_SUCCESS &&
+  EXPECT(udononnxLegacySessionCreate(&session, &empty_model, context,
+                                     input_bindings,
+                                     0) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxLegacySessionEnqueueInitialize(
+             &session, queue, 0, 0, &completion) == UDONONNX_STATUS_SUCCESS &&
          completion);
   EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
-  EXPECT(udononnxSessionCompleteEvent(&session, completion,
-                                      UDONONNX_STATUS_SUCCESS) ==
+  EXPECT(udononnxLegacySessionCompleteEvent(&session, completion,
+                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
-  EXPECT(udononnxSessionBindInput(&session, 0, empty_tensor) ==
+  EXPECT(udononnxLegacySessionBindInput(&session, 0, empty_tensor) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxSessionResolveInput(&session, 0, &resolved_memory,
                                      &resolved_offset, &resolved_bytes) ==
              UDONONNX_STATUS_SUCCESS &&
          resolved_memory && resolved_offset == sizeof(source) &&
          resolved_bytes == 0);
-  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxLegacySessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
 
   EXPECT(udonclDeviceBufferDestroy(&input_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&foreign_buffer) == UDONCL_STATUS_SUCCESS);

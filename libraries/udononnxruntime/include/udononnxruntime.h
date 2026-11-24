@@ -40,7 +40,7 @@ typedef enum udononnxSessionState {
  * every bind or invalidation give it a value no session had before, so code
  * that derived anything from the bound buffers (the generated run resolves
  * them to physical tokens once) can reuse it while the version is equal. */
-typedef struct udononnxSession {
+typedef struct udononnxLegacySession {
   const udononnxModel_t *model;
   cl_context context;
   udononnxTensor_t *input_bindings;
@@ -54,7 +54,7 @@ typedef struct udononnxSession {
   uint32_t bindings_validated;
   uint32_t validated_buffer_epoch;
   uint32_t binding_version;
-} udononnxSession_t;
+} udononnxLegacySession_t;
 
 udononnxStatus_t udononnxCreateTensor(udonclBufferView_t storage, uint32_t rank,
                                       const int64_t *dimensions,
@@ -77,72 +77,73 @@ size_t udononnxGetModelCount(void);
 udononnxStatus_t udononnxGetModel(size_t index, const udononnxModel_t **model);
 udononnxStatus_t udononnxFindGeneratedModel(const char *name,
                                             const udononnxModel_t **model);
-udononnxStatus_t udononnxCreateSession(udononnxSession_t *session,
-                                       const udononnxModel_t *model,
-                                       cl_context context,
-                                       udononnxTensor_t *input_bindings,
-                                       udononnxTensor_t *output_bindings);
-size_t udononnxSessionGetInputCount(const udononnxSession_t *session);
-size_t udononnxSessionGetOutputCount(const udononnxSession_t *session);
+udononnxStatus_t udononnxLegacySessionCreate(udononnxLegacySession_t *session,
+                                             const udononnxModel_t *model,
+                                             cl_context context,
+                                             udononnxTensor_t *input_bindings,
+                                             udononnxTensor_t *output_bindings);
+size_t udononnxSessionGetInputCount(const udononnxLegacySession_t *session);
+size_t udononnxSessionGetOutputCount(const udononnxLegacySession_t *session);
 const udononnxTensorMetadata_t *
-udononnxSessionGetInputMetadata(const udononnxSession_t *session, size_t index);
+udononnxSessionGetInputMetadata(const udononnxLegacySession_t *session,
+                                size_t index);
 const udononnxTensorMetadata_t *
-udononnxSessionGetOutputMetadata(const udononnxSession_t *session,
+udononnxSessionGetOutputMetadata(const udononnxLegacySession_t *session,
                                  size_t index);
-int udononnxSessionFindInput(const udononnxSession_t *session,
+int udononnxSessionFindInput(const udononnxLegacySession_t *session,
                              const char *name);
-int udononnxSessionFindOutput(const udononnxSession_t *session,
+int udononnxSessionFindOutput(const udononnxLegacySession_t *session,
                               const char *name);
-udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
-                                          size_t index,
-                                          udononnxTensor_t tensor);
+udononnxStatus_t
+udononnxLegacySessionBindInput(udononnxLegacySession_t *session, size_t index,
+                               udononnxTensor_t tensor);
 /* For a caller that writes the borrowed binding arrays itself: the next run
  * validates the whole binding table again. */
-void udononnxSessionInvalidateBindings(udononnxSession_t *session);
-/* The current binding version (see udononnxSession_t); 0 without a session. */
-uint32_t udononnxSessionBindingVersion(const udononnxSession_t *session);
-udononnxStatus_t udononnxSessionBindOutput(udononnxSession_t *session,
-                                           size_t index,
-                                           udononnxTensor_t tensor);
-udononnxStatus_t udononnxSessionResolveInput(const udononnxSession_t *session,
-                                             size_t index, cl_mem *memory,
-                                             size_t *byte_offset,
-                                             size_t *byte_length);
-udononnxStatus_t udononnxSessionResolveOutput(const udononnxSession_t *session,
-                                              size_t index, cl_mem *memory,
-                                              size_t *byte_offset,
-                                              size_t *byte_length);
+void udononnxSessionInvalidateBindings(udononnxLegacySession_t *session);
+/* The current binding version (see udononnxLegacySession_t); 0 without a
+ * session. */
+uint32_t udononnxSessionBindingVersion(const udononnxLegacySession_t *session);
+udononnxStatus_t
+udononnxLegacySessionBindOutput(udononnxLegacySession_t *session, size_t index,
+                                udononnxTensor_t tensor);
+udononnxStatus_t
+udononnxSessionResolveInput(const udononnxLegacySession_t *session,
+                            size_t index, cl_mem *memory, size_t *byte_offset,
+                            size_t *byte_length);
+udononnxStatus_t
+udononnxSessionResolveOutput(const udononnxLegacySession_t *session,
+                             size_t index, cl_mem *memory, size_t *byte_offset,
+                             size_t *byte_length);
 
 /* These generated, whole-program-visible dispatchers are supplied by the
  * linked model host. They dispatch graph_id with direct calls; they are not a
  * public model-specific API or an external execution plan. */
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxSession_t *session, cl_command_queue queue,
+    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
     cl_uint wait_count, const cl_event *wait_list, cl_event *completion);
 udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
+udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion);
 udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxSession_t *session);
+                                          udononnxLegacySession_t *session);
 
-udononnxStatus_t udononnxEnqueueInitialize(udononnxSession_t *session,
-                                           cl_command_queue queue,
-                                           cl_uint wait_count,
-                                           const cl_event *wait_list,
-                                           cl_event *completion);
-udononnxStatus_t udononnxEnqueueRun(udononnxSession_t *session,
-                                    cl_command_queue queue, cl_uint wait_count,
-                                    const cl_event *wait_list,
-                                    cl_event *completion);
+udononnxStatus_t udononnxLegacySessionEnqueueInitialize(
+    udononnxLegacySession_t *session, cl_command_queue queue,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *completion);
+udononnxStatus_t udononnxLegacySessionEnqueueRun(
+    udononnxLegacySession_t *session, cl_command_queue queue,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *completion);
 /* Called by the Host continuation that observes completion. It never releases
  * the caller-owned event. */
-udononnxStatus_t udononnxSessionCompleteEvent(udononnxSession_t *session,
-                                              cl_event completion,
-                                              udononnxStatus_t result);
-udononnxStatus_t udononnxSessionDispose(udononnxSession_t *session);
-udononnxStatus_t udononnxSessionGetLastStatus(const udononnxSession_t *session);
-const char *udononnxSessionGetLastError(const udononnxSession_t *session);
+udononnxStatus_t
+udononnxLegacySessionCompleteEvent(udononnxLegacySession_t *session,
+                                   cl_event completion,
+                                   udononnxStatus_t result);
+udononnxStatus_t udononnxLegacySessionDispose(udononnxLegacySession_t *session);
+udononnxStatus_t
+udononnxSessionGetLastStatus(const udononnxLegacySession_t *session);
+const char *udononnxSessionGetLastError(const udononnxLegacySession_t *session);
 const char *udononnxStatusString(udononnxStatus_t status);
 
 #ifdef __cplusplus

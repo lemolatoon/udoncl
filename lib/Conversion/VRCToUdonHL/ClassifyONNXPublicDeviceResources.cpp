@@ -119,8 +119,9 @@ struct ClassifyONNXPublicDeviceResourcesPass
           auto first = dyn_cast<DictionaryAttr>(path[0]);
           auto callee =
               first ? first.getAs<FlatSymbolRefAttr>("callee") : nullptr;
-          if (!callee || (callee.getValue() != "udononnxSessionBindInput" &&
-                          callee.getValue() != "udononnxSessionBindOutput"))
+          if (!callee ||
+              (callee.getValue() != "udononnxLegacySessionBindInput" &&
+               callee.getValue() != "udononnxLegacySessionBindOutput"))
             continue;
           auto caller = first.getAs<FlatSymbolRefAttr>("caller");
           auto occurrence = first.getAs<IntegerAttr>("occurrence");
@@ -182,7 +183,7 @@ struct ClassifyONNXPublicDeviceResourcesPass
         return;
       }
       StringAttr access = builder.getStringAttr(
-          site.callee == "udononnxSessionBindInput" ? "input" : "output");
+          site.callee == "udononnxLegacySessionBindInput" ? "input" : "output");
       DictionaryAttr metadata =
           findTensorMetadata(access == "input" ? inputs : outputs,
                              static_cast<int32_t>(index.value()));

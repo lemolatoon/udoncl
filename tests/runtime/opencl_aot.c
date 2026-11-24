@@ -35,7 +35,7 @@ udononnxStatus_t udononnxGeneratedGetModel(size_t index,
 }
 
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxSession_t *session, cl_command_queue queue,
+    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
     cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
   (void)graph_id;
   (void)session;
@@ -47,7 +47,7 @@ udononnxStatus_t udononnxGeneratedEnqueueInitialize(
 }
 
 udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
+udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion) {
   (void)graph_id;
@@ -60,7 +60,7 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
 }
 
 udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxSession_t *session) {
+                                          udononnxLegacySession_t *session) {
   (void)graph_id;
   (void)session;
   return UDONONNX_STATUS_SUCCESS;

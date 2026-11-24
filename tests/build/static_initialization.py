@@ -106,7 +106,7 @@ def main():
         assert 'relocations = [' in evaluated
         for symbol in (
             'udon_onnx_binding_create', 'udon_onnx_binding_bind_all',
-            'udononnxCreateSession', 'clCreateContext',
+            'udononnxLegacySessionCreate', 'clCreateContext',
             'clCreateCommandQueue',
         ):
             assert not defines(evaluated, symbol), symbol

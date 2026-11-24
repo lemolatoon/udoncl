@@ -16,28 +16,28 @@ module attributes {
     ]
   }
 } {
-  func.func private @udononnxSessionBindInput(i32, i32, i32) -> i32
-  func.func private @udononnxSessionBindOutput(i32, i32, i32) -> i32
+  func.func private @udononnxLegacySessionBindInput(i32, i32, i32) -> i32
+  func.func private @udononnxLegacySessionBindOutput(i32, i32, i32) -> i32
   func.func private @consume(i32)
 
   func.func @Configure(%session: i32, %input: i32, %output: i32, %private: i32) {
     %input_index = arith.constant 1 : i32
-    %input_status = func.call @udononnxSessionBindInput(%session, %input_index, %input) {
-      vrc.static_device_call_site = {callee = @udononnxSessionBindInput, occurrence = 3 : i32}
+    %input_status = func.call @udononnxLegacySessionBindInput(%session, %input_index, %input) {
+      vrc.static_device_call_site = {callee = @udononnxLegacySessionBindInput, occurrence = 3 : i32}
     } : (i32, i32, i32) -> i32
     %output_index = arith.constant 0 : i32
-    %output_status = func.call @udononnxSessionBindOutput(%session, %output_index, %output) {
-      vrc.static_device_call_site = {callee = @udononnxSessionBindOutput, occurrence = 8 : i32}
+    %output_status = func.call @udononnxLegacySessionBindOutput(%session, %output_index, %output) {
+      vrc.static_device_call_site = {callee = @udononnxLegacySessionBindOutput, occurrence = 8 : i32}
     } : (i32, i32, i32) -> i32
     func.call @consume(%input) {
       vrc.static_device_operand_provenance = [{
-        cases = [{call_path = [{caller = @Configure, callee = @udononnxSessionBindInput, occurrence = 3 : i32}], may_be_null = false, resource_ids = [7 : i32], root = @Configure, unknown = false}],
+        cases = [{call_path = [{caller = @Configure, callee = @udononnxLegacySessionBindInput, occurrence = 3 : i32}], may_be_null = false, resource_ids = [7 : i32], root = @Configure, unknown = false}],
         index = 0 : i32
       }]
     } : (i32) -> ()
     func.call @consume(%output) {
       vrc.static_device_operand_provenance = [{
-        cases = [{call_path = [{caller = @Configure, callee = @udononnxSessionBindOutput, occurrence = 8 : i32}], may_be_null = false, resource_ids = [9 : i32], root = @Configure, unknown = false}],
+        cases = [{call_path = [{caller = @Configure, callee = @udononnxLegacySessionBindOutput, occurrence = 8 : i32}], may_be_null = false, resource_ids = [9 : i32], root = @Configure, unknown = false}],
         index = 0 : i32
       }]
     } : (i32) -> ()

@@ -62,7 +62,7 @@ struct udononnxBindingState {
   uint32_t magic;
   cl_context context;
   cl_command_queue queue;
-  udononnxSession_t session;
+  udononnxLegacySession_t session;
 };
 
 static struct udononnxBindingState *
@@ -146,7 +146,7 @@ udononnxStatus_t udononnxBindingCreateTensor(
 }
 
 static udononnxStatus_t
-udononnxBindingBind(udononnxSession_t *session, uint32_t index,
+udononnxBindingBind(udononnxLegacySession_t *session, uint32_t index,
                     uint32_t buffer_slot, uint32_t buffer_generation,
                     uint32_t byte_offset, uint32_t byte_length,
                     udonclDataType_t data_type, uint32_t rank,
@@ -157,23 +157,27 @@ udononnxBindingBind(udononnxSession_t *session, uint32_t index,
       dimensions, &tensor);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  return output ? udononnxSessionBindOutput(session, index, tensor)
-                : udononnxSessionBindInput(session, index, tensor);
+  return output ? udononnxLegacySessionBindOutput(session, index, tensor)
+                : udononnxLegacySessionBindInput(session, index, tensor);
 }
 
-udononnxStatus_t udononnxBindingBindInput(
-    udononnxSession_t *session, uint32_t input_index, uint32_t buffer_slot,
-    uint32_t buffer_generation, uint32_t byte_offset, uint32_t byte_length,
-    udonclDataType_t data_type, uint32_t rank, const int32_t *dimensions) {
+udononnxStatus_t
+udononnxBindingBindInput(udononnxLegacySession_t *session, uint32_t input_index,
+                         uint32_t buffer_slot, uint32_t buffer_generation,
+                         uint32_t byte_offset, uint32_t byte_length,
+                         udonclDataType_t data_type, uint32_t rank,
+                         const int32_t *dimensions) {
   return udononnxBindingBind(session, input_index, buffer_slot,
                              buffer_generation, byte_offset, byte_length,
                              data_type, rank, dimensions, 0);
 }
 
-udononnxStatus_t udononnxBindingBindOutput(
-    udononnxSession_t *session, uint32_t output_index, uint32_t buffer_slot,
-    uint32_t buffer_generation, uint32_t byte_offset, uint32_t byte_length,
-    udonclDataType_t data_type, uint32_t rank, const int32_t *dimensions) {
+udononnxStatus_t
+udononnxBindingBindOutput(udononnxLegacySession_t *session,
+                          uint32_t output_index, uint32_t buffer_slot,
+                          uint32_t buffer_generation, uint32_t byte_offset,
+                          uint32_t byte_length, udonclDataType_t data_type,
+                          uint32_t rank, const int32_t *dimensions) {
   return udononnxBindingBind(session, output_index, buffer_slot,
                              buffer_generation, byte_offset, byte_length,
                              data_type, rank, dimensions, 1);
@@ -214,9 +218,9 @@ udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
   state->magic = 0;
   state->context = context;
   state->queue = queue;
-  status = udononnxCreateSession(&state->session, model, state->context,
-                                 (udononnxTensor_t *)input_bindings,
-                                 (udononnxTensor_t *)output_bindings);
+  status = udononnxLegacySessionCreate(&state->session, model, state->context,
+                                       (udononnxTensor_t *)input_bindings,
+                                       (udononnxTensor_t *)output_bindings);
   if (status != UDONONNX_STATUS_SUCCESS) {
     state->queue = 0;
     state->context = 0;
@@ -296,9 +300,11 @@ udononnxBindingStateEnqueueInitialize(void *state_storage, uint32_t wait_count,
                                       const cl_event *wait_list,
                                       cl_event *completion) {
   struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
-  return state ? udononnxEnqueueInitialize(&state->session, state->queue,
-                                           wait_count, wait_list, completion)
-               : UDONONNX_STATUS_NOT_INITIALIZED;
+  return state
+             ? udononnxLegacySessionEnqueueInitialize(&state->session,
+                                                      state->queue, wait_count,
+                                                      wait_list, completion)
+             : UDONONNX_STATUS_NOT_INITIALIZED;
 }
 
 udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
@@ -306,13 +312,15 @@ udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                                                 const cl_event *wait_list,
                                                 cl_event *completion) {
   struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
-  return state ? udononnxEnqueueRun(&state->session, state->queue, wait_count,
-                                    wait_list, completion)
+  return state ? udononnxLegacySessionEnqueueRun(&state->session, state->queue,
+                                                 wait_count, wait_list,
+                                                 completion)
                : UDONONNX_STATUS_NOT_INITIALIZED;
 }
 
-udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
-                                                udononnxSession_t **session) {
+udononnxStatus_t
+udononnxBindingStateGetSession(void *state_storage,
+                               udononnxLegacySession_t **session) {
   struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
   if (!state)
     return UDONONNX_STATUS_NOT_INITIALIZED;
@@ -377,9 +385,9 @@ udononnxStatus_t udononnxBindingStateCompleteEvent(void *state_storage,
                                                    cl_event completion,
                                                    udononnxStatus_t result) {
   struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
-  return state
-             ? udononnxSessionCompleteEvent(&state->session, completion, result)
-             : UDONONNX_STATUS_NOT_INITIALIZED;
+  return state ? udononnxLegacySessionCompleteEvent(&state->session, completion,
+                                                    result)
+               : UDONONNX_STATUS_NOT_INITIALIZED;
 }
 
 udononnxStatus_t udononnxBindingStateGetContext(void *state_storage,
@@ -409,7 +417,7 @@ udononnxStatus_t udononnxBindingStateDispose(void *state_storage) {
   udononnxStatus_t status;
   if (!state)
     return UDONONNX_STATUS_NOT_INITIALIZED;
-  status = udononnxSessionDispose(&state->session);
+  status = udononnxLegacySessionDispose(&state->session);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   state->queue = 0;
