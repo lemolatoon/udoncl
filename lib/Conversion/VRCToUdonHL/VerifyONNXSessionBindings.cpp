@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringMap.h"
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 using namespace mlir;
 namespace vrc {
@@ -31,6 +32,10 @@ constexpr StringLiteral cellAttribute =
 constexpr StringLiteral requirementsAttribute =
     "vrc.static_device_resource_requirements";
 constexpr StringLiteral outputAttribute = "vrc.onnx_session_bindings";
+constexpr StringLiteral discoveryAttribute =
+    "vrc.static_device_resource_discovery";
+constexpr StringLiteral operandAttribute =
+    "vrc.static_device_operand_provenance";
 
 std::string boundMemorySymbol(bool output, int64_t index) {
   return (output ? "__udon_onnx_bound_output_" : "__udon_onnx_bound_input_") +
@@ -245,6 +250,105 @@ struct VerifyONNXSessionBindingsPass
         variables[cast<IntegerAttr>(ids[0]).getInt()] = global;
     }
 
+    // The allocation site of each allocation context.
+    std::map<int64_t, DictionaryAttr> allocationSites;
+    if (auto discovery =
+            module->getAttrOfType<DictionaryAttr>(discoveryAttribute))
+      if (auto contexts = discovery.getAs<ArrayAttr>("contexts"))
+        for (Attribute attribute : contexts)
+          if (auto context = dyn_cast<DictionaryAttr>(attribute))
+            if (auto id = context.getAs<IntegerAttr>("context_id"))
+              if (auto site = context.getAs<DictionaryAttr>("allocation_site"))
+                allocationSites[id.getInt()] = site;
+    // Notes every call binding graph input or output `index`: the export
+    // making it (or the function and the exports it is reached from) and
+    // the allocation contexts of the bound memory, when they are known.
+    auto noteBindSites = [&](InFlightDiagnostic &diagnostic, bool output,
+                             int64_t index) {
+      for (func::CallOp call : binds) {
+        APInt bound;
+        if ((call.getCallee() == "udononnxBindOutputAt") != output ||
+            call.getNumOperands() != 6 ||
+            !matchPattern(call.getOperand(1), m_ConstantInt(&bound)) ||
+            bound.getSExtValue() != index)
+          continue;
+        // The provenance of the bound memory, the third operand.
+        std::set<int64_t> resources;
+        std::set<std::string> roots;
+        bool known = false, unknown = false;
+        if (auto operands = call->getAttrOfType<ArrayAttr>(operandAttribute))
+          for (Attribute attribute : operands) {
+            auto operand = dyn_cast<DictionaryAttr>(attribute);
+            auto position =
+                operand ? operand.getAs<IntegerAttr>("index") : nullptr;
+            auto cases = operand ? operand.getAs<ArrayAttr>("cases") : nullptr;
+            if (!position || position.getInt() != 2 || !cases)
+              continue;
+            for (Attribute entry : cases) {
+              auto record = dyn_cast<DictionaryAttr>(entry);
+              auto ids =
+                  record ? record.getAs<ArrayAttr>("resource_ids") : nullptr;
+              auto isUnknown =
+                  record ? record.getAs<BoolAttr>("unknown") : nullptr;
+              if (!ids || !isUnknown) {
+                unknown = true;
+                continue;
+              }
+              known = true;
+              unknown |= isUnknown.getValue();
+              for (Attribute id : ids)
+                if (auto value = dyn_cast<IntegerAttr>(id))
+                  resources.insert(value.getInt());
+              if (auto root = record.getAs<FlatSymbolRefAttr>("root"))
+                roots.insert(root.getValue().str());
+            }
+          }
+        Diagnostic &note = diagnostic.attachNote(call.getLoc());
+        note << "bound here";
+        if (auto function = call->getParentOfType<func::FuncOp>()) {
+          bool exported = function->hasAttr("udoncl.export");
+          note << (exported ? " in export @" : " in @")
+               << function.getSymName();
+          roots.erase(function.getSymName().str());
+          if (!exported && !roots.empty()) {
+            note << ", reached from export";
+            for (auto [position, root] : llvm::enumerate(roots))
+              note << (position ? ", @" : " @") << StringRef(root);
+          }
+        }
+        if (!known || unknown || resources.empty())
+          continue;
+        note << ", to the Device buffer of allocation context"
+             << (resources.size() == 1 ? " " : "s ");
+        for (auto [position, resource] : llvm::enumerate(resources)) {
+          if (position)
+            note << (position + 1 == resources.size() ? " and " : ", ");
+          note << resource;
+          SmallVector<std::string> details;
+          if (auto found = allocationSites.find(resource);
+              found != allocationSites.end()) {
+            DictionaryAttr site = found->second;
+            auto primitive = site.getAs<StringAttr>("primitive");
+            auto function = site.getAs<FlatSymbolRefAttr>("function");
+            if (primitive && function)
+              details.push_back(
+                  (primitive.getValue() + " in @" + function.getValue()).str());
+          }
+          if (auto variable = variables.find(resource);
+              variable != variables.end())
+            details.push_back(("held by UDONCL_PUBLIC variable " +
+                               variable->second.getSymName())
+                                  .str());
+          if (details.empty())
+            continue;
+          note << " (";
+          for (auto [detail, text] : llvm::enumerate(details))
+            note << (detail ? ", " : "") << StringRef(text);
+          note << ")";
+        }
+      }
+    };
+
     Builder builder(module.getContext());
     SmallVector<Attribute> records;
     // The tensors bound to each Device buffer: (output, index, name).
@@ -293,10 +397,11 @@ struct VerifyONNXSessionBindingsPass
           continue;
         }
         if (ids.size() != 1) {
-          module.emitError() << "ONNX graph " << direction << " \""
-                             << name.getValue() << "\" is bound to the Device "
-                             << "buffers of " << ids.size()
-                             << " allocation contexts; bind exactly one buffer";
+          InFlightDiagnostic diagnostic = module.emitError();
+          diagnostic << "ONNX graph " << direction << " \"" << name.getValue()
+                     << "\" is bound to the Device buffers of " << ids.size()
+                     << " allocation contexts; bind exactly one buffer";
+          noteBindSites(diagnostic, output, index.getInt());
           invalid = true;
           continue;
         }
