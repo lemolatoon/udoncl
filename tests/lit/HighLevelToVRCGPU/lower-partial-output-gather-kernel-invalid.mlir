@@ -12,7 +12,7 @@ gpu.module @kernels {
     %keep = arith.cmpi ult, %i, %c8 : i32
     %value = memref.load %in[%x] : memref<16xf32>
     scf.if %keep {
-      // expected-error @below {{the store must write the output buffer at the top level of the kernel, or alone in a top-level scf.if of a kernel with vrc.output_granule}}
+      // expected-error @below {{the store must write the output buffer at the top level of the kernel, or end a top-level scf.if of a kernel with vrc.output_granule}}
       memref.store %value, %out[%x] : memref<16xf32>
     }
     gpu.return

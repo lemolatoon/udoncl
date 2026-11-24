@@ -207,7 +207,7 @@ stay in the investigation section.
   bounds must produce a neutral or zero tail, and downstream kernels may read
   only the declared logical element count.
 - Exception: a partial-output kernel. Its gpu.func stores its word only where
-  a condition holds (the store is alone in a top-level `scf.if`), and its
+  a condition holds (the store ends a top-level `scf.if`), and its
   `vrc.output_granule` promises that the condition is the same for every
   aligned run of that many words. The output carries the condition as `keep`,
   and a fragment whose `keep` is false runs HLSL `discard`, so its texel keeps

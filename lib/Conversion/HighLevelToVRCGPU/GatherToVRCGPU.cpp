@@ -294,10 +294,34 @@ struct LowerGatherDevicePass
             arith::RemUIOp::create(b, loc, physicalLinear, logicalWidth);
         Value logicalY =
             arith::DivUIOp::create(b, loc, physicalLinear, logicalWidth);
-        for (auto &op : source.getBody().front())
-          if (!isa<gpu::ReturnOp, memref::StoreOp>(op) &&
-              &op != keepBranch.getOperation())
+        for (auto &op : source.getBody().front()) {
+          if (&op == keepBranch.getOperation()) {
+            // The word a partial output stores is computed in its branch:
+            // the pass computes it under the same condition (zero
+            // elsewhere, which the fragment discards) and outputs it with
+            // the condition as `keep`.
+            Type type = store.getValue().getType();
+            auto computed =
+                scf::IfOp::create(b, keepBranch.getLoc(), TypeRange{type},
+                                  mapping.lookup(keepBranch.getCondition()),
+                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
+            OpBuilder::InsertionGuard guard(b);
+            b.setInsertionPointToStart(computed.thenBlock());
+            for (auto &nested : keepBranch.thenBlock()->without_terminator())
+              if (&nested != store.getOperation())
+                b.clone(nested, mapping);
+            scf::YieldOp::create(b, keepBranch.getLoc(),
+                                 mapping.lookup(store.getValue()));
+            b.setInsertionPointToStart(computed.elseBlock());
+            Value zero = arith::ConstantOp::create(b, keepBranch.getLoc(),
+                                                   b.getZeroAttr(type));
+            scf::YieldOp::create(b, keepBranch.getLoc(), zero);
+            mapping.map(store.getValue(), computed.getResult(0));
+            continue;
+          }
+          if (!isa<gpu::ReturnOp, memref::StoreOp>(op))
             b.clone(op, mapping);
+        }
         SmallVector<gpu::GlobalIdOp> globals;
         pass->walk([&](gpu::GlobalIdOp op) { globals.push_back(op); });
         for (auto op : globals) {
