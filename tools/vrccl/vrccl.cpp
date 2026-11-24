@@ -1436,76 +1436,28 @@ std::optional<json::Value> mlirAttributeToJson(mlir::Attribute attribute) {
   return std::nullopt;
 }
 
-std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
-  auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
-  if (!binding)
-    return std::nullopt;
-  auto abi = binding.getAs<StringAttr>("abi");
-  auto modelIndex = binding.getAs<IntegerAttr>("model_index");
-  auto modelName = binding.getAs<StringAttr>("model_name");
-  auto inputs = binding.getAs<ArrayAttr>("inputs");
-  auto outputs = binding.getAs<ArrayAttr>("outputs");
-  auto physical = binding.getAs<DictionaryAttr>("physical");
-  if (!abi || !modelIndex || !modelName || !inputs || !outputs || !physical)
-    return std::nullopt;
-  auto serializeIo = [](ArrayAttr values) -> std::optional<json::Array> {
-    json::Array result;
-    for (mlir::Attribute value : values) {
-      auto entry = dyn_cast<DictionaryAttr>(value);
-      auto index = entry ? entry.getAs<IntegerAttr>("index") : IntegerAttr();
-      auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
-      auto dataType =
-          entry ? entry.getAs<StringAttr>("data_type") : StringAttr();
-      auto rank = entry ? entry.getAs<IntegerAttr>("rank") : IntegerAttr();
-      auto dimensions = entry ? entry.getAs<DenseI64ArrayAttr>("dimensions")
-                              : DenseI64ArrayAttr();
-      auto logicalBytes =
-          entry ? entry.getAs<IntegerAttr>("logical_bytes") : IntegerAttr();
-      auto capacityBytes =
-          entry ? entry.getAs<IntegerAttr>("capacity_bytes") : IntegerAttr();
-      if (!index || !name || !dataType || !rank || !dimensions ||
-          !logicalBytes || !capacityBytes)
-        return std::nullopt;
-      json::Array shape;
-      for (int64_t dimension : dimensions.asArrayRef())
-        shape.push_back(dimension);
-      result.push_back(
-          json::Object{{"index", index.getInt()},
-                       {"name", name.getValue()},
-                       {"data_type", dataType.getValue()},
-                       {"rank", rank.getInt()},
-                       {"dimensions", std::move(shape)},
-                       {"logical_bytes", logicalBytes.getInt()},
-                       {"capacity_bytes", capacityBytes.getInt()}});
-    }
-    return result;
-  };
-  auto serializedInputs = serializeIo(inputs);
-  auto serializedOutputs = serializeIo(outputs);
-  if (!serializedInputs || !serializedOutputs)
-    return std::nullopt;
-  json::Object physicalJson;
-  for (StringRef name :
-       {"create_symbol", "bind_tensor_symbol", "enqueue_initialize_symbol",
-        "bind_all_symbol", "resolve_input_symbol", "resolve_output_symbol",
-        "enqueue_run_symbol", "enqueue_copy_output_to_input_symbol",
-        "dispose_symbol"}) {
-    auto value = physical.getAs<StringAttr>(name);
-    if (!value)
-      return std::nullopt;
-    physicalJson[name] = value.getValue();
+/// The `onnx_binding` entry of the manifest of an ONNX Host, as
+/// vrc-describe-onnx-binding-manifest describes it, or nothing for a Host
+/// without ONNX binding metadata.
+FailureOr<std::optional<json::Value>>
+unityOnnxBindingManifest(ModuleOp module) {
+  PassManager describe(module.getContext());
+  describe.enableVerifier(false);
+  describe.addPass(::vrc::createDescribeONNXBindingManifestPass());
+  if (failed(describe.run(module)))
+    return failure();
+  auto entry =
+      module->getAttrOfType<DictionaryAttr>("vrc.onnx_binding_manifest");
+  if (!entry)
+    return std::optional<json::Value>();
+  // The description is an input of the artifact, not Host IR.
+  module->removeAttr("vrc.onnx_binding_manifest");
+  auto value = mlirAttributeToJson(entry);
+  if (!value) {
+    module.emitError("ONNX binding manifest is not serializable");
+    return failure();
   }
-  for (StringRef name : {"enqueue_advance_sequence_state_symbol",
-                         "enqueue_reset_sequence_state_symbol"})
-    if (auto value = physical.getAs<StringAttr>(name);
-        value && !value.getValue().empty())
-      physicalJson[name] = value.getValue();
-  return json::Object{{"abi", abi.getValue()},
-                      {"model_index", modelIndex.getInt()},
-                      {"model_name", modelName.getValue()},
-                      {"inputs", std::move(*serializedInputs)},
-                      {"outputs", std::move(*serializedOutputs)},
-                      {"physical", std::move(physicalJson)}};
+  return std::optional<json::Value>(std::move(*value));
 }
 
 /// Reads the UdonCL annotations of a linked Host LLVM module and erases their
@@ -3287,8 +3239,11 @@ int main(int argc, char **argv) {
       return 1;
     unityUsesBufferCopy = bufferBinding->usesCopy;
     auto manifest = ::vrc::buildBoundaryManifest(*module);
-    if (auto onnxBinding = unityOnnxBindingManifest(*module))
-      manifest["onnx_binding"] = std::move(*onnxBinding);
+    auto onnxBinding = unityOnnxBindingManifest(*module);
+    if (failed(onnxBinding))
+      return 1;
+    if (*onnxBinding)
+      manifest["onnx_binding"] = std::move(**onnxBinding);
     bool usesAsyncCommands = false;
     module->walk([&](Operation *operation) {
       usesAsyncCommands |=
