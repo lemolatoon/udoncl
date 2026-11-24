@@ -108,18 +108,6 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK-NOT: call @__vrc_opencl_
 // CHECK: return %c0_i32 : i32
 
-// Materializing copies each present from its past input (logical buffers 2
-// and 3) into its present output (5 and 6) only when a run from bank 1 left
-// it there.
-// CHECK-LABEL: func.func @__udononnx_transitional_materialize_sequence_state
-// CHECK: %[[KEY_BANK:.*]] = call @__vrc_opencl_buffer_alloc(%c2_i32, %c256_i32)
-// CHECK: %[[KEY_OUTPUT:.*]] = call @__vrc_opencl_buffer_alloc(%c5_i32, %c256_i32)
-// CHECK: call @__vrc_opencl_buffer_copy(%[[KEY_BANK]], %[[KEY_OUTPUT]], %c0_i32, %c0_i32, %c256_i32)
-// CHECK: %[[VALUE_BANK:.*]] = call @__vrc_opencl_buffer_alloc(%c3_i32, %c256_i32)
-// CHECK: %[[VALUE_OUTPUT:.*]] = call @__vrc_opencl_buffer_alloc(%c6_i32, %c256_i32)
-// CHECK: call @__vrc_opencl_buffer_copy(%[[VALUE_BANK]], %[[VALUE_OUTPUT]], %c0_i32, %c0_i32, %c256_i32)
-// CHECK: udonhl.address_of @__udon_onnx_sequence_state_bank
-
 // The run reads the bank once. The key Concat runs its view kernel from
 // the present output into the past input in bank 1, from the past input
 // into the present output in bank 2, and its own fused kernel in bank 0;

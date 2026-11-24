@@ -52,9 +52,6 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
           "create_symbol",
           builder.getStringAttr("__udononnx_transitional_create")),
       builder.getNamedAttr(
-          "bind_tensor_symbol",
-          builder.getStringAttr("__udononnx_transitional_bind_tensor")),
-      builder.getNamedAttr(
           "bind_all_symbol",
           builder.getStringAttr("__udononnx_transitional_bind_all")),
       builder.getNamedAttr(
@@ -69,9 +66,6 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
       builder.getNamedAttr(
           "enqueue_run_symbol",
           builder.getStringAttr("__udononnx_transitional_enqueue_run")),
-      builder.getNamedAttr("enqueue_copy_output_to_input_symbol",
-                           builder.getStringAttr(
-                               "__udononnx_transitional_copy_output_to_input")),
       builder.getNamedAttr(
           "enqueue_advance_sequence_state_symbol",
           builder.getStringAttr(
@@ -88,17 +82,18 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
           "dispose_symbol",
           builder.getStringAttr("__udononnx_transitional_dispose")),
   });
-  module->setAttr(
-      "udoncl.onnx_binding",
-      builder.getDictionaryAttr({
-          builder.getNamedAttr("abi",
-                               builder.getStringAttr("udononnx-runtime-v2")),
-          builder.getNamedAttr("model_index", builder.getI32IntegerAttr(0)),
-          builder.getNamedAttr("model_name", builder.getStringAttr("model_0")),
-          builder.getNamedAttr("inputs", ioMetadata(graph.inputs)),
-          builder.getNamedAttr("outputs", ioMetadata(graph.outputs)),
-          builder.getNamedAttr("physical", physical),
-      }));
+  SmallVector<NamedAttribute> fields{
+      builder.getNamedAttr("abi", builder.getStringAttr("udononnx-runtime-v2")),
+      builder.getNamedAttr("model_index", builder.getI32IntegerAttr(0)),
+      builder.getNamedAttr("model_name", builder.getStringAttr("model_0")),
+      builder.getNamedAttr("inputs", ioMetadata(graph.inputs)),
+      builder.getNamedAttr("outputs", ioMetadata(graph.outputs)),
+  };
+  // Only a library built with TRANSITIONAL_SEQUENCE_STATE has the private
+  // binding these symbols name (FinalizeONNXHost).
+  if (module->hasAttr("udoncl.onnx_sequence_states"))
+    fields.push_back(builder.getNamedAttr("physical", physical));
+  module->setAttr("udoncl.onnx_binding", builder.getDictionaryAttr(fields));
 }
 
 void attachDeviceGraphMetadata(ModuleOp module, const GraphRecord &graph,

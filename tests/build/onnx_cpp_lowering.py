@@ -209,24 +209,61 @@ assert "func.func private @udononnxBindingInitializeTensorMetadata" not in host.
 assert "func.func private @udononnxBindingInitializeModel" not in host.stdout
 assert "udonhl.store" in host.stdout
 assert "arith.cmpi ne" in host.stdout
-assert "func.func @__udononnx_transitional_create" in host.stdout
-assert "func.func @__udononnx_transitional_bind_tensor" in host.stdout
-assert "func.func @__udononnx_transitional_bind_all" in host.stdout
-bind_all_start = host.stdout.index("func.func @__udononnx_transitional_bind_all")
-bind_all_end = host.stdout.index("func.func", bind_all_start + 10)
-bind_all = host.stdout[bind_all_start:bind_all_end]
-assert "call @udononnxBindingStateBindTensor" not in bind_all
+# Without TRANSITIONAL_SEQUENCE_STATE the Host binds its buffers through the
+# UdonONNX session API: no private binding is generated, and the binding's
+# buffers it would allocate are gone with it.
+assert "__udononnx_transitional_" not in host.stdout
+assert "vrc.static_public_resource_binding" not in host.stdout
+assert 'resource_source = "call_allocation"' not in host.stdout
+assert "func.func @udononnxGeneratedBindMemory" in host.stdout
+assert "func.func @udononnxGeneratedRun" in host.stdout
+# A library built with TRANSITIONAL_SEQUENCE_STATE (the identification ran)
+# keeps the private binding of the TinyLlama Conversation and Chat Hosts.
+transitional_portable = subprocess.run(
+    [*onnx_opt, "--udoncl-infer-onnx-shapes",
+     "--udoncl-externalize-onnx-initializers",
+     "--udoncl-externalize-onnx-graph-constants",
+     "--udoncl-identify-onnx-sequence-state",
+     "--udoncl-lower-onnx-to-host", source],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+transitional = subprocess.run(
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-materialize-onnx-host-globals",
+        "--udoncl-materialize-onnx-host-model-registry",
+        "--udoncl-attach-onnx-host-metadata",
+        "--udoncl-finalize-onnx-host",
+        "--udoncl-cleanup-onnx-host-source",
+        "-",
+    ],
+    input=transitional_portable,
+    text=True,
+    capture_output=True,
+)
+assert transitional.returncode == 0, (transitional.stdout, transitional.stderr)
+assert "func.func @__udononnx_transitional_create" in transitional.stdout
+assert "func.func @__udononnx_transitional_bind_all" in transitional.stdout
+for removed in ("bind_tensor", "copy_output_to_input",
+                "materialize_sequence_state"):
+    assert f"@__udononnx_transitional_{removed}" not in transitional.stdout
+bind_all_start = transitional.stdout.index(
+    "func.func @__udononnx_transitional_bind_all")
+bind_all_end = transitional.stdout.index("func.func", bind_all_start + 10)
+bind_all = transitional.stdout[bind_all_start:bind_all_end]
 assert "call @udononnxBindingStateBeginStaticBind" in bind_all
 assert "call @udononnxBindingStateCompleteStaticBind" in bind_all
 assert bind_all.count("call @udonclDeviceBufferView") == 3
 assert "udonhl.alloca" not in bind_all
-# The binding's buffers are private; a Host binds public ones of its own.
-assert "vrc.static_public_resource_binding" not in host.stdout
-assert 'resource_source = "call_allocation"' not in host.stdout
-assert "func.func @__udononnx_transitional_enqueue_initialize" in host.stdout
-assert "func.func @__udononnx_transitional_enqueue_run" in host.stdout
-assert "func.func @udon_onnx_binding_wait_active_event" not in host.stdout
-assert "func.func @__udononnx_transitional_dispose" in host.stdout
+assert "vrc.static_public_resource_binding" not in transitional.stdout
+assert "func.func @__udononnx_transitional_enqueue_initialize" in (
+    transitional.stdout)
+assert "func.func @__udononnx_transitional_enqueue_run" in transitional.stdout
+assert "func.func @__udononnx_transitional_dispose" in transitional.stdout
 assert "call @udononnxSessionResolveInput" in host.stdout
 assert "call @udononnxSessionResolveOutput" in host.stdout
 assert "call @clEnqueueMarkerWithWaitList" in host.stdout
@@ -363,8 +400,8 @@ banked_advance_body = sequence_state_banked.stdout.split(
 assert "call @__vrc_opencl_" not in banked_advance_body
 assert "__udon_onnx_sequence_state_bank" in banked_advance_body
 assert (
-    "func.func @__udononnx_transitional_materialize_sequence_state"
-    in sequence_state_banked.stdout
+    "__udononnx_transitional_materialize_sequence_state"
+    not in sequence_state_banked.stdout
 )
 assert (
     "udoncl.mutable_buffer_bytes = array<i64: 1024, 8192, 8192, 8, 8192, 8, "

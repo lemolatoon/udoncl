@@ -170,10 +170,10 @@ feedback facade and no `Ext` entry point: moving bytes between bound tensors,
 or between the Device and the Host, is owned by OpenCL 1.2 and uses its
 signatures and ordering rules unchanged.
 
-- Output-to-input feedback is `clEnqueueCopyBuffer` between the two resolved
-  ranges (or `__udononnx_transitional_copy_output_to_input` for whole
-  tensors, and the generated sequence-state advance for K/V). It is one
-  Device Blit and never reaches the Host.
+- Output-to-input feedback is `clEnqueueCopyBuffer` between the two bound
+  buffers (the transitional sequence-state advance for the K/V of the
+  TinyLlama Conversation and Chat Hosts). It is one Device Blit and never
+  reaches the Host.
 - Host-known input updates are `clEnqueueWriteBuffer` / `clEnqueueFillBuffer`
   on the resolved range; small word-aligned ones are Device patches issued
   inside the current Udon event.
@@ -272,13 +272,11 @@ past. The view is read by a synthesized kernel of the `Concat` (section
 `onnx-fusion-execution` runs four steps through banks 0, 1, 2, 1 against the
 copying advance built from the library kernels.
 
-The present of a run from bank 1 is in the past input. A caller that reads a
-present output calls `__udononnx_transitional_materialize_sequence_state`
-first, which copies such presents into their outputs (one Device copy each)
-and leaves the bank unchanged; the first run after create, bind-all or reset
-needs no materialization. Writing the past input directly is only meaningful
-before the first advance after create, bind-all or reset, which is the only
-time a run reads it in the ONNX past layout.
+The present of a run from bank 1 is in the past input; no Host of the
+transitional binding reads a present output, so nothing copies it back. Writing
+the past input directly is only meaningful before the first advance after
+create, bind-all or reset, which is the only time a run reads it in the ONNX
+past layout.
 
 Udon restrictions of those OpenCL calls, all reported with OpenCL status
 codes instead of a different contract: ranges are word-aligned

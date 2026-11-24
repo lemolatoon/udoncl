@@ -74,7 +74,7 @@ struct DescribeONNXBindingManifestPass
     auto inputs = binding.getAs<ArrayAttr>("inputs");
     auto outputs = binding.getAs<ArrayAttr>("outputs");
     auto physical = binding.getAs<DictionaryAttr>("physical");
-    if (!abi || !modelIndex || !modelName || !inputs || !outputs || !physical)
+    if (!abi || !modelIndex || !modelName || !inputs || !outputs)
       return module.emitError("ONNX binding metadata is incomplete");
     auto describedInputs = describeTensors(module, inputs);
     if (failed(describedInputs))
@@ -84,36 +84,39 @@ struct DescribeONNXBindingManifestPass
       return failure();
 
     Builder builder(module.getContext());
-    SmallVector<NamedAttribute> symbols;
-    for (StringRef name :
-         {"create_symbol", "bind_tensor_symbol", "enqueue_initialize_symbol",
-          "bind_all_symbol", "resolve_input_symbol", "resolve_output_symbol",
-          "enqueue_run_symbol", "enqueue_copy_output_to_input_symbol",
-          "dispose_symbol"}) {
-      auto value = physical.getAs<StringAttr>(name);
-      if (!value)
-        return module.emitError()
-               << "ONNX binding metadata has no physical " << name;
-      symbols.push_back(builder.getNamedAttr(name, value));
-    }
-    // The sequence-state symbols exist only for a graph with sequence state.
-    for (StringRef name : {"enqueue_advance_sequence_state_symbol",
-                           "enqueue_reset_sequence_state_symbol"})
-      if (auto value = physical.getAs<StringAttr>(name);
-          value && !value.getValue().empty())
+    SmallVector<NamedAttribute> fields{
+        builder.getNamedAttr("abi", abi),
+        builder.getNamedAttr("model_index",
+                             builder.getI64IntegerAttr(modelIndex.getInt())),
+        builder.getNamedAttr("model_name", modelName),
+        builder.getNamedAttr("inputs", *describedInputs),
+        builder.getNamedAttr("outputs", *describedOutputs),
+    };
+    // Only a library built with TRANSITIONAL_SEQUENCE_STATE has the private
+    // binding the physical symbols name.
+    if (physical) {
+      SmallVector<NamedAttribute> symbols;
+      for (StringRef name :
+           {"create_symbol", "enqueue_initialize_symbol", "bind_all_symbol",
+            "resolve_input_symbol", "resolve_output_symbol",
+            "enqueue_run_symbol", "dispose_symbol"}) {
+        auto value = physical.getAs<StringAttr>(name);
+        if (!value)
+          return module.emitError()
+                 << "ONNX binding metadata has no physical " << name;
         symbols.push_back(builder.getNamedAttr(name, value));
-    module->setAttr(
-        descriptionAttribute,
-        builder.getDictionaryAttr({
-            builder.getNamedAttr("abi", abi),
-            builder.getNamedAttr(
-                "model_index", builder.getI64IntegerAttr(modelIndex.getInt())),
-            builder.getNamedAttr("model_name", modelName),
-            builder.getNamedAttr("inputs", *describedInputs),
-            builder.getNamedAttr("outputs", *describedOutputs),
-            builder.getNamedAttr("physical",
-                                 builder.getDictionaryAttr(symbols)),
-        }));
+      }
+      // The sequence-state symbols exist only for a graph with sequence
+      // state.
+      for (StringRef name : {"enqueue_advance_sequence_state_symbol",
+                             "enqueue_reset_sequence_state_symbol"})
+        if (auto value = physical.getAs<StringAttr>(name);
+            value && !value.getValue().empty())
+          symbols.push_back(builder.getNamedAttr(name, value));
+      fields.push_back(
+          builder.getNamedAttr("physical", builder.getDictionaryAttr(symbols)));
+    }
+    module->setAttr(descriptionAttribute, builder.getDictionaryAttr(fields));
     return success();
   }
 };

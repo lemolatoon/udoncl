@@ -1487,6 +1487,66 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
   return declarations.result();
 }
 
+/// Declares the runtime functions the generated binding and dispatchers
+/// call.
+LogicalResult declareBindingRuntime(ModuleOp module) {
+  ONNXHostDeclarations declarations(module);
+  Builder builder(module.getContext());
+  Type i32 = builder.getI32Type();
+  Type pointer = host::PtrType::get(module.getContext(), 0);
+  declarations.require(
+      "udononnxBindingStateCreate",
+      {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32}, {i32});
+  declarations.require("udononnxBindingStateAllocateBuffer",
+                       {pointer, i32, i32, pointer}, {i32});
+  declarations.require("udononnxBindingStateBeginStaticBind", {pointer}, {i32});
+  declarations.require("udononnxBindingStateCompleteStaticBind", {pointer, i32},
+                       {i32});
+  declarations.require("udonclDeviceBufferView",
+                       {pointer, i32, i32, i32, pointer}, {i32});
+  declarations.require("udononnxBindingStateEnqueueInitialize",
+                       {pointer, i32, pointer, pointer}, {i32});
+  declarations.require("udononnxBindingStateEnqueueRun",
+                       {pointer, i32, pointer, pointer}, {i32});
+  declarations.require("udononnxBindingStateGetSession", {pointer, pointer},
+                       {i32});
+  declarations.require("udononnxBindingStateResolveInput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udononnxBindingStateResolveOutput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udononnxSessionResolveInput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udononnxSessionResolveOutput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udonclResolvePhysicalBuffer", {pointer, pointer},
+                       {i32});
+  declarations.require("__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
+                       {i32});
+  declarations.require("__vrc_opencl_buffer_upload", {i32, i32, i32, pointer},
+                       {i32});
+  declarations.require("__vrc_opencl_buffer_fill",
+                       {i32, i32, i32, pointer, i32}, {i32});
+  declarations.require("udononnxBindingStateGetCommandQueue",
+                       {pointer, pointer}, {i32});
+  declarations.require("clFinish", {pointer}, {i32});
+  declarations.require("__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
+  declarations.require("__vrc_opencl_await", {i32}, {i32});
+  declarations.require("udononnxBindingStateCompleteEvent",
+                       {pointer, pointer, i32}, {i32});
+  declarations.require("udononnxBindingStateDispose", {pointer}, {i32});
+  declarations.require("udonclDeviceBufferDestroy", {pointer}, {i32});
+  declarations.require("clWaitForEvents", {i32, pointer}, {i32});
+  declarations.require("clReleaseEvent", {pointer}, {i32});
+  return declarations.result();
+}
+
+/// Whether the library was built with TRANSITIONAL_SEQUENCE_STATE: the
+/// sequence-state identification ran (and recorded its states, possibly
+/// none).
+bool isTransitionalSequenceStateHost(ModuleOp module) {
+  return module->hasAttr("udoncl.onnx_sequence_states");
+}
+
 LogicalResult createPhysicalBindingExports(ModuleOp module,
                                            const GraphRecord &graph,
                                            const HostPlanRecord &plan) {
@@ -1596,73 +1656,6 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
             addressOf(builder, location, sequenceStateExposedSymbol));
   }
   func::ReturnOp::create(builder, location, constant(0));
-
-  builder.setInsertionPointToEnd(module.getBody());
-  SmallVector<Type> bindArguments(16, i32);
-  auto bind = func::FuncOp::create(
-      builder, location, "__udononnx_transitional_bind_tensor",
-      FunctionType::get(module.getContext(), bindArguments, {i32}));
-  markExport(bind);
-  Block *bindEntry = bind.addEntryBlock();
-  builder.setInsertionPointToEnd(bindEntry);
-  Value dimensionBytes = constant(8 * 4);
-  OperationState allocation(location, host::AllocaOp::getOperationName());
-  allocation.addOperands(dimensionBytes);
-  allocation.addTypes(pointer);
-  allocation.addAttribute("alignment", builder.getI64IntegerAttr(4));
-  Value dimensions = builder.create(allocation)->getResult(0);
-  for (int64_t index = 0; index != 8; ++index)
-    store(builder, location, bindEntry->getArgument(8 + index),
-          pointerAdd(builder, location, dimensions, constant(index * 4)));
-  SmallVector<Value> bindValues{state()};
-  llvm::append_range(bindValues, bindEntry->getArguments().take_front(8));
-  bindValues.push_back(dimensions);
-  auto bindCall =
-      func::CallOp::create(builder, location, "udononnxBindingStateBindTensor",
-                           TypeRange{i32}, bindValues);
-  if (!graph.sequenceStates.empty()) {
-    Value affected = arith::ConstantIntOp::create(builder, location, 0, 1);
-    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
-      Value input = arith::AndIOp::create(
-          builder, location,
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                bindEntry->getArgument(0), constant(0)),
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                bindEntry->getArgument(1),
-                                constant(sequence.inputIndex)));
-      Value output = arith::AndIOp::create(
-          builder, location,
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                bindEntry->getArgument(0), constant(1)),
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                bindEntry->getArgument(1),
-                                constant(sequence.outputIndex)));
-      affected = arith::OrIOp::create(
-          builder, location, affected,
-          arith::OrIOp::create(builder, location, input, output));
-    }
-    Value succeeded =
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                              bindCall.getResult(0), constant(0));
-    Value invalidate =
-        arith::AndIOp::create(builder, location, succeeded, affected);
-    Value owned = addressOf(builder, location, sequenceStateOwnedSymbol);
-    store(builder, location,
-          arith::SelectOp::create(builder, location, invalidate, constant(0),
-                                  loadI32(builder, location, owned)),
-          owned);
-    if (banked) {
-      Value bank = addressOf(builder, location, sequenceStateBankSymbol);
-      store(builder, location,
-            arith::SelectOp::create(builder, location, invalidate, constant(0),
-                                    loadI32(builder, location, bank)),
-            bank);
-    }
-    if (fillAge)
-      storeFillAge(arith::SelectOp::create(builder, location, invalidate,
-                                           constant(0), loadFillAge()));
-  }
-  func::ReturnOp::create(builder, location, bindCall.getResult(0));
 
   builder.setInsertionPointToEnd(module.getBody());
   auto bindAll = func::FuncOp::create(
@@ -1899,91 +1892,6 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                 "udononnxBindingStateEnqueueInitialize", false);
   createEnqueue("__udononnx_transitional_enqueue_run",
                 "udononnxBindingStateEnqueueRun", true);
-
-  builder.setInsertionPointToEnd(module.getBody());
-  auto copyOutputToInput = func::FuncOp::create(
-      builder, location, "__udononnx_transitional_copy_output_to_input",
-      FunctionType::get(module.getContext(), {i32, i32}, {i32}));
-  markExport(copyOutputToInput);
-  Block *copyEntry = copyOutputToInput.addEntryBlock();
-  builder.setInsertionPointToEnd(copyEntry);
-  if (fillAge) {
-    // A copy into a past input replaces its fill.
-    Value pastInput = arith::ConstantIntOp::create(builder, location, 0, 1);
-    for (const SequenceStateRecord &sequence : graph.sequenceStates)
-      pastInput = arith::OrIOp::create(
-          builder, location, pastInput,
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                copyEntry->getArgument(1),
-                                constant(sequence.inputIndex)));
-    storeFillAge(arith::SelectOp::create(builder, location, pastInput,
-                                         constant(0), loadFillAge()));
-  }
-  auto copyReturnIfNonzero = [&](Value status, int64_t failureStatus = -1) {
-    Block *next = copyOutputToInput.addBlock();
-    Block *failure = copyOutputToInput.addBlock();
-    Value succeeded = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, status, constant(0));
-    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                             failure, ValueRange{});
-    builder.setInsertionPointToEnd(failure);
-    func::ReturnOp::create(builder, location,
-                           failureStatus < 0 ? status
-                                             : constant(failureStatus));
-    builder.setInsertionPointToEnd(next);
-  };
-  Value sessionSlot = allocaI32(builder, location);
-  auto gotSession =
-      func::CallOp::create(builder, location, "udononnxBindingStateGetSession",
-                           TypeRange{i32}, ValueRange{state(), sessionSlot});
-  copyReturnIfNonzero(gotSession.getResult(0));
-  auto physicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
-    return func::CallOp::create(
-               builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
-               ValueRange{constant(logicalId), constant(bytes)})
-        .getResult(0);
-  };
-  for (auto [outputIndex, outputTensorIndex] : llvm::enumerate(graph.outputs)) {
-    const TensorRecord &output = graph.tensors[outputTensorIndex];
-    int64_t outputBytes =
-        std::max<int64_t>(elementByteSize(output.type.getElementType()),
-                          deviceAllocationBytes(graph, outputTensorIndex));
-    for (auto [inputIndex, inputTensorIndex] : llvm::enumerate(graph.inputs)) {
-      const TensorRecord &input = graph.tensors[inputTensorIndex];
-      int64_t inputBytes =
-          std::max<int64_t>(elementByteSize(input.type.getElementType()),
-                            deviceAllocationBytes(graph, inputTensorIndex));
-      if (output.type != input.type || outputBytes != inputBytes)
-        continue;
-      Block *copy = copyOutputToInput.addBlock();
-      Block *next = copyOutputToInput.addBlock();
-      Value outputMatches = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq,
-          copyEntry->getArgument(0), constant(outputIndex));
-      Value inputMatches = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq,
-          copyEntry->getArgument(1), constant(inputIndex));
-      Value pairMatches =
-          arith::AndIOp::create(builder, location, outputMatches, inputMatches);
-      cf::CondBranchOp::create(builder, location, pairMatches, copy,
-                               ValueRange{}, next, ValueRange{});
-      builder.setInsertionPointToEnd(copy);
-      Value source =
-          physicalBuffer(graph.inputs.size() + outputIndex + 1, outputBytes);
-      Value destination = physicalBuffer(inputIndex + 1, inputBytes);
-      auto copied = func::CallOp::create(
-          builder, location, "__vrc_opencl_buffer_copy", TypeRange{i32},
-          ValueRange{source, destination, constant(0), constant(0),
-                     constant(outputBytes)});
-      auto awaited =
-          func::CallOp::create(builder, location, "__vrc_opencl_await",
-                               TypeRange{i32}, copied.getResult(0));
-      copyReturnIfNonzero(awaited.getResult(0), 5);
-      func::ReturnOp::create(builder, location, constant(0));
-      builder.setInsertionPointToEnd(next);
-    }
-  }
-  func::ReturnOp::create(builder, location, constant(1));
 
   if (!graph.sequenceStates.empty()) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -2326,98 +2234,6 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
       return failure();
   }
 
-  if (banked) {
-    // The present of a banked state is in its past input after a run from
-    // bank 1: while that run is pending, and once it was advanced to bank 2.
-    // Materializing copies it into the present output, where the presents of
-    // all other runs already are, so that a caller reads every present from
-    // its output. The bank and the carried rows stay as they are.
-    builder.setInsertionPointToEnd(module.getBody());
-    auto materialize = func::FuncOp::create(
-        builder, location, "__udononnx_transitional_materialize_sequence_state",
-        FunctionType::get(module.getContext(), {}, {i32}));
-    // Only a C Host that reads presents calls it, so it is not a Udon export
-    // and an artifact that never calls it does not keep it.
-    materialize->setAttr("vrc.async_effect",
-                         builder.getStringAttr("may_suspend"));
-    Block *materializeEntry = materialize.addEntryBlock();
-    Block *materializeCheck = materialize.addBlock();
-    Block *materializeBusy = materialize.addBlock();
-    Block *materializeInvalid = materialize.addBlock();
-    Block *materializeCopy = materialize.addBlock();
-    Block *materializeDone = materialize.addBlock();
-    builder.setInsertionPointToEnd(materializeEntry);
-    auto loadState = [&](StringRef symbol) {
-      return loadI32(builder, location, addressOf(builder, location, symbol));
-    };
-    auto equals = [&](Value value, int64_t expected) -> Value {
-      return arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                   value, constant(expected));
-    };
-    cf::CondBranchOp::create(
-        builder, location, equals(loadState(bindingEventSymbol), 0),
-        materializeCheck, ValueRange{}, materializeBusy, ValueRange{});
-    builder.setInsertionPointToEnd(materializeBusy);
-    func::ReturnOp::create(builder, location, constant(7));
-    builder.setInsertionPointToEnd(materializeCheck);
-    Value healthy = arith::AndIOp::create(
-        builder, location, equals(loadState(sequenceStateOwnedSymbol), 1),
-        equals(loadState(sequenceStatePoisonedSymbol), 0));
-    Block *materializeBank = materialize.addBlock();
-    cf::CondBranchOp::create(builder, location, healthy, materializeBank,
-                             ValueRange{}, materializeInvalid, ValueRange{});
-    builder.setInsertionPointToEnd(materializeInvalid);
-    func::ReturnOp::create(builder, location, constant(12));
-    builder.setInsertionPointToEnd(materializeBank);
-    Value bank = loadState(sequenceStateBankSymbol);
-    Value inInput = arith::SelectOp::create(
-        builder, location, equals(loadState(sequenceStatePendingSymbol), 1),
-        equals(bank, 1), equals(bank, 2));
-    cf::CondBranchOp::create(builder, location, inInput, materializeCopy,
-                             ValueRange{}, materializeDone, ValueRange{});
-    builder.setInsertionPointToEnd(materializeDone);
-    func::ReturnOp::create(builder, location, constant(0));
-    builder.setInsertionPointToEnd(materializeCopy);
-    for (unsigned stateIndex : plan.sequenceStateBanks) {
-      const SequenceStateRecord &sequence = graph.sequenceStates[stateIndex];
-      unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
-      unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
-      const TensorRecord &present = graph.tensors[outputTensorIndex];
-      int64_t presentBytes = present.type.getNumElements() *
-                             elementByteSize(present.type.getElementType());
-      Value source =
-          func::CallOp::create(
-              builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
-              ValueRange{
-                  constant(sequence.inputIndex + 1),
-                  constant(deviceAllocationBytes(graph, inputTensorIndex))})
-              .getResult(0);
-      Value destination =
-          func::CallOp::create(
-              builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
-              ValueRange{
-                  constant(graph.inputs.size() + sequence.outputIndex + 1),
-                  constant(deviceAllocationBytes(graph, outputTensorIndex))})
-              .getResult(0);
-      auto copied = func::CallOp::create(
-          builder, location, "__vrc_opencl_buffer_copy", TypeRange{i32},
-          ValueRange{source, destination, constant(0), constant(0),
-                     constant(presentBytes)});
-      auto awaited =
-          func::CallOp::create(builder, location, "__vrc_opencl_await",
-                               TypeRange{i32}, copied.getResult(0));
-      Block *next = materialize.addBlock();
-      Block *failure = materialize.addBlock();
-      cf::CondBranchOp::create(builder, location,
-                               equals(awaited.getResult(0), 0), next,
-                               ValueRange{}, failure, ValueRange{});
-      builder.setInsertionPointToEnd(failure);
-      func::ReturnOp::create(builder, location, constant(5));
-      builder.setInsertionPointToEnd(next);
-    }
-    func::ReturnOp::create(builder, location, constant(0));
-  }
-
   builder.setInsertionPointToEnd(module.getBody());
   auto dispose =
       func::FuncOp::create(builder, location, "__udononnx_transitional_dispose",
@@ -2475,53 +2291,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   }
   func::ReturnOp::create(builder, location, constant(0));
 
-  declarations.require(
-      "udononnxBindingStateCreate",
-      {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32}, {i32});
-  declarations.require("udononnxBindingStateAllocateBuffer",
-                       {pointer, i32, i32, pointer}, {i32});
-  declarations.require(
-      "udononnxBindingStateBindTensor",
-      {pointer, i32, i32, i32, i32, i32, i32, i32, i32, pointer}, {i32});
-  declarations.require("udononnxBindingStateBeginStaticBind", {pointer}, {i32});
-  declarations.require("udononnxBindingStateCompleteStaticBind", {pointer, i32},
-                       {i32});
-  declarations.require("udonclDeviceBufferView",
-                       {pointer, i32, i32, i32, pointer}, {i32});
-  declarations.require("udononnxBindingStateEnqueueInitialize",
-                       {pointer, i32, pointer, pointer}, {i32});
-  declarations.require("udononnxBindingStateEnqueueRun",
-                       {pointer, i32, pointer, pointer}, {i32});
-  declarations.require("udononnxBindingStateGetSession", {pointer, pointer},
-                       {i32});
-  declarations.require("udononnxBindingStateResolveInput",
-                       {pointer, i32, pointer, pointer, pointer}, {i32});
-  declarations.require("udononnxBindingStateResolveOutput",
-                       {pointer, i32, pointer, pointer, pointer}, {i32});
-  declarations.require("udononnxSessionResolveInput",
-                       {pointer, i32, pointer, pointer, pointer}, {i32});
-  declarations.require("udononnxSessionResolveOutput",
-                       {pointer, i32, pointer, pointer, pointer}, {i32});
-  declarations.require("udonclResolvePhysicalBuffer", {pointer, pointer},
-                       {i32});
-  declarations.require("__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
-                       {i32});
-  declarations.require("__vrc_opencl_buffer_upload", {i32, i32, i32, pointer},
-                       {i32});
-  declarations.require("__vrc_opencl_buffer_fill",
-                       {i32, i32, i32, pointer, i32}, {i32});
-  declarations.require("udononnxBindingStateGetCommandQueue",
-                       {pointer, pointer}, {i32});
-  declarations.require("clFinish", {pointer}, {i32});
-  declarations.require("__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
-  declarations.require("__vrc_opencl_await", {i32}, {i32});
-  declarations.require("udononnxBindingStateCompleteEvent",
-                       {pointer, pointer, i32}, {i32});
-  declarations.require("udononnxBindingStateDispose", {pointer}, {i32});
-  declarations.require("udonclDeviceBufferDestroy", {pointer}, {i32});
-  declarations.require("clWaitForEvents", {i32, pointer}, {i32});
-  declarations.require("clReleaseEvent", {pointer}, {i32});
-  return declarations.result();
+  return declareBindingRuntime(module);
 }
 
 LogicalResult createRuntimeDispatchers(ModuleOp module,
@@ -4161,7 +3931,13 @@ struct FinalizeONNXHostPass
       createReadExport(module, *graph, builder.getI64Type(), "int64");
       createBindingExports(module, *graph);
     }
-    if (failed(createPhysicalBindingExports(module, *graph, *plan))) {
+    // Transitional (removed in stage 3): only a library built with
+    // TRANSITIONAL_SEQUENCE_STATE (udoncl.onnx_sequence_states) keeps its KV
+    // cache in a private binding; every other Host binds its buffers through
+    // the UdonONNX session API.
+    if (isTransitionalSequenceStateHost(module)
+            ? failed(createPhysicalBindingExports(module, *graph, *plan))
+            : failed(declareBindingRuntime(module))) {
       signalPassFailure();
       return;
     }

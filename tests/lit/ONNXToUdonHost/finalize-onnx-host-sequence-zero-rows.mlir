@@ -130,10 +130,6 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK: %[[CREATE_EXPOSED:.*]] = udonhl.address_of @__udon_onnx_sequence_state_exposed
 // CHECK-NEXT: "udonhl.store"(%c0_i32, %[[CREATE_EXPOSED]])
 
-// Binding a state tensor forgets the fill.
-// CHECK-LABEL: func.func @__udononnx_transitional_bind_tensor
-// CHECK: udonhl.address_of @__udon_onnx_sequence_state_fill_age
-
 // bind-all forgets the fill.
 // CHECK-LABEL: func.func @__udononnx_transitional_bind_all
 // CHECK: %[[BIND_AGE:.*]] = udonhl.address_of @__udon_onnx_sequence_state_fill_age

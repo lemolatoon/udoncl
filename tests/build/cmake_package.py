@@ -540,20 +540,12 @@ def main():
     generated_onnx_host_text = run([
         install / 'bin' / f'udoncl-opt{suffix}', generated_onnx_host,
     ])
-    assert generated_onnx_host_text.count('udoncl.export') == 9
-    # Every binding function is a root of the Host, never a U# export.
-    assert generated_onnx_host_text.count('udoncl.internal_export') == 9
-    for symbol in [
-        '__udononnx_transitional_create',
-        '__udononnx_transitional_bind_tensor',
-        '__udononnx_transitional_bind_all',
-        '__udononnx_transitional_resolve_input',
-        '__udononnx_transitional_resolve_output',
-        '__udononnx_transitional_enqueue_initialize',
-        '__udononnx_transitional_enqueue_run',
-        '__udononnx_transitional_copy_output_to_input',
-        '__udononnx_transitional_dispose',
-    ]:
+    # A model library built without TRANSITIONAL_SEQUENCE_STATE has no
+    # private binding: its Host binds buffers through the session API.
+    assert 'udoncl.export' not in generated_onnx_host_text
+    assert '__udononnx_transitional_' not in generated_onnx_host_text
+    for symbol in ['udononnxGeneratedCreate', 'udononnxGeneratedBindMemory',
+                   'udononnxGeneratedRun', 'udononnxGeneratedDispose']:
         assert f'func.func @{symbol}' in generated_onnx_host_text
     assert not list(onnx_consumer.rglob('execution-plan.json'))
     assert not list(onnx_consumer.rglob('plan.json'))
@@ -1374,19 +1366,8 @@ def main():
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])
-    assert (
-        'func.func @__udononnx_transitional_create(%arg0: !udonhl.ptr<0>, '
-        '%arg1: !udonhl.ptr<0>)' in transformer_source
-    )
-    assert 'func.func @__udononnx_transitional_bind_tensor(' in transformer_source
-    assert 'func.func @__udononnx_transitional_bind_all()' in transformer_source
-    assert 'func.func @__udononnx_transitional_resolve_input(' in transformer_source
-    assert 'func.func @__udononnx_transitional_resolve_output(' in transformer_source
-    assert 'func.func @__udononnx_transitional_enqueue_run()' in transformer_source
-    assert (
-        'func.func @__udononnx_transitional_copy_output_to_input('
-        in transformer_source
-    )
+    # The synthetic model library has no private binding.
+    assert '__udononnx_transitional_' not in transformer_source
     assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source
     assert 'udoncl.onnx_device_graph = true' in transformer_source
     assert 'udoncl.onnx_device_unsupported = []' in transformer_source

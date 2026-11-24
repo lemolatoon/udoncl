@@ -465,8 +465,9 @@ def DescribeONNXBindingManifestPass : Pass<"vrc-describe-onnx-binding-manifest",
     `vrc.onnx_binding_manifest`: the `abi`, `model_index` and `model_name`,
     the graph `inputs` and `outputs` (each with its `index`, `name`,
     `data_type`, `rank`, `dimensions`, `logical_bytes` and
-    `capacity_bytes`), and the `physical` symbols of the generated binding.
-    The sequence-state symbols are recorded only when the graph has
+    `capacity_bytes`), and, for a library built with
+    TRANSITIONAL_SEQUENCE_STATE, the `physical` symbols of its private
+    binding. The sequence-state symbols are recorded only when the graph has
     sequence state (their metadata is not empty).
 
     A module without ONNX binding metadata gets no description; metadata
