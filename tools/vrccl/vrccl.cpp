@@ -16,7 +16,6 @@
 #include "HostAnnotations.h"
 #include "HostBufferPlan.h"
 #include "OpenCLUserKernels.h"
-#include "UnityDeviceKernels.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -820,6 +819,38 @@ LogicalResult deriveOnnxUnityBufferConfig(ModuleOp module,
   }
   config["buffers"] = std::move(*value);
   return success();
+}
+
+/// The `device_kernels` entries of the library and user Device kernels the
+/// Unity Host dispatches, as vrc-describe-unity-device-kernels derives them
+/// from their dispatch sites and library contracts.
+FailureOr<json::Array>
+describeUnityDeviceKernels(ModuleOp module,
+                           ArrayRef<int64_t> synthesizedKernelIds,
+                           const std::map<int64_t, std::string> &userKernels) {
+  ::vrc::DescribeUnityDeviceKernelsPassOptions options;
+  options.synthesizedKernelIds.assign(synthesizedKernelIds.begin(),
+                                      synthesizedKernelIds.end());
+  for (const auto &[id, name] : userKernels) {
+    options.userKernelIds.push_back(id);
+    options.userKernelNames.push_back(name);
+  }
+  PassManager describe(module.getContext());
+  describe.enableVerifier(false);
+  describe.addPass(::vrc::createDescribeUnityDeviceKernelsPass(options));
+  if (failed(describe.run(module)))
+    return failure();
+  auto kernels = module->getAttrOfType<ArrayAttr>("vrc.unity_device_kernels");
+  if (!kernels)
+    return failure();
+  // The description is an input of the artifact, not Host IR.
+  module->removeAttr("vrc.unity_device_kernels");
+  auto value = mlirAttributeToJson(kernels);
+  if (!value || !value->getAsArray()) {
+    module.emitError("Unity Device kernels are not serializable");
+    return failure();
+  }
+  return std::move(*value->getAsArray());
 }
 
 FailureOr<SmallVector<const json::Object *>>
@@ -2738,14 +2769,14 @@ int main(int argc, char **argv) {
     }
     // Every Device kernel the Host dispatches is known once the Host has
     // reached its exported form: the library kernels it dispatches are
-    // derived from their dispatch sites (UnityDeviceKernels.h).
+    // derived from their dispatch sites (vrc-describe-unity-device-kernels).
     phase("unity-device-kernels");
     {
       SmallVector<int64_t> synthesizedKernelIds;
       for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
         synthesizedKernelIds.push_back(kernel.id);
-      auto derived = udoncl::deriveUnityDeviceKernels(
-          *module, synthesizedKernelIds, unityUserKernels, errs());
+      auto derived = describeUnityDeviceKernels(*module, synthesizedKernelIds,
+                                                unityUserKernels);
       if (failed(derived))
         return 1;
       if (!derived->empty() && deviceLLVM.empty()) {

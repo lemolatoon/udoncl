@@ -500,6 +500,42 @@ def DescribeCanonicalUnityBuffersPass : Pass<"vrc-describe-canonical-unity-buffe
     description from an earlier run is replaced.
   }];
 }
+def DescribeUnityDeviceKernelsPass : Pass<"vrc-describe-unity-device-kernels", "mlir::ModuleOp"> {
+  let summary = "Describe the library Device kernels a Unity Host dispatches";
+  let description = [{
+    Records in `vrc.unity_device_kernels` the `device_kernels` entries of the
+    Unity library config, ordered by kernel id: one dictionary per kernel id
+    that a `vrc.dispatch` of the module names, except the synthesized kernels
+    (`synthesized-kernel-ids`). An entry takes the launch (`argument_kinds`,
+    `global_size`, `local_size`, `global_offset` and, for a gather, `profile`
+    and `words`) from the dispatch sites and the access contract
+    (`input_words`, `argument_bounds`, `fragment_cost`) from the contract of
+    the UdonCL Device library kernel, which holds the element limits the ONNX
+    Host planner and the OpenCL AOT runtime check before they dispatch it.
+    The table an axis-0 Gather reads is the one contract that grows with the
+    constant scalars of its dispatch sites.
+
+    A user OpenCL C kernel (`user-kernel-ids` with the matching
+    `user-kernel-names`) has only its launch; one that reads fewer than two
+    buffers is one invocation and no gather.
+
+    Fails when a dispatched kernel id has neither a library contract nor a
+    user kernel, when the dispatch sites of one kernel disagree on its
+    launch, when a constant scalar of a site lies outside an argument bound
+    of the contract, or when a site-derived contract meets a scalar that is
+    not a compile-time constant. A description of an earlier run is
+    replaced.
+  }];
+  let options = [
+    ListOption<"synthesizedKernelIds", "synthesized-kernel-ids", "int64_t",
+               "Kernel ids of the synthesized Device kernels, which have no "
+               "library contract">,
+    ListOption<"userKernelIds", "user-kernel-ids", "int64_t",
+               "Kernel ids of the user OpenCL C kernels">,
+    ListOption<"userKernelNames", "user-kernel-names", "std::string",
+               "Names of the user OpenCL C kernels, in user-kernel-ids order">
+  ];
+}
 def DescribeONNXBindingManifestPass : Pass<"vrc-describe-onnx-binding-manifest", "mlir::ModuleOp"> {
   let summary = "Describe the ONNX binding entry of a Unity library manifest";
   let description = [{
