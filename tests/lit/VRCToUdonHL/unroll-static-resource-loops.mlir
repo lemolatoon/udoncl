@@ -154,3 +154,43 @@ module {
     return %code : i32
   }
 }
+
+// -----
+
+// A constant-trip loop that releases a Device buffer per iteration, read
+// from a table of buffers, becomes one release per iteration with a
+// constant index.
+// CHECK-LABEL: func.func @Dispose
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : i32
+// CHECK-DAG: %[[C8:.*]] = arith.constant 8 : i32
+// CHECK: udonhl.ptr_add"(%{{.*}}, %[[C0]])
+// CHECK: call @clReleaseMemObject
+// CHECK: udonhl.ptr_add"(%{{.*}}, %[[C4]])
+// CHECK: call @clReleaseMemObject
+// CHECK: udonhl.ptr_add"(%{{.*}}, %[[C8]])
+// CHECK: call @clReleaseMemObject
+// CHECK-NOT: cf.cond_br
+// CHECK: return
+module {
+  "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = array<i8: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>, linkage = "internal", storage_type = !llvm.array<3 x ptr>, sym_name = "buffers"}> : () -> ()
+  func.func private @clReleaseMemObject(!udonhl.ptr<0>) -> i32
+  func.func @Dispose() attributes {udoncl.export} {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %c3 = arith.constant 3 : i32
+    %c4 = arith.constant 4 : i32
+    %table = udonhl.address_of @buffers : !udonhl.ptr<0>
+    cf.br ^loop(%c0 : i32)
+  ^loop(%i: i32):
+    %offset = arith.muli %i, %c4 : i32
+    %slot = "udonhl.ptr_add"(%table, %offset) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %buffer = "udonhl.load"(%slot) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
+    %status = func.call @clReleaseMemObject(%buffer) : (!udonhl.ptr<0>) -> i32
+    %next = arith.addi %i, %c1 : i32
+    %more = arith.cmpi slt, %next, %c3 : i32
+    cf.cond_br %more, ^loop(%next : i32), ^done
+  ^done:
+    return
+  }
+}

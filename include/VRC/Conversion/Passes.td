@@ -218,7 +218,9 @@ def UnrollStaticResourceLoopsPass : Pass<"vrc-unroll-static-resource-loops", "ml
     or a call to a function that may) has one allocation context per
     iteration; a loop that binds Device buffers to ONNX graph inputs or
     outputs (udononnxBindInput, udononnxBindOutput, or a call to a function
-    that may) names one tensor per iteration. When it is a natural single-latch CFG loop entered from one
+    that may) names one tensor per iteration; a loop that releases Device
+    buffers (clReleaseMemObject, or a call to a function that may) releases
+    one known buffer per iteration. When it is a natural single-latch CFG loop entered from one
     preheader whose exit is decided by an integer induction variable with a
     constant start, a constant step and a comparison against constants, and
     no value of it is used outside it except through its exit edges, this

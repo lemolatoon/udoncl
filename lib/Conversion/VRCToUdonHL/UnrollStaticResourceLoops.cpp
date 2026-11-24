@@ -25,13 +25,14 @@ namespace vrc {
 namespace {
 
 /// A call whose static Device resource depends on the iteration: it
-/// creates a Device resource, or it binds one to a named ONNX graph input or
+/// creates a Device resource, binds one to a named ONNX graph input or
 /// output (udononnxBindInput/udononnxBindOutput, whose tensor name must be
-/// known at compile time).
+/// known at compile time), or releases one (clReleaseMemObject, whose
+/// buffer must be one known allocation).
 bool isStaticResourcePrimitive(StringRef name) {
   return name == "clCreateBuffer" || name == "udonclCreateBufferForQueue" ||
          name == "udonclDeviceBufferCreate" || name == "udononnxBindInput" ||
-         name == "udononnxBindOutput";
+         name == "udononnxBindOutput" || name == "clReleaseMemObject";
 }
 
 /// A natural CFG loop with one latch whose exit an induction variable with a
