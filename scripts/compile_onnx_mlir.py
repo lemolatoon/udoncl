@@ -17,6 +17,7 @@ def canonicalize(
     static_data_directory=None,
     host_metadata=None,
     transitional_sequence_state=False,
+    dimension_bounds=(),
 ):
     model = model.resolve()
     output = output.resolve()
@@ -34,6 +35,7 @@ def canonicalize(
         specialization = (
             '--udoncl-specialize-onnx-inputs=' +
             f'dimensions={";".join(dimensions)} ' +
+            f'dimension-bounds={";".join(dimension_bounds)} ' +
             f'input-shapes={";".join(input_shapes)}')
         command = [
             frontend, model, specialization, '--udoncl-infer-onnx-shapes',
@@ -103,6 +105,7 @@ def main():
                         help=argparse.SUPPRESS)
     parser.add_argument('--dimension', action='append', default=[])
     parser.add_argument('--input-shape', action='append', default=[])
+    parser.add_argument('--dimension-bound', action='append', default=[])
     parser.add_argument('--lower-to-host', action='store_true')
     parser.add_argument('--static-data-directory', type=Path)
     parser.add_argument('--host-metadata', type=Path)
@@ -113,7 +116,8 @@ def main():
                      args.dimension,
                      args.input_shape, args.lower_to_host,
                      args.static_data_directory, args.host_metadata,
-                     args.transitional_sequence_state)
+                     args.transitional_sequence_state,
+                     dimension_bounds=args.dimension_bound)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'{error}\n')
 

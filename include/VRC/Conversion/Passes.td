@@ -15,10 +15,23 @@ def LowerONNXToUdonHostPass : Pass<"udoncl-lower-onnx-to-host", "mlir::ModuleOp"
 }
 def SpecializeONNXInputsPass : Pass<"udoncl-specialize-onnx-inputs", "mlir::ModuleOp"> {
   let summary = "Specialize public ONNX tensor inputs from explicit dimension bindings";
+  let description = [{
+    A dimension named in `dimensions` is fixed to its value. A dimension
+    named in `dimension-bounds` stays dynamic with that inclusive upper
+    bound: the input axis keeps `?` and gets the argument attribute
+    `udoncl.dim_exprs` (axis -> symbol + offset), and the module records
+    every bound in `udoncl.dimension_bounds`. A dynamic input axis that is
+    neither fixed nor bounded, a name that is both, an expression other than
+    `name` or `name + N`, and more than one bounded axis on one input are
+    errors.
+  }];
   let dependentDialects = ["mlir::func::FuncDialect"];
   let options = [
     Option<"dimensionBindings", "dimensions", "std::string", /*default=*/"",
            "Semicolon-separated symbolic dimension bindings name=value">,
+    Option<"dimensionBoundBindings", "dimension-bounds", "std::string",
+           /*default=*/"",
+           "Semicolon-separated bounded dynamic dimensions name=max">,
     Option<"inputShapeBindings", "input-shapes", "std::string", /*default=*/"",
            "Semicolon-separated public input shapes name=d0,d1,...">
   ];

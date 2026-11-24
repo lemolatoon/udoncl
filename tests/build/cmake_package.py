@@ -545,10 +545,16 @@ def main():
             'Invalid DIMENSIONS entry',
         ),
         (
-            'unsupported-bound',
+            'invalid-bound',
             'udoncl_add_onnx_host_library(probe MODEL model.onnx '
-            'DIMENSION_BOUNDS sequence=4)',
-            'DIMENSION_BOUNDS is not supported yet',
+            'DIMENSION_BOUNDS sequence=0)',
+            'Invalid DIMENSION_BOUNDS entry',
+        ),
+        (
+            'fixed-and-bounded',
+            'udoncl_add_onnx_host_library(probe MODEL model.onnx '
+            'DIMENSIONS sequence=4 DIMENSION_BOUNDS sequence=8)',
+            'is both in DIMENSIONS and DIMENSION_BOUNDS',
         ),
         (
             'legacy-profile',

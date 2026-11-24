@@ -26,7 +26,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
 
     def run_pipeline(self, content, dimensions=(), input_shapes=(),
                      lower_to_host=False, static_data_directory=None,
-                     transitional_sequence_state=False):
+                     transitional_sequence_state=False, dimension_bounds=()):
         def run(command, check):
             self.assertTrue(check)
             prefix = ('--udoncl-externalize-onnx-initializers='
@@ -47,7 +47,8 @@ class CompileONNXMLIRTests(unittest.TestCase):
             compiler.canonicalize(
                 self.model, self.output, self.frontend, dimensions,
                 input_shapes, lower_to_host, static_data_directory,
-                transitional_sequence_state=transitional_sequence_state)
+                transitional_sequence_state=transitional_sequence_state,
+                dimension_bounds=dimension_bounds)
         return call.call_args.args[0]
 
     def test_frontend_imports_and_runs_upstream_passes_in_one_process(self):
@@ -70,7 +71,18 @@ class CompileONNXMLIRTests(unittest.TestCase):
             '--udoncl-specialize-onnx-inputs='))
         self.assertIn('dimensions=batch_size=1', option)
         self.assertIn('input-shapes=attention_mask=1,4', option)
+        self.assertIn('dimension-bounds= ', option)
         self.assertIn('--udoncl-infer-onnx-shapes', command)
+
+    def test_bounded_dimensions_stay_dynamic_in_specialization(self):
+        command = self.run_pipeline(
+            'onnx.Return\n', dimensions=['batch_size=1'],
+            dimension_bounds=['past_sequence_length=511', 'other=4'])
+        option = next(value for value in command if str(value).startswith(
+            '--udoncl-specialize-onnx-inputs='))
+        self.assertIn('dimensions=batch_size=1 ', option)
+        self.assertIn(
+            'dimension-bounds=past_sequence_length=511;other=4 ', option)
 
     def test_host_lowering_is_one_repo_owned_pipeline(self):
         command = self.run_pipeline(b'host bytecode', lower_to_host=True)

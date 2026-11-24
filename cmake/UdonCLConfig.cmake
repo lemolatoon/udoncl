@@ -203,11 +203,20 @@ function(udoncl_add_onnx_host_library target)
     endif()
     list(APPEND _dimension_names "${_dimension_name}")
   endforeach()
-  if(_ARG_DIMENSION_BOUNDS)
-    message(FATAL_ERROR
-      "DIMENSION_BOUNDS is not supported yet: bounded dynamic dimensions are "
-      "not implemented; use DIMENSIONS to fix a dimension")
-  endif()
+  # DIMENSION_BOUNDS name=max leaves a symbolic model dimension dynamic with
+  # the inclusive upper bound max; the Host gives its extent at bind time.
+  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
+    if(NOT _bound MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=([1-9][0-9]*)$")
+      message(FATAL_ERROR
+        "Invalid DIMENSION_BOUNDS entry '${_bound}'; expected name=positive_integer")
+    endif()
+    set(_bound_name "${CMAKE_MATCH_1}")
+    if(_bound_name IN_LIST _dimension_names)
+      message(FATAL_ERROR
+        "ONNX dimension '${_bound_name}' is both in DIMENSIONS and DIMENSION_BOUNDS")
+    endif()
+    list(APPEND _dimension_names "${_bound_name}")
+  endforeach()
   set(_input_shape_names)
   foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
     if(NOT _shape MATCHES "^([^=]+)=([0-9]+)(,[0-9]+)*$")
@@ -244,6 +253,9 @@ function(udoncl_add_onnx_host_library target)
       --host-metadata "${_generated_host_metadata}")
   foreach(_dimension IN LISTS _ARG_DIMENSIONS)
     list(APPEND _compile_command --dimension "${_dimension}")
+  endforeach()
+  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
+    list(APPEND _compile_command --dimension-bound "${_bound}")
   endforeach()
   foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
     list(APPEND _compile_command --input-shape "${_shape}")
@@ -289,6 +301,8 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSIONS
                "${_ARG_DIMENSIONS}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
+               "${_ARG_DIMENSION_BOUNDS}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_INPUT_SHAPES
                "${_ARG_INPUT_SHAPES}")
   set_property(TARGET "${target}" PROPERTY UDONCL_MUTABLE_HANDLE_CAPACITY
