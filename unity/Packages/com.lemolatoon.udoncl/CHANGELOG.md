@@ -37,3 +37,7 @@ All notable changes to this package are recorded here.
   `UdonOnnxModelAsset` and its Inspector, the package runtime assembly, and the
   import of `onnx_model` / `onnx_execution_plan` artifacts. ONNX models are
   compiled into ordinary UdonCL libraries with generated U# bindings.
+- `VRCWrapperGenerator`, the importer's own U# wrapper generator for artifacts
+  without `program.binding_source`. `udonclc` writes `binding.cs` for every
+  library it can bind, and the importer now rejects an artifact with exports but
+  no `binding_source` and asks for a rebuild with the current `udonclc`.

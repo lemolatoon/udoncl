@@ -78,8 +78,11 @@ by `udonclc`; no handwritten `.uasm` is needed for this path.
 
 The `unity-udoncl-library` artifact stage carries a stable logical export ID and
 TypeSchema plus the versioned
-`physical_export_abi: udonsharp-worlds-sdk-3.10.5`. The importer generates a
-typed UdonSharp wrapper under `Bindings/`. After Unity compiles that source, an
+`physical_export_abi: udonsharp-worlds-sdk-3.10.5`. `udonclc` writes the typed
+UdonSharp wrapper into the artifact (`program.binding_source`, `binding.cs`),
+and the importer installs it under `Bindings/`; an artifact with exports but
+no `binding_source` is rejected with a request to rebuild it with the current
+`udonclc`. After Unity compiles that source, an
 Editor reload finalizer creates `Prefabs/Udoncl<ProgramName>Binding.prefab`.
 The prefab contains the raw C-library `UdonBehaviour`, the generated U# proxy,
 and its UdonSharp backing behaviour; the wrapper's serialized `program` field
@@ -97,7 +100,8 @@ resources. Calling `TryBindProgram` again starts a fresh binding lifetime.
 `dispose` export keeps its own name, `TryDispose`.
 `float[]` and `int[]` parameters are assigned to the raw Udon heap without a
 wrapper-side copy, preserving the shared Udon array object required by Host
-buffer transfers. Async exports and other public types still fail explicitly.
+buffer transfers. A library with async exports but no Device buffer gets no
+binding from `udonclc`, so its artifact is rejected at import.
 
 ## Udon Assembly and prefab
 

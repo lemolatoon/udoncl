@@ -51,12 +51,13 @@ namespace Lemolatoon.Udoncl.Editor
                     || manifest.artifact_stage != "unity-udoncl-library"
                     || manifest.physical_export_abi != "udonsharp-worlds-sdk-3.10.5"
                     || manifest.program == null
+                    // The importer installs only a compiler-written binding,
+                    // which the manifest names.
+                    || string.IsNullOrEmpty(manifest.program.binding_class)
                 )
                     continue;
 
-                string className = string.IsNullOrEmpty(manifest.program.binding_class)
-                    ? VRCWrapperGenerator.BindingClassName(manifest.program.name)
-                    : manifest.program.binding_class;
+                string className = manifest.program.binding_class;
                 string namespaceName = string.IsNullOrEmpty(manifest.program.binding_namespace)
                     ? GeneratedNamespace
                     : manifest.program.binding_namespace;

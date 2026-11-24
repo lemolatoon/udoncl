@@ -418,44 +418,31 @@ namespace Lemolatoon.Udoncl.Editor
             string programRoot
         )
         {
-            if (!string.IsNullOrEmpty(artifacts.BindingSourceAssetPath))
+            if (string.IsNullOrEmpty(artifacts.BindingSourceAssetPath))
             {
-                string compilerBindingRoot = programRoot + "/Bindings";
-                EnsureFolders(compilerBindingRoot);
-                string compilerBindingPath =
-                    compilerBindingRoot + "/" + artifacts.BindingClass + ".cs";
-                transaction.CopyFile(artifacts.BindingSourceAssetPath, compilerBindingPath);
-                CreateOrUpdateUdonSharpProgramAsset(
-                    transaction,
-                    compilerBindingPath,
-                    compilerBindingRoot + "/" + artifacts.BindingClass + ".asset"
+                // udonclc writes the U# binding (binding.cs) of every library
+                // it can bind; the importer no longer generates one.
+                UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(
+                    File.ReadAllText(artifacts.ManifestAssetPath)
                 );
-                return;
+                if (manifest == null || string.IsNullOrEmpty(manifest.physical_export_abi))
+                    return;
+                throw new InvalidDataException(
+                    "Artifact '"
+                        + artifacts.ProgramName
+                        + "' has exports but no program.binding_source; "
+                        + "rebuild the artifact with the current udonclc."
+                );
             }
 
-            string manifestJson = File.ReadAllText(artifacts.ManifestAssetPath);
-            UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(manifestJson);
-            if (manifest == null || string.IsNullOrEmpty(manifest.physical_export_abi))
-                return;
-
-            string className = string.IsNullOrEmpty(artifacts.BindingClass)
-                ? VRCWrapperGenerator.BindingClassName(artifacts.ProgramName)
-                : artifacts.BindingClass;
             string bindingRoot = programRoot + "/Bindings";
             EnsureFolders(bindingRoot);
-            string bindingPath = bindingRoot + "/" + className + ".cs";
-            transaction.WriteText(
-                bindingPath,
-                VRCWrapperGenerator.GenerateFromJson(
-                    manifestJson,
-                    "Lemolatoon.Udoncl.Generated",
-                    className
-                )
-            );
+            string bindingPath = bindingRoot + "/" + artifacts.BindingClass + ".cs";
+            transaction.CopyFile(artifacts.BindingSourceAssetPath, bindingPath);
             CreateOrUpdateUdonSharpProgramAsset(
                 transaction,
                 bindingPath,
-                bindingRoot + "/" + className + ".asset"
+                bindingRoot + "/" + artifacts.BindingClass + ".asset"
             );
         }
 
