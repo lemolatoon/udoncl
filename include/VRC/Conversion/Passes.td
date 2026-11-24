@@ -387,6 +387,15 @@ def BuildStaticDeviceResourceInventoryPass : Pass<"vrc-build-static-device-resou
 }
 def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings", "mlir::ModuleOp"> {
   let summary = "Capture immutable call-by-value Device dispatch bindings";
+  let description = [{
+    Records the static resource of every Device dispatch operand. First it
+    folds each equality comparison of two physical buffer tokens that
+    dispatches use and that resolve to allocations (equal exactly when they
+    are the same allocation) and erases the blocks only a folded branch
+    reached, so a dispatch guarded by two bindings naming different buffers
+    (the whole Concat of an in-place Concat pair) is gone where they name
+    one buffer.
+  }];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
 def ResolveStaticTransferBindingsPass : Pass<"vrc-resolve-static-transfer-bindings", "mlir::ModuleOp"> {

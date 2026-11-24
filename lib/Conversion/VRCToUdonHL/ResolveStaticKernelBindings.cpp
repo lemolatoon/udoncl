@@ -6,7 +6,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -302,6 +304,100 @@ resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
       "static dispatch resource is not a proven allocation or static tensor");
 }
 
+/// The allocation the physical buffer token `token` names, when a dispatch of
+/// its function reads or writes it as a resource and the static resource
+/// provenance resolves it to one allocation.
+FailureOr<std::optional<int32_t>> tokenAllocation(Value token,
+                                                  Builder &builder) {
+  for (Operation *user : token.getUsers()) {
+    auto cast = dyn_cast<UnrealizedConversionCastOp>(user);
+    if (!cast || cast->getNumResults() != 1)
+      continue;
+    for (OpOperand &use : cast->getResult(0).getUses()) {
+      auto dispatch = dyn_cast<::vrc::vrc::DispatchOp>(use.getOwner());
+      if (!dispatch)
+        continue;
+      unsigned index = use.getOperandNumber();
+      unsigned first = dispatch.getResources().getBeginOperandIndex();
+      if (index < first || index >= first + dispatch.getResources().size())
+        continue;
+      auto access =
+          dyn_cast<StringAttr>(dispatch.getResourceAccesses()[index - first]);
+      if (!access)
+        continue;
+      DominanceInfo dominance(dispatch->getParentOfType<func::FuncOp>());
+      auto snapshot = resolveDispatchResource(
+          dispatch, cast->getResult(0), static_cast<int32_t>(index - first),
+          access, dominance, builder);
+      if (failed(snapshot))
+        return failure();
+      if (!*snapshot ||
+          (**snapshot).getAs<StringAttr>("kind").getValue() != "allocation")
+        return std::optional<int32_t>();
+      return std::optional<int32_t>(static_cast<int32_t>(
+          (**snapshot).getAs<IntegerAttr>("resource_id").getInt()));
+    }
+  }
+  return std::optional<int32_t>();
+}
+
+/// Folds every equality comparison of two physical buffer tokens whose
+/// buffers resolve to allocations: equal exactly when both are the same
+/// allocation, since every allocation context holds one buffer. The branches
+/// that depend on it become unconditional and the blocks only a folded
+/// branch reached are erased, so a dispatch that runs only when two bindings
+/// name different buffers (the whole Concat of an in-place Concat pair)
+/// disappears where they name the same one, and no dispatch is left that
+/// reads the buffer it writes.
+LogicalResult foldStaticTokenComparisons(ModuleOp module, Builder &builder) {
+  SmallVector<arith::CmpIOp> comparisons;
+  module.walk([&](arith::CmpIOp comparison) {
+    if ((comparison.getPredicate() == arith::CmpIPredicate::eq ||
+         comparison.getPredicate() == arith::CmpIPredicate::ne) &&
+        comparison.getLhs().getType().isInteger(32))
+      comparisons.push_back(comparison);
+  });
+  IRRewriter rewriter(module.getContext());
+  SmallVector<Region *> changed;
+  for (arith::CmpIOp comparison : comparisons) {
+    auto left = tokenAllocation(comparison.getLhs(), builder);
+    if (failed(left))
+      return failure();
+    if (!*left)
+      continue;
+    auto right = tokenAllocation(comparison.getRhs(), builder);
+    if (failed(right))
+      return failure();
+    if (!*right)
+      continue;
+    bool equal = **left == **right;
+    bool value =
+        comparison.getPredicate() == arith::CmpIPredicate::eq ? equal : !equal;
+    rewriter.setInsertionPoint(comparison);
+    Value folded = arith::ConstantIntOp::create(rewriter, comparison.getLoc(),
+                                                value ? 1 : 0, 1);
+    rewriter.replaceOp(comparison, folded);
+    for (Operation *user : llvm::make_early_inc_range(folded.getUsers())) {
+      auto branch = dyn_cast<cf::CondBranchOp>(user);
+      if (!branch || branch.getCondition() != folded)
+        continue;
+      rewriter.setInsertionPoint(branch);
+      if (value)
+        rewriter.replaceOpWithNewOp<cf::BranchOp>(branch, branch.getTrueDest(),
+                                                  branch.getTrueDestOperands());
+      else
+        rewriter.replaceOpWithNewOp<cf::BranchOp>(
+            branch, branch.getFalseDest(), branch.getFalseDestOperands());
+    }
+    changed.push_back(folded.getParentRegion());
+  }
+  llvm::SmallPtrSet<Region *, 4> erased;
+  for (Region *region : changed)
+    if (erased.insert(region).second)
+      (void)eraseUnreachableBlocks(rewriter, MutableArrayRef<Region>(*region));
+  return success();
+}
+
 struct ResolveStaticKernelBindingsPass
     : impl::ResolveStaticKernelBindingsPassBase<
           ResolveStaticKernelBindingsPass> {
@@ -309,6 +405,11 @@ struct ResolveStaticKernelBindingsPass
     ModuleOp module = getOperation();
     Builder builder(module.getContext());
     module->removeAttr(summaryAttribute);
+    if (module->hasAttr(provenanceAttribute) &&
+        failed(foldStaticTokenComparisons(module, builder))) {
+      signalPassFailure();
+      return;
+    }
     module.walk([](func::CallOp call) { call->removeAttr(snapshotAttribute); });
     module.walk([](::vrc::vrc::DispatchOp dispatch) {
       dispatch->removeAttr(snapshotAttribute);
