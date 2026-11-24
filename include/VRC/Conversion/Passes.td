@@ -247,6 +247,36 @@ def PrivatizeONNXBindingResourcesPass : Pass<"vrc-privatize-onnx-binding-resourc
     Device buffers rather than public ones no Unity buffer backs.
   }];
 }
+def DeriveONNXUnityBuffersPass : Pass<"vrc-derive-onnx-unity-buffers", "mlir::ModuleOp"> {
+  let summary = "Derive the Unity buffers of an ONNX Host from its execution plan";
+  let description = [{
+    The ONNX execution plan of an ONNX Host (a module with
+    `udoncl.onnx_binding`) fixes every Device buffer of the Host: buffer ids
+    1 to `udoncl.mutable_handle_capacity` with the capacities of
+    `udoncl.mutable_buffer_bytes` (the planned ONNX buffers, then the ones
+    the Host buffer plan adds for the user C Host). The pass records them in
+    `vrc.onnx_unity_buffers`, in id order: one dictionary per buffer with its
+    `id`, `name` and `byte_size`.
+
+    With `public-tensor-buffers` (the transitional
+    `--onnx-public-tensor-buffers` of a Unity library), the graph inputs and
+    then the outputs, in graph order, are buffers 1 to N. Each also carries
+    `logical_byte_size`, `element_type`, `public_access` (`input` or
+    `output`) and `public_index` from the ONNX binding, and is named after
+    its tensor, made a C# identifier as in
+    `vrc-describe-canonical-unity-buffers`. Every other buffer is private
+    and named `private_<id>`.
+
+    A module without ONNX binding metadata gets no description; with
+    `public-tensor-buffers` it is an error. A description from an earlier
+    run is replaced.
+  }];
+  let options = [
+    Option<"publicTensorBuffers", "public-tensor-buffers", "bool",
+           /*default=*/"false",
+           "Expose the graph inputs and outputs as public Device buffers">
+  ];
+}
 def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-device-resources", "mlir::ModuleOp"> {
   let summary = "Classify static allocation identities bound to public ONNX inputs and outputs";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
