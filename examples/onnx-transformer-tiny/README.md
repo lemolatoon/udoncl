@@ -10,11 +10,13 @@ Device graph instead of entering the Host-tensor fallback.
 
 Configure the directory like any external UdonCL CMake project, then build the
 `onnx-transformer-tiny` target to create the Unity artifact. The
-`transformer_host` target contains its generated Host library. The generic
-session API provides typed input writes and output reads. Past and present K/V
-use distinct Device buffers so one fragment dispatch never samples from its
-render target; a later queue-ordered copy or buffer swap can make a completed
-present buffer the next run's past buffer without a Host round trip.
+`transformer_host` target contains its generated Host library. `host.c`
+declares one `UDONCL_PUBLIC` buffer per graph input and output (the X-macro
+lists of `transformer_tensors.h`) and binds each by name through the UdonONNX
+session API, so U# writes the inputs and reads the outputs directly. Past and
+present K/V use distinct Device buffers so one fragment dispatch never samples
+from its render target; `commit_kv` copies the presents into the pasts with
+`clEnqueueCopyBuffer`, in queue order and without a Host round trip.
 
 Set `UDONCL_TINYLLAMA_ONNX_MODEL` to a real TinyLlama-compatible ONNX file to
 run the same CMake and C++ lowering path against that model. The repository's
