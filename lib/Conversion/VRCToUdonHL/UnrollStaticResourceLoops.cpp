@@ -23,9 +23,14 @@ namespace vrc {
 
 namespace {
 
-bool isAllocationPrimitive(StringRef name) {
+/// A call whose static Device resource depends on the iteration: it
+/// creates a Device resource, or it binds one to a named ONNX graph input or
+/// output (udononnxBindInput/udononnxBindOutput, whose tensor name must be
+/// known at compile time).
+bool isStaticResourcePrimitive(StringRef name) {
   return name == "clCreateBuffer" || name == "udonclCreateBufferForQueue" ||
-         name == "udonclDeviceBufferCreate";
+         name == "udonclDeviceBufferCreate" || name == "udononnxBindInput" ||
+         name == "udononnxBindOutput";
 }
 
 /// A natural CFG loop with one latch whose exit an induction variable with a
@@ -380,8 +385,8 @@ struct UnrollStaticResourceLoopsPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    // The functions that may create a Device resource, directly or through
-    // a call.
+    // The functions that may create or bind a Device resource, directly or
+    // through a call.
     llvm::StringSet<> producers;
     bool changed = true;
     while (changed) {
@@ -391,7 +396,7 @@ struct UnrollStaticResourceLoopsPass
           continue;
         bool produces = false;
         function.walk([&](func::CallOp call) {
-          produces |= isAllocationPrimitive(call.getCallee()) ||
+          produces |= isStaticResourcePrimitive(call.getCallee()) ||
                       producers.contains(call.getCallee());
         });
         if (produces) {
@@ -403,7 +408,7 @@ struct UnrollStaticResourceLoopsPass
     auto createsResource = [&](Block *block) {
       return llvm::any_of(block->getOperations(), [&](Operation &operation) {
         auto call = dyn_cast<func::CallOp>(operation);
-        return call && (isAllocationPrimitive(call.getCallee()) ||
+        return call && (isStaticResourcePrimitive(call.getCallee()) ||
                         producers.contains(call.getCallee()));
       });
     };

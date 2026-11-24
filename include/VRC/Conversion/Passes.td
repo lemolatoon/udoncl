@@ -177,12 +177,14 @@ def AttachDeviceResourceOperandContractsPass : Pass<"vrc-attach-device-resource-
   let dependentDialects = ["mlir::func::FuncDialect"];
 }
 def UnrollStaticResourceLoopsPass : Pass<"vrc-unroll-static-resource-loops", "mlir::ModuleOp"> {
-  let summary = "Fully unroll constant-trip CFG loops that create Device resources";
+  let summary = "Fully unroll constant-trip CFG loops that create or bind Device resources";
   let description = [{
     A loop that creates a Device resource on every iteration
     (clCreateBuffer, udonclCreateBufferForQueue, udonclDeviceBufferCreate,
     or a call to a function that may) has one allocation context per
-    iteration. When it is a natural single-latch CFG loop entered from one
+    iteration; a loop that binds Device buffers to ONNX graph inputs or
+    outputs (udononnxBindInput, udononnxBindOutput, or a call to a function
+    that may) names one tensor per iteration. When it is a natural single-latch CFG loop entered from one
     preheader whose exit is decided by an integer induction variable with a
     constant start, a constant step and a comparison against constants, and
     no value of it is used outside it except through its exit edges, this
