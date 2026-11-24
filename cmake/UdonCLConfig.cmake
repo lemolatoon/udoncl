@@ -607,9 +607,8 @@ endfunction()
 # DEVICE_TEXEL_FORMAT selects rgba8_unorm (default) or rgba32_float Device
 # textures; DEVICE_WORK_BUDGET takes key=value budgets (device_cost,
 # host_cost, fragment_weight, frame_microseconds, frame_continuations).
-# ONNX_PUBLIC_TENSOR_BUFFERS is transitional: it exposes the inputs and
-# outputs of an ONNX Host as public Device buffers. The Unity library config
-# file (CONFIG) is removed.
+# The Unity library config file (CONFIG) and ONNX_PUBLIC_TENSOR_BUFFERS are
+# removed.
 function(udoncl_add_unity_library target)
   set(_options OMIT_INTERMEDIATE_IR ONNX_PUBLIC_TENSOR_BUFFERS)
   set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION BINDING_NAMESPACE
@@ -623,6 +622,14 @@ function(udoncl_add_unity_library target)
   endif()
   if(TARGET "${target}")
     message(FATAL_ERROR "UdonCL Unity library target '${target}' already exists")
+  endif()
+  if(ARG_ONNX_PUBLIC_TENSOR_BUFFERS)
+    message(FATAL_ERROR
+      "udoncl_add_unity_library no longer takes ONNX_PUBLIC_TENSOR_BUFFERS. "
+      "Declare a UDONCL_PUBLIC(type) cl_mem variable for each ONNX graph "
+      "input and output the Unity side reads or writes, create it with "
+      "clCreateBuffer and bind it by name with udononnxBindInput/"
+      "udononnxBindOutput after udononnxCreateSession (<udononnxruntime.h>).")
   endif()
   if(ARG_CONFIG OR "CONFIG" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
     message(FATAL_ERROR
@@ -829,7 +836,6 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_BINDING_CLASS=${ARG_BINDING_CLASS}"
             "-DUDONCL_DEVICE_TEXEL_FORMAT=${ARG_DEVICE_TEXEL_FORMAT}"
             "-DUDONCL_DEVICE_WORK_BUDGET=${_device_work_budget}"
-            "-DUDONCL_ONNX_PUBLIC_TENSOR_BUFFERS=${ARG_ONNX_PUBLIC_TENSOR_BUFFERS}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" ${_host_module}

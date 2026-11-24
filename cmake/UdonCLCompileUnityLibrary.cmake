@@ -28,9 +28,6 @@ foreach(_setting IN ITEMS BINDING_NAMESPACE BINDING_CLASS DEVICE_TEXEL_FORMAT
     list(APPEND _library_arguments "--${_option}=${UDONCL_${_setting}}")
   endif()
 endforeach()
-if(UDONCL_ONNX_PUBLIC_TENSOR_BUFFERS)
-  list(APPEND _library_arguments --onnx-public-tensor-buffers)
-endif()
 cmake_path(IS_PREFIX UDONCL_BUILD_ROOT "${UDONCL_OUTPUT_DIRECTORY}" NORMALIZE
            _output_is_in_build_tree)
 if(NOT _output_is_in_build_tree OR

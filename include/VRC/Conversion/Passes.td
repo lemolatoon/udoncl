@@ -273,17 +273,6 @@ def PlanAssignedUnityBufferLayoutPass : Pass<"vrc-plan-assigned-unity-buffer-lay
     and each must have one resource, capacity and format.
   }];
 }
-def PrivatizeONNXBindingResourcesPass : Pass<"vrc-privatize-onnx-binding-resources", "mlir::ModuleOp"> {
-  let summary = "Keep the Device buffers of a generated ONNX binding private";
-  let description = [{
-    Erases `vrc.static_public_resource_binding`, which the ONNX Host
-    finalizer puts on every buffer its generated binding allocates for a
-    graph input or output. Run before the static Device resource analysis of
-    a Unity library that does not expose its ONNX tensors (the transitional
-    `--onnx-public-tensor-buffers` option is off), the buffers are private
-    Device buffers rather than public ones no Unity buffer backs.
-  }];
-}
 def DeriveONNXUnityBuffersPass : Pass<"vrc-derive-onnx-unity-buffers", "mlir::ModuleOp"> {
   let summary = "Derive the Unity buffers of an ONNX Host from its execution plan";
   let description = [{
@@ -295,24 +284,12 @@ def DeriveONNXUnityBuffersPass : Pass<"vrc-derive-onnx-unity-buffers", "mlir::Mo
     `vrc.onnx_unity_buffers`, in id order: one dictionary per buffer with its
     `id`, `name` and `byte_size`.
 
-    With `public-tensor-buffers` (the transitional
-    `--onnx-public-tensor-buffers` of a Unity library), the graph inputs and
-    then the outputs, in graph order, are buffers 1 to N. Each also carries
-    `logical_byte_size`, `element_type`, `public_access` (`input` or
-    `output`) and `public_index` from the ONNX binding, and is named after
-    its tensor, made a C# identifier as in
-    `vrc-describe-canonical-unity-buffers`. Every other buffer is private
-    and named `private_<id>`.
+    Every buffer is private and named `private_<id>`: a Host exposes a
+    graph tensor by binding a UDONCL_PUBLIC buffer of its own to it.
 
-    A module without ONNX binding metadata gets no description; with
-    `public-tensor-buffers` it is an error. A description from an earlier
-    run is replaced.
+    A module without ONNX binding metadata gets no description. A
+    description from an earlier run is replaced.
   }];
-  let options = [
-    Option<"publicTensorBuffers", "public-tensor-buffers", "bool",
-           /*default=*/"false",
-           "Expose the graph inputs and outputs as public Device buffers">
-  ];
 }
 def ClassifyAnnotatedPublicDeviceResourcesPass : Pass<"vrc-classify-annotated-public-device-resources", "mlir::ModuleOp"> {
   let summary = "Classify the Device buffers of UDONCL_PUBLIC Host variables";

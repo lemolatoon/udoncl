@@ -176,6 +176,30 @@ UDONCL_EXPORT udononnxStatus_t run(void) {'''),
     # The original Host builds again.
     restored = compile_variant(host)
     assert restored.returncode == 0, restored.stdout + restored.stderr
+
+    # ONNX_PUBLIC_TENSOR_BUFFERS, which made the planned graph inputs and
+    # outputs public, is removed: configuring it fails with the migration.
+    removed = output / 'removed-option'
+    removed.mkdir()
+    (removed / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.24)\n'
+        'project(removed_option LANGUAGES NONE)\n'
+        'find_package(UdonCL 0.1 CONFIG REQUIRED)\n'
+        'udoncl_add_unity_library(removed ONNX_PUBLIC_TENSOR_BUFFERS\n'
+        '  HOST_LIBRARIES host)\n', encoding='utf-8')
+    configured = subprocess.run(
+        [str(args.cmake), '-S', str(removed), '-B', str(removed / 'build'),
+         '-G', args.generator, f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+         f'-DUdonCL_DIR={packages / "UdonCL"}',
+         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}'],
+        text=True, capture_output=True)
+    log = ' '.join((configured.stdout + configured.stderr).split())
+    assert configured.returncode != 0, log
+    assert ('udoncl_add_unity_library no longer takes '
+            'ONNX_PUBLIC_TENSOR_BUFFERS') in log, log
+    assert 'udononnxBindInput/ udononnxBindOutput' in log or (
+        'udononnxBindInput/udononnxBindOutput' in log), log
     print('onnx_session_bindings=passed')
 
 

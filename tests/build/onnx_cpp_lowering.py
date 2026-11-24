@@ -220,10 +220,9 @@ assert "call @udononnxBindingStateBeginStaticBind" in bind_all
 assert "call @udononnxBindingStateCompleteStaticBind" in bind_all
 assert bind_all.count("call @udonclDeviceBufferView") == 3
 assert "udonhl.alloca" not in bind_all
-assert host.stdout.count("vrc.static_public_resource_binding") == 3
-assert host.stdout.count('public_access = "input"') >= 2
-assert host.stdout.count('public_access = "output"') >= 1
-assert host.stdout.count('resource_source = "call_allocation"') == 3
+# The binding's buffers are private; a Host binds public ones of its own.
+assert "vrc.static_public_resource_binding" not in host.stdout
+assert 'resource_source = "call_allocation"' not in host.stdout
 assert "func.func @__udononnx_transitional_enqueue_initialize" in host.stdout
 assert "func.func @__udononnx_transitional_enqueue_run" in host.stdout
 assert "func.func @udon_onnx_binding_wait_active_event" not in host.stdout

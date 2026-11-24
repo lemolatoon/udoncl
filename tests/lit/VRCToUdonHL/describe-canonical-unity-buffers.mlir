@@ -34,12 +34,13 @@ module attributes {
 
 // -----
 
-// A public buffer of a UDONCL_PUBLIC Host variable comes from that variable;
-// one the ONNX binding names as a graph input or output comes from that
-// tensor. A name the ONNX binding has at another index states no source.
+// A public buffer of a UDONCL_PUBLIC Host variable comes from that variable.
+// A buffer the Host source does not declare states no source, even when the
+// ONNX binding has a graph tensor of its name: only a session binding ties a
+// buffer to a tensor.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: vrc.canonical_unity_buffers = [{byte_size = 4 : i64, element_type = "float32", id = 1 : i64, logical_byte_size = 4 : i64, name = "image", public_access = "input", public_index = 0 : i64, source = {kind = "host_variable", symbol = "image"}}, {byte_size = 4 : i64, element_type = "float32", id = 2 : i64, logical_byte_size = 4 : i64, name = "logits", public_access = "output", public_index = 0 : i64, source = {kind = "onnx_tensor", tensor = "logits"}}, {byte_size = 4 : i64, element_type = "float32", id = 3 : i64, logical_byte_size = 4 : i64, name = "hidden", public_access = "output", public_index = 1 : i64}]
+// CHECK-SAME: vrc.canonical_unity_buffers = [{byte_size = 4 : i64, element_type = "float32", id = 1 : i64, logical_byte_size = 4 : i64, name = "image", public_access = "input", public_index = 0 : i64, source = {kind = "host_variable", symbol = "image"}}, {byte_size = 4 : i64, element_type = "float32", id = 2 : i64, logical_byte_size = 4 : i64, name = "logits", public_access = "output", public_index = 0 : i64}, {byte_size = 4 : i64, element_type = "float32", id = 3 : i64, logical_byte_size = 4 : i64, name = "hidden", public_access = "output", public_index = 1 : i64}]
 module attributes {
   udoncl.onnx_binding = {inputs = [{index = 0 : i32, name = "input"}], outputs = [{index = 0 : i32, name = "logits"}, {index = 2 : i32, name = "hidden"}]},
   vrc.static_declared_public_resources = {resource_ids = array<i32: 4>, schema_version = 1 : i32},
@@ -55,11 +56,10 @@ module attributes {
 // -----
 
 // A public buffer U# both writes and reads has the access inout; a taken name
-// gets the inout suffix. An ONNX tensor is never inout, so the ONNX binding
-// gives it no source.
+// gets the inout suffix.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: vrc.canonical_unity_buffers = [{byte_size = 4 : i64, element_type = "float32", id = 1 : i64, logical_byte_size = 4 : i64, name = "state", public_access = "input", public_index = 0 : i64, source = {kind = "onnx_tensor", tensor = "state"}}, {byte_size = 4 : i64, element_type = "float32", id = 2 : i64, logical_byte_size = 4 : i64, name = "state_inout_0", public_access = "inout", public_index = 0 : i64}]
+// CHECK-SAME: vrc.canonical_unity_buffers = [{byte_size = 4 : i64, element_type = "float32", id = 1 : i64, logical_byte_size = 4 : i64, name = "state", public_access = "input", public_index = 0 : i64}, {byte_size = 4 : i64, element_type = "float32", id = 2 : i64, logical_byte_size = 4 : i64, name = "state_inout_0", public_access = "inout", public_index = 0 : i64}]
 module attributes {
   udoncl.onnx_binding = {inputs = [{index = 0 : i32, name = "state"}], outputs = [{index = 0 : i32, name = "state"}]},
   vrc.static_unity_buffer_layout_plan = {buffers = [

@@ -400,10 +400,6 @@ cl::opt<std::string> deviceWorkBudget(
     cl::desc("Device work slice and frame budgets of a Unity library as "
              "comma-separated key=value pairs (device_cost, host_cost, "
              "fragment_weight, frame_microseconds, frame_continuations)"));
-cl::opt<bool> onnxPublicTensorBuffers(
-    "onnx-public-tensor-buffers",
-    cl::desc("Transitional: expose the ONNX graph inputs and outputs of an "
-             "ONNX Host as public Device buffers"));
 
 /// Folds the Unity library command-line settings into `config`, the
 /// internal record of the library settings the compiler passes on.
@@ -438,8 +434,6 @@ LogicalResult applyUnityLibraryOptions(json::Object &config) {
     }
     config["device_work_budget"] = std::move(budget);
   }
-  if (onnxPublicTensorBuffers)
-    config["generate_onnx_public_buffers"] = true;
   return success();
 }
 
@@ -811,10 +805,7 @@ LogicalResult deriveOnnxUnityBufferConfig(ModuleOp module,
                                           json::Object &config) {
   PassManager derive(module.getContext());
   derive.enableVerifier(false);
-  ::vrc::DeriveONNXUnityBuffersPassOptions options;
-  options.publicTensorBuffers =
-      config.getBoolean("generate_onnx_public_buffers").value_or(false);
-  derive.addPass(::vrc::createDeriveONNXUnityBuffersPass(options));
+  derive.addPass(::vrc::createDeriveONNXUnityBuffersPass());
   if (failed(derive.run(module)))
     return failure();
   auto buffers = module->getAttrOfType<ArrayAttr>("vrc.onnx_unity_buffers");
@@ -2567,11 +2558,9 @@ int main(int argc, char **argv) {
   std::string unityTexelFormat = "rgba8_unorm";
   if (!emitUnityLibrary &&
       (!bindingNamespace.empty() || !bindingClass.empty() ||
-       !deviceTexelFormat.empty() || !deviceWorkBudget.empty() ||
-       onnxPublicTensorBuffers)) {
-    errs() << "--binding-namespace, --binding-class, --device-texel-format, "
-              "--device-work-budget and --onnx-public-tensor-buffers require "
-              "--emit-unity-library-bundle\n";
+       !deviceTexelFormat.empty() || !deviceWorkBudget.empty())) {
+    errs() << "--binding-namespace, --binding-class, --device-texel-format "
+              "and --device-work-budget require --emit-unity-library-bundle\n";
     return 1;
   }
   if (inputFilename.empty() && !emitUnityLibrary) {
@@ -2635,15 +2624,8 @@ int main(int argc, char **argv) {
         if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
           return 1;
       }
-      // Unless the library exposes its ONNX tensors, the buffers of the
-      // generated ONNX binding are private Device buffers.
-      PassManager onnxResources(&context);
-      if (!unityConfig->getBoolean("generate_onnx_public_buffers")
-               .value_or(false))
-        onnxResources.addPass(::vrc::createPrivatizeONNXBindingResourcesPass());
       if (!configureUnityExports(*module, *unityConfig,
                                  /*finalizeReachability=*/false) ||
-          failed(onnxResources.run(*module)) ||
           failed(discoverStaticDeviceResources(*module)))
         return 1;
       if (!hostLibraryLLVM.empty()) {

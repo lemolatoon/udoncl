@@ -347,10 +347,12 @@ UDONCL_EXPORT int run(void) { return 0; }
     harness.rejected(
         'config-file', {'schema_version': 2, 'program': 'declared_program'},
         'a Unity library takes no config file', '--host-llvm', declared)
+    # The transitional option is removed: a Host binds UDONCL_PUBLIC
+    # buffers to graph tensors through the UdonONNX session API.
     harness.rejected(
-        'onnx-public-without-onnx', None,
-        '--onnx-public-tensor-buffers (ONNX_PUBLIC_TENSOR_BUFFERS) requires '
-        'an ONNX Host', '--host-llvm', declared, '--onnx-public-tensor-buffers')
+        'onnx-public-removed', None,
+        "Unknown command line argument '--onnx-public-tensor-buffers'",
+        '--host-llvm', declared, '--onnx-public-tensor-buffers')
     harness.rejected(
         'budget-malformed', None,
         '--device-work-budget entry must be key=integer: device_cost',

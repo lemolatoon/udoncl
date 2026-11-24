@@ -33,11 +33,10 @@ struct DescribeCanonicalUnityBuffersPass
 
   /// Where the public buffer `name` comes from, when the module says: the
   /// UDONCL_PUBLIC Host variable `name` when the Host source declares the
-  /// resource public, or the ONNX tensor `name` when the ONNX binding has a
-  /// graph input or output of that name at this access and index.
+  /// resource public, with the ONNX graph tensor a UdonONNX session binds
+  /// it to.
   DictionaryAttr describeSource(ModuleOp module, IntegerAttr resourceId,
-                                StringAttr name, StringAttr access,
-                                IntegerAttr index) {
+                                StringAttr name) {
     Builder builder(module.getContext());
     if (auto declared = module->getAttrOfType<DictionaryAttr>(
             "vrc.static_declared_public_resources"))
@@ -66,27 +65,6 @@ struct DescribeCanonicalUnityBuffersPass
             }
           return builder.getDictionaryAttr(fields);
         }
-    // An ONNX graph tensor is an input or an output, never both.
-    auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
-    auto tensors =
-        binding && access != "inout"
-            ? binding.getAs<ArrayAttr>(access == "input" ? "inputs" : "outputs")
-            : ArrayAttr();
-    if (!tensors)
-      return {};
-    for (Attribute attribute : tensors) {
-      auto tensor = dyn_cast<DictionaryAttr>(attribute);
-      auto tensorIndex =
-          tensor ? tensor.getAs<IntegerAttr>("index") : IntegerAttr();
-      auto tensorName =
-          tensor ? tensor.getAs<StringAttr>("name") : StringAttr();
-      if (tensorIndex && tensorIndex.getInt() == index.getInt() &&
-          tensorName == name)
-        return builder.getDictionaryAttr({
-            builder.getNamedAttr("kind", builder.getStringAttr("onnx_tensor")),
-            builder.getNamedAttr("tensor", name),
-        });
-    }
     return {};
   }
 
@@ -178,7 +156,7 @@ struct DescribeCanonicalUnityBuffersPass
         fields.push_back(builder.getNamedAttr(
             "public_index", builder.getI64IntegerAttr(index.getInt())));
         if (DictionaryAttr source =
-                describeSource(module, resourceId, publicName, access, index))
+                describeSource(module, resourceId, publicName))
           fields.push_back(builder.getNamedAttr("source", source));
       } else if (entry.get("name") || entry.get("data_type") ||
                  entry.get("logical_bytes") || entry.get("public_access") ||

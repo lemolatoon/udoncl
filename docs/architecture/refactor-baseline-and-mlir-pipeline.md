@@ -983,16 +983,13 @@ ONNX execution plan (`vrc-derive-onnx-unity-buffers`, which records them in
   (`udoncl.mutable_handle_capacity`, `udoncl.mutable_buffer_bytes`); the
   Host buffer plan of the user C Host (`--host-buffer-plan`) appends the
   buffers that C allocates itself.
-- **Public buffers.** With the transitional `ONNX_PUBLIC_TENSOR_BUFFERS`
-  argument (`--onnx-public-tensor-buffers`), the ONNX inputs and then the
-  outputs, in graph order, are buffers 1 to P. Each takes its name (the
-  ONNX name with every character outside `[A-Za-z0-9_]` replaced by `_`),
-  element type, logical size, access and index from `udoncl.onnx_binding`,
-  and the generated U# transfer methods are named after it (the ONNX
-  component libraries use this). A public id therefore depends only on the
-  graph's input and output order, never on the internal buffers. Every
-  other buffer is private and named `private_<id>`; without the argument
-  (the TinyLlama Conversation and Chat Artifacts) every buffer is private.
+- **Public buffers.** Every planned ONNX buffer is private and named
+  `private_<id>`. A Host exposes a graph input or output by declaring a
+  `UDONCL_PUBLIC(type) cl_mem` variable, creating it with `clCreateBuffer`
+  and binding it by name with `udononnxBindInput`/`udononnxBindOutput`; the
+  public buffer is named after the variable and its manifest `source`
+  names the tensor. (The `ONNX_PUBLIC_TENSOR_BUFFERS` argument that made
+  the planned I/O buffers public is removed and is a CMake error.)
   A Host that names its own public buffers declares them with
   `UDONCL_PUBLIC` instead, as the MNIST example does. When the static Unity
   lowering applies, the canonical layout it plans keeps these ids.

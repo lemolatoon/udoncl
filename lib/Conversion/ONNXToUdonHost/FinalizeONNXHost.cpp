@@ -1529,32 +1529,6 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     function->setAttr("udoncl.export", builder.getUnitAttr());
     function->setAttr("udoncl.internal_export", builder.getUnitAttr());
   };
-  auto publicResourceBinding = [&](bool output, size_t index,
-                                   size_t tensorIndex) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    return builder.getDictionaryAttr({
-        builder.getNamedAttr("capacity_bytes",
-                             builder.getI64IntegerAttr(
-                                 bindingCapacityBytes(graph, tensorIndex))),
-        builder.getNamedAttr(
-            "data_type", builder.getStringAttr(
-                             udonclDataTypeName(tensor.type.getElementType()))),
-        builder.getNamedAttr(
-            "logical_bytes",
-            builder.getI64IntegerAttr(
-                tensor.type.getNumElements() *
-                elementByteSize(tensor.type.getElementType()))),
-        builder.getNamedAttr("name", builder.getStringAttr(tensor.name)),
-        builder.getNamedAttr("public_access", builder.getStringAttr(
-                                                  output ? "output" : "input")),
-        builder.getNamedAttr("public_index", builder.getI32IntegerAttr(
-                                                 static_cast<int32_t>(index))),
-        builder.getNamedAttr("resource_source",
-                             builder.getStringAttr("call_allocation")),
-        builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(1)),
-    });
-  };
-
   builder.setInsertionPointToEnd(module.getBody());
   auto create = func::FuncOp::create(
       builder, location, "__udononnx_transitional_create",
@@ -1589,8 +1563,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                       addressOf(builder, location, bindingIoHandlesSymbol),
                       constant(index * bindingBufferHandleBytes));
   };
-  auto allocate = [&](uint32_t access, bool output, size_t publicIndex,
-                      size_t tensorIndex, size_t handleIndex) {
+  auto allocate = [&](uint32_t access, size_t tensorIndex, size_t handleIndex) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
     auto allocated = func::CallOp::create(
         builder, location, "udononnxBindingStateAllocateBuffer", TypeRange{i32},
@@ -1599,17 +1572,15 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                        elementByteSize(tensor.type.getElementType()),
                        deviceAllocationBytes(graph, tensorIndex))),
                    handleAddress(handleIndex)});
-    allocated->setAttr("vrc.static_public_resource_binding",
-                       publicResourceBinding(output, publicIndex, tensorIndex));
     returnIfNonzero(create, allocated.getResult(0));
   };
   size_t handleIndex = 0;
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
-    allocate(isSequenceStateInput(graph, index) ? 2 : 0, false, index,
-             tensorIndex, handleIndex++);
+    allocate(isSequenceStateInput(graph, index) ? 2 : 0, tensorIndex,
+             handleIndex++);
   for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
-    allocate(isSequenceStateOutput(graph, index) ? 2 : 1, true, index,
-             tensorIndex, handleIndex++);
+    allocate(isSequenceStateOutput(graph, index) ? 2 : 1, tensorIndex,
+             handleIndex++);
   if (!graph.sequenceStates.empty()) {
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStateOwnedSymbol));
