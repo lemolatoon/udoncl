@@ -204,6 +204,16 @@ std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
   // constant at the bound.
   if (node.operation == "MatMul" && supportsDynamicMatMul(graph, node))
     return std::nullopt;
+  // The per-element library kernels take their element count and packed
+  // shapes at run time; they address their operands dense.
+  if ((isDeviceCastI64F32Node(graph, node) || isDeviceEqualNode(graph, node) ||
+       isDeviceWhereNode(graph, node)) &&
+      hasDenseDynamicLayout(graph, node.output) &&
+      llvm::all_of(node.inputs, [&](int64_t input) {
+        return input >= 0 &&
+               hasDenseDynamicLayout(graph, static_cast<unsigned>(input));
+      }))
+    return std::nullopt;
   if (isMetadataOnlyAlias(node) && !node.inputs.empty() &&
       node.inputs[0] >= 0) {
     const TensorRecord &input = graph.tensors[node.inputs[0]];

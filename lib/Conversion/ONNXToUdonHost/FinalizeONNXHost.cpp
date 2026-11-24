@@ -3079,6 +3079,35 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     auto multiplyValues = [&](Value left, Value right) -> Value {
       return arith::MulIOp::create(builder, location, left, right);
     };
+    // The run-time element count of a tensor, and two of its extents packed
+    // into the low and high halves of a word, as the per-element library
+    // kernels take them.
+    auto elementCountOf = [&](unsigned tensorIndex) -> Value {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      if (!tensor.dynamic)
+        return constant(tensor.type.getNumElements());
+      int64_t axis = tensor.dynamic->axis;
+      return multiplyValues(extentOf(tensorIndex, axis),
+                            constant(tensor.type.getNumElements() /
+                                     tensor.type.getDimSize(axis)));
+    };
+    auto packedShapeOf = [&](unsigned tensorIndex, int64_t first) -> Value {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      int64_t rank = tensor.type.getRank();
+      auto extent = [&](int64_t axis) -> Value {
+        return axis < rank ? extentOf(tensorIndex, axis) : constant(1);
+      };
+      bool dynamicPart = tensor.dynamic && (tensor.dynamic->axis == first ||
+                                            tensor.dynamic->axis == first + 1);
+      if (!dynamicPart) {
+        int64_t low = first < rank ? tensor.type.getDimSize(first) : 1;
+        int64_t high = first + 1 < rank ? tensor.type.getDimSize(first + 1) : 1;
+        return constant((low & 65535) | ((high & 65535) << 16));
+      }
+      Value high = arith::ShLIOp::create(builder, location, extent(first + 1),
+                                         constant(16));
+      return arith::OrIOp::create(builder, location, extent(first), high);
+    };
     auto constantPrefix =
         [&](unsigned nodeIndex) -> const DeviceConstantPrefix * {
       const auto &prefix = extents.constantPrefix[nodeIndex];
@@ -3400,11 +3429,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return emitError(location)
                  << "Device Cast requires matching INT64 input and FP32 "
                     "output shapes of at most 16384 elements";
-        dispatch(
-            "__vrc_opencl_dispatch_udononnx_cast_i64_f32",
-            ValueRange{
-                buffer(node.inputs[0]), output,
-                constant(graph.tensors[node.output].type.getNumElements())});
+        dispatch("__vrc_opencl_dispatch_udononnx_cast_i64_f32",
+                 ValueRange{buffer(node.inputs[0]), output,
+                            elementCountOf(node.output)});
         return success();
       }
       if (node.operation == "Equal") {
@@ -3420,20 +3447,22 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                              : 1;
           return (low & 65535) | ((high & 65535) << 16);
         };
+        (void)packShape;
         const RankedTensorType left = graph.tensors[node.inputs[0]].type;
         const RankedTensorType right = graph.tensors[node.inputs[1]].type;
         const RankedTensorType result = graph.tensors[node.output].type;
+        unsigned leftIndex = static_cast<unsigned>(node.inputs[0]);
+        unsigned rightIndex = static_cast<unsigned>(node.inputs[1]);
         dispatch("__vrc_opencl_dispatch_udononnx_equal_f32",
-                 ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                            output, constant(result.getNumElements()),
-                            constant(left.getRank() | (right.getRank() << 3) |
-                                     (result.getRank() << 6)),
-                            constant(packShape(left.getShape(), 0)),
-                            constant(packShape(left.getShape(), 2)),
-                            constant(packShape(right.getShape(), 0)),
-                            constant(packShape(right.getShape(), 2)),
-                            constant(packShape(result.getShape(), 0)),
-                            constant(packShape(result.getShape(), 2))});
+                 ValueRange{
+                     buffer(node.inputs[0]), buffer(node.inputs[1]), output,
+                     elementCountOf(node.output),
+                     constant(left.getRank() | (right.getRank() << 3) |
+                              (result.getRank() << 6)),
+                     packedShapeOf(leftIndex, 0), packedShapeOf(leftIndex, 2),
+                     packedShapeOf(rightIndex, 0), packedShapeOf(rightIndex, 2),
+                     packedShapeOf(node.output, 0),
+                     packedShapeOf(node.output, 2)});
         return success();
       }
       if (node.operation == "Where") {
@@ -3449,26 +3478,26 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                              : 1;
           return (low & 65535) | ((high & 65535) << 16);
         };
+        (void)packShape;
         const RankedTensorType condition = graph.tensors[node.inputs[0]].type;
         const RankedTensorType whenTrue = graph.tensors[node.inputs[1]].type;
         const RankedTensorType whenFalse = graph.tensors[node.inputs[2]].type;
         const RankedTensorType result = graph.tensors[node.output].type;
+        unsigned conditionIndex = static_cast<unsigned>(node.inputs[0]);
+        unsigned trueIndex = static_cast<unsigned>(node.inputs[1]);
+        unsigned falseIndex = static_cast<unsigned>(node.inputs[2]);
         dispatch(
             "__vrc_opencl_dispatch_udononnx_where_f32",
             ValueRange{
                 buffer(node.inputs[0]), buffer(node.inputs[1]),
-                buffer(node.inputs[2]), output,
-                constant(result.getNumElements()),
+                buffer(node.inputs[2]), output, elementCountOf(node.output),
                 constant(condition.getRank() | (whenTrue.getRank() << 3) |
                          (whenFalse.getRank() << 6) | (result.getRank() << 9)),
-                constant(packShape(condition.getShape(), 0)),
-                constant(packShape(condition.getShape(), 2)),
-                constant(packShape(whenTrue.getShape(), 0)),
-                constant(packShape(whenTrue.getShape(), 2)),
-                constant(packShape(whenFalse.getShape(), 0)),
-                constant(packShape(whenFalse.getShape(), 2)),
-                constant(packShape(result.getShape(), 0)),
-                constant(packShape(result.getShape(), 2))});
+                packedShapeOf(conditionIndex, 0),
+                packedShapeOf(conditionIndex, 2), packedShapeOf(trueIndex, 0),
+                packedShapeOf(trueIndex, 2), packedShapeOf(falseIndex, 0),
+                packedShapeOf(falseIndex, 2), packedShapeOf(node.output, 0),
+                packedShapeOf(node.output, 2)});
         return success();
       }
       if (node.operation == "ScatterND") {
