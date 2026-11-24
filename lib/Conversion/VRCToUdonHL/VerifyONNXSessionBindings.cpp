@@ -5,7 +5,7 @@
 // Every tensor of a Host that runs the graph must hold exactly one Device
 // buffer the compiler knows, large enough for the tensor, of the tensor's
 // element type, and bound with the model's rank and dimensions. Two tensors
-// share a buffer only as an in-place Concat pair (the metadata's
+// with elements share a buffer only as an in-place Concat pair (the metadata's
 // in_place_concats): the graph input and the Concat result, bound with the
 // same layout, to a CL_MEM_READ_WRITE buffer.
 #include "VRC/Conversion/Passes.h"
@@ -346,7 +346,10 @@ struct VerifyONNXSessionBindingsPass
               FlatSymbolRefAttr::get(variable->second.getSymNameAttr())));
         }
         records.push_back(builder.getDictionaryAttr(fields));
-        sharing[resource].push_back({output, index.getInt(), name});
+        // A tensor without an element shares nothing: any number of them
+        // may be bound to one buffer (the empty past of a prefill graph).
+        if (logical.getInt() > 0)
+          sharing[resource].push_back({output, index.getInt(), name});
       }
     };
     verifyTensors(inputs, false);
