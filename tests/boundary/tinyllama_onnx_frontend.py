@@ -42,7 +42,24 @@ assert re.search(
 )
 assert 'onnx.name = "logits"' in signature
 assert signature.count('onnx.name = "present.') == 44
+
+# The conversation graph with a bounded past: one position per run on a past
+# of up to 511 positions compiles to a Device graph whose attention reads the
+# run-time extent of the past. The real-model checkpoint of stage 3 is that
+# this graph compiles, at 512 and 4096, with no padded capacity.
+bounded = output / "bounded-host.mlir"
+compiler.canonicalize(
+    model,
+    bounded,
+    frontend,
+    dimensions=["batch_size=1", "sequence_length=1"],
+    dimension_bounds=["past_sequence_length=511"],
+    lower_to_host=True,
+    static_data_directory=output / "bounded-static",
+    host_metadata=output / "bounded-host-metadata.json",
+)
+assert bounded.stat().st_size > 0
 print(
     f"tinyllama_frontend_bytes={canonical.stat().st_size} "
-    "matmul_nbits=155 inputs=47 outputs=45"
+    "matmul_nbits=155 inputs=47 outputs=45 bounded_past=511"
 )
