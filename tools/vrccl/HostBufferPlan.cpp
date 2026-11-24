@@ -6,6 +6,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 
 using namespace mlir;
 using namespace llvm;
@@ -40,8 +41,11 @@ LogicalResult writeHostBufferPlan(const HostBufferPlan &plan,
                 << ": " << error.message() << "\n";
     return failure();
   }
-  int64_t total =
-      plan.baseCapacity + static_cast<int64_t>(plan.extraBufferBytes.size());
+  // A runtime whose Host allocates nothing keeps one slot: its pools are C
+  // arrays, which cannot be empty.
+  int64_t total = std::max<int64_t>(
+      1,
+      plan.baseCapacity + static_cast<int64_t>(plan.extraBufferBytes.size()));
   headerOutput << "#define UDONCL_AOT_BUFFER_CAPACITY " << total << "\n"
                << "#define UDONCL_DEVICE_BUFFER_CAPACITY " << total << "\n";
   return success();

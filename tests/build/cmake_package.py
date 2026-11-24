@@ -2474,6 +2474,14 @@ def main():
         (2, 'y', 128, 'float32', 'input'),
         (3, 'result', 128, 'float32', 'output'),
     ]
+    # The OpenCL runtime of a Unity library without an ONNX Host has one
+    # buffer handle per allocation of its C Host (the Host buffer plan).
+    assert saxpy_manifest['device']['mutable_handle_capacity'] == 3
+    saxpy_plan = json.loads((
+        saxpy_consumer / 'udoncl/saxpy-unity-library/host-buffer-plan.json'
+    ).read_text(encoding='utf-8'))
+    assert saxpy_plan['base_capacity'] == 0, saxpy_plan
+    assert saxpy_plan['extra_buffer_bytes'] == [128, 128, 128], saxpy_plan
     # Every Device buffer resolves at compile time to its Unity Texture.
     saxpy_root = saxpy_consumer / 'udoncl/saxpy-unity-library'
     saxpy_report = subprocess.run([

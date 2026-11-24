@@ -762,7 +762,14 @@ function(udoncl_add_unity_library target)
     list(REMOVE_DUPLICATES _runtime_sources)
     list(REMOVE_DUPLICATES _runtime_dependencies)
     list(REMOVE_DUPLICATES _runtime_flags)
-    if(NOT "${_mutable_handle_capacity}" STREQUAL "" AND _host_modules)
+    # Every Unity library that compiles the OpenCL runtime with a C Host gets
+    # a Host buffer plan: one handle per allocation context of the C Host
+    # after the handles of its ONNX Host (none without one).
+    if(_host_modules)
+      set(_base_handle_capacity "${_mutable_handle_capacity}")
+      if("${_base_handle_capacity}" STREQUAL "")
+        set(_base_handle_capacity 0)
+      endif()
       _udoncl_link_module_set("${target}-buffer-plan" HOST "${_host_modules}"
                               _host_plan_module)
       set(_host_buffer_plan
@@ -781,7 +788,7 @@ function(udoncl_add_unity_library target)
                 "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}"
         COMMAND "${UDONCLC_EXECUTABLE}" --plan-host-buffer-capacity
                 "${_host_plan_module}"
-                --base-mutable-handle-capacity "${_mutable_handle_capacity}"
+                --base-mutable-handle-capacity "${_base_handle_capacity}"
                 --capacity-header "${_capacity_header}"
                 ${_plan_device_argument}
                 -o "${_host_buffer_plan}"

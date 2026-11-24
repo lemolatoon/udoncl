@@ -56,10 +56,21 @@ def main():
     # allocation context is one Unity buffer.
     allocations = 1 + 2 * LAYERS + SCRATCH_BUFFERS
     assert len(buffers) == allocations, buffers
+    # The OpenCL runtime of the library has one buffer handle per
+    # allocation: the Host buffer plan CMake writes sizes its pools.
+    assert manifest['device']['mutable_handle_capacity'] == allocations
+    built_plan = json.loads(
+        (target / 'host-buffer-plan.json').read_text(encoding='utf-8'))
+    assert built_plan['total_capacity'] == allocations, built_plan
+    assert (target / 'host-buffer-capacity.h').read_text(
+        encoding='utf-8') == (
+            f'#define UDONCL_AOT_BUFFER_CAPACITY {allocations}\n'
+            f'#define UDONCL_DEVICE_BUFFER_CAPACITY {allocations}\n')
 
-    # The plan of the runtime-free C Host: one handle per allocation
-    # context, including the 2 * LAYERS buffers a helper called in a loop
-    # allocates and the buffers of a clCreateBuffer directly in a loop.
+    # The plan of the runtime-free C Host, planned again: one handle per
+    # allocation context, including the 2 * LAYERS buffers a helper called
+    # in a loop allocates and the buffers of a clCreateBuffer directly in a
+    # loop.
     plan_path = output / 'host-buffer-plan.json'
     header = output / 'host-buffer-capacity.h'
     run([compiler, '--plan-host-buffer-capacity', target / 'host.bc',

@@ -353,7 +353,9 @@ def ApplyHostBufferPlanPass : Pass<"vrc-apply-host-buffer-plan", "mlir::ModuleOp
     `total_capacity` is the base plus the extra buffers) and appends the
     extra buffers: `udoncl.mutable_handle_capacity` becomes
     `total_capacity` and `udoncl.mutable_buffer_bytes` gets the extra byte
-    sizes. Every extra byte size is positive.
+    sizes. Every extra byte size is positive. A module without ONNX capacity
+    attributes (a Unity library without an ONNX Host) has a base of 0 and
+    gets both attributes.
 
     A module without `vrc.host_buffer_plan` is unchanged. The plan stays on
     the module.

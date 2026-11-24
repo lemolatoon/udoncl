@@ -43,14 +43,14 @@ module attributes {
 
 // -----
 
-// A plan needs the ONNX capacity it extends.
+// A plan with a base needs the ONNX capacity it extends.
 
 // expected-error @below {{Host buffer plan is inconsistent with ONNX capacity}}
 module attributes {
-  vrc.host_buffer_plan = {base_capacity = 0 : i64,
+  vrc.host_buffer_plan = {base_capacity = 1 : i64,
                           extra_buffer_bytes = [8 : i64],
                           path = "plan.json", schema_version = 1 : i64,
-                          total_capacity = 1 : i64}
+                          total_capacity = 2 : i64}
 } {
 }
 
