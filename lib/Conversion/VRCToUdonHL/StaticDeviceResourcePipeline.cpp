@@ -13,6 +13,8 @@ void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
   manager.addPass(createUnrollStaticResourceLoopsPass());
   // An unrolled loop over a constant table reads one entry per iteration.
   manager.addPass(createFoldConstantHostTablesPass());
+  // Each UdonONNX bind names one graph tensor.
+  manager.addPass(createResolveONNXTensorNamesPass());
   manager.addPass(createDiscoverStaticDeviceResourcesPass());
   manager.addPass(createPlanStaticDeviceResourceContextSpecializationPass());
   manager.addPass(createSpecializeStaticAllocationContextsPass());

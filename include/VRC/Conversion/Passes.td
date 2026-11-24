@@ -216,6 +216,24 @@ def FoldConstantHostTablesPass : Pass<"vrc-fold-constant-host-tables", "mlir::Mo
   ];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect"];
 }
+def ResolveONNXTensorNamesPass : Pass<"vrc-resolve-onnx-tensor-names", "mlir::ModuleOp"> {
+  let summary = "Fold the constant tensor names of UdonONNX binds into graph indices";
+  let description = [{
+    In a module with ONNX binding metadata (`udoncl.onnx_binding`), every
+    `udononnxBindInput(session, name, memory, rank, dims, buffer_dims)` and
+    `udononnxBindOutput(...)` call whose name is the address of a constant
+    NUL-terminated byte global (moved by constant byte offsets) becomes
+    `udononnxBindInputAt` or `udononnxBindOutputAt` with the index of that
+    graph input or output instead of the name, so the static Device resource
+    analysis sees which session slot each bind writes.
+
+    A name that is not known at compile time, a name the graph has no input
+    (output) of, and the name of an output given to udononnxBindInput (or
+    the reverse) are errors at the call. A module without ONNX binding
+    metadata is unchanged.
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resources", "mlir::ModuleOp"> {
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect"];
