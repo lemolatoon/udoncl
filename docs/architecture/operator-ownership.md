@@ -183,6 +183,72 @@ signatures and ordering rules unchanged.
   complete (`clWaitForEvents`, or any later transfer, which drains it). This
   is the OpenCL contract, so a Host decides how many steps a value may lag.
 
+## The UdonONNX session API
+
+The public UdonONNX API (`libraries/udononnxruntime/include/udononnxruntime.h`)
+mirrors the ONNX Runtime C API **1.32** (`OrtApi`,
+`include/onnxruntime/core/session/onnxruntime_c_api.h`, ORT_API_VERSION 32)
+after the `Ort` -> `udononnx` substitution. The release is pinned from the
+PyPI release index (onnxruntime 1.32.0, the current stable release on
+2026-11-24); the signatures come from the OrtApi reference on
+onnxruntime.ai, because github.com/microsoft/onnxruntime was not reachable
+from the build machine. `tests/runtime/udononnx_api_conformance.c` pins each
+signature to the ORT declaration it mirrors.
+
+| UdonONNX | ONNX Runtime C API |
+|---|---|
+| `udononnxCreateSession(context, queue, &session)` | `CreateSession(env, model_path, options, &session)` |
+| `udononnxBindInput(session, name, memory, rank, dims, buffer_dims)` | `CreateIoBinding` + `CreateTensorWithDataAsOrtValue` + `BindInput(binding, name, value)` |
+| `udononnxBindOutput(...)` | `CreateIoBinding` + `CreateTensorWithDataAsOrtValue` + `BindOutput(binding, name, value)` |
+| `udononnxRun(session)` | `RunWithBinding(session, run_options, binding)` |
+| `udononnxReleaseSession(session)` | `ReleaseSession(session)` |
+
+Deviations, each forced by the Udon target or stated by a test:
+
+- The model is compiled into the Host (its weights are Unity Textures), so
+  there is no environment, session options or model path, and one model per
+  Host. CreateSession takes the OpenCL context and in-order queue the session
+  runs on; it allocates the Device buffers the session owns and enqueues
+  nothing (no marker, no event).
+- One live session per Host: a second CreateSession before
+  ReleaseSession is `UDONONNX_STATUS_INVALID_STATE`; CreateSession after
+  ReleaseSession is allowed.
+- The session owns its binding; there is no `OrtIoBinding` object.
+- A bound tensor is a `cl_mem` with a rank and dimensions instead of an
+  `OrtValue`; the element type is the model's. The dimensions must be the
+  model's (`UDONONNX_STATUS_INVALID_VALUE` otherwise); a dimension the model
+  leaves dynamic is `UDONONNX_STATUS_NOT_SUPPORTED` until bounded dynamic
+  dimensions exist. `buffer_dims` has no ORT counterpart: NULL or equal to
+  `dims` binds the tensor itself, any other extent is
+  `UDONONNX_STATUS_NOT_SUPPORTED`.
+- Built for Udon, every tensor name is a compile-time constant
+  (`vrc-resolve-onnx-tensor-names` folds it to the graph index;
+  `udononnxBindInputAt`/`udononnxBindOutputAt` are the private indexed
+  binds), every graph input and output of a Host that calls udononnxRun is
+  bound, each to exactly one Device buffer of sufficient capacity and, for a
+  UDONCL_PUBLIC variable, of the tensor's element type
+  (`vrc-verify-onnx-session-bindings`). These are compile errors.
+- Every call returns a `udononnxStatus_t` instead of an `OrtStatus*`;
+  ReleaseSession returns the status of releasing the session's buffers (ORT's
+  returns void).
+- udononnxRun returns once the run is enqueued on the session's in-order
+  queue, with no Device wait, as `RunWithBinding` does with
+  `disable_synchronize_execution_providers`: every later command on that
+  queue (a read of an output, a write of an input) observes the run.
+  `UDONONNX_STATUS_MISSING_BINDING` while a tensor is unbound,
+  `UDONONNX_STATUS_NOT_INITIALIZED` before CreateSession.
+- A graph the Device cannot run (the Host fallback) is
+  `UDONONNX_STATUS_NOT_SUPPORTED` through the session API.
+
+The generated binding keeps the `cl_mem` of each graph input and output in a
+memory cell (`udononnxGeneratedBindMemory`), which the generated run reads
+(`udononnxGeneratedRun`), so the static Device resource analysis follows each
+bound buffer from its UDONCL_PUBLIC variable into the run. The index-bound
+legacy session (`udononnxLegacySession*` in the internal
+`udononnxruntime_internal.h`), the model registry and the tensor helpers are
+not public API; the MNIST example and the generated ONNX binding still use
+them until they move to the session API.
+
 ## Banked sequence state
 
 Advancing a sequence state (an ONNX past input carried into the next run from

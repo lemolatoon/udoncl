@@ -2,7 +2,7 @@
 #include <CL/cl.h>
 #include <udoncl/device_memory.h>
 #include <udoncl/export.h>
-#include <udononnxruntime.h>
+#include <udononnxruntime_internal.h>
 
 #define MNIST_INPUT_ELEMENTS 784u
 #define MNIST_OUTPUT_ELEMENTS 10u

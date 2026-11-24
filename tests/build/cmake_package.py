@@ -322,6 +322,11 @@ def main():
     assert (
         install / 'share/udononnxruntime/src/udononnxruntime.c'
     ).is_file()
+    # The internal header sits with the runtime sources, not in include/.
+    assert (
+        install / 'share/udononnxruntime/src/udononnxruntime_internal.h'
+    ).is_file()
+    assert not (install / 'include/udononnxruntime_internal.h').exists()
     assert (
         install / 'share/udontokenizers/src/udontokenizers.c'
     ).is_file()
@@ -340,7 +345,7 @@ def main():
     (runtime_source / 'probe.c').write_text(
         '#include <stdint.h>\n'
         '#include <udoncl/export.h>\n'
-        '#include <udononnxruntime.h>\n'
+        '#include <udononnxruntime_internal.h>\n'
         'UDONCL_PROGRAM("onnx_runtime_contract");\n'
         'static const int64_t dimensions[1] = {1};\n'
         'static udononnxLegacySession_t session;\n'
@@ -369,6 +374,24 @@ def main():
         '    const cl_event *wait_list, cl_event *completion) {\n'
         '  (void)graph_id; (void)value; (void)queue; (void)wait_count;\n'
         '  (void)wait_list; (void)completion;\n'
+        '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
+        '}\n'
+        'udononnxStatus_t udononnxGeneratedCreate(\n'
+        '    uint32_t graph_id, udononnxLegacySession_t *value,\n'
+        '    cl_command_queue queue) {\n'
+        '  (void)graph_id; (void)value; (void)queue;\n'
+        '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
+        '}\n'
+        'udononnxStatus_t udononnxGeneratedBindMemory(\n'
+        '    uint32_t graph_id, uint32_t output, uint32_t index,\n'
+        '    cl_mem memory) {\n'
+        '  (void)graph_id; (void)output; (void)index; (void)memory;\n'
+        '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
+        '}\n'
+        'udononnxStatus_t udononnxGeneratedRun(\n'
+        '    uint32_t graph_id, cl_command_queue queue,\n'
+        '    cl_event *completion) {\n'
+        '  (void)graph_id; (void)queue; (void)completion;\n'
         '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
         '}\n'
         'udononnxStatus_t udononnxGeneratedDispose(\n'
@@ -410,7 +433,8 @@ def main():
         'find_package(UdonONNXRuntime 0.1 REQUIRED CONFIG)\n'
         'udoncl_add_host_library(runtime_probe_host probe.c)\n'
         'target_include_directories(runtime_probe_host INTERFACE\n'
-        '  "${UdonONNXRuntime_INCLUDE_DIRS}")\n'
+        '  "${UdonONNXRuntime_INCLUDE_DIRS}"\n'
+        '  "${UdonONNXRuntime_INTERNAL_INCLUDE_DIRS}")\n'
         # No config file: UDONCL_PROGRAM names the program, and the
         # binding and budget settings are arguments.
         'udoncl_add_unity_library(runtime-probe\n'

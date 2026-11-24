@@ -1,5 +1,5 @@
 #include <udoncl/onnx_binding_abi.h>
-#include <udononnxruntime.h>
+#include "udononnxruntime_internal.h"
 
 #define UDONONNX_BINDING_STATE_MAGIC 0x554f4e58u
 

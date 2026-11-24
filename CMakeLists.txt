@@ -153,6 +153,7 @@ install(FILES libraries/udononnxoperators/src/matmul_nbits.c
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udononnxruntime/src/udononnxruntime.c
               libraries/udononnxruntime/src/onnx_binding_abi.c
+              libraries/udononnxruntime/src/udononnxruntime_internal.h
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxruntime/src"
   COMPONENT UdonCLCompiler)
 install(DIRECTORY libraries/udononnxoperators/device

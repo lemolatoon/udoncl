@@ -28,8 +28,10 @@ target_include_directories(mnist_host INTERFACE
   "${UdonDNN_INCLUDE_DIRS}"
   "${UdonATen_INCLUDE_DIRS}")
 udoncl_add_host_library(mnist_user_host host.c)
+# host.c still binds through the internal legacy session of the runtime.
 target_include_directories(mnist_user_host INTERFACE
-  "${UdonONNXRuntime_INCLUDE_DIRS}")
+  "${UdonONNXRuntime_INCLUDE_DIRS}"
+  "${UdonONNXRuntime_INTERNAL_INCLUDE_DIRS}")
 # host.c names the program and declares the public image and logits
 # buffers it binds to the model input and output.
 udoncl_add_unity_library(onnx-mnist

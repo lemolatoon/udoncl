@@ -5,7 +5,7 @@
 #include <udonblas.h>
 #include <udondnn.h>
 #include <udononnxoperators.h>
-#include <udononnxruntime.h>
+#include <udononnxruntime_internal.h>
 
 size_t udononnx_matmul_nbits_cpu_gid;
 #include "../../libraries/udononnxoperators/device/matmul_nbits.cl"
@@ -55,6 +55,32 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
   (void)queue;
   (void)wait_count;
   (void)wait_list;
+  (void)completion;
+  return UDONONNX_STATUS_NOT_SUPPORTED;
+}
+
+udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
+                                         udononnxLegacySession_t *session,
+                                         cl_command_queue queue) {
+  (void)graph_id;
+  (void)session;
+  (void)queue;
+  return UDONONNX_STATUS_NOT_SUPPORTED;
+}
+
+udononnxStatus_t udononnxGeneratedBindMemory(uint32_t graph_id, uint32_t output,
+                                             uint32_t index, cl_mem memory) {
+  (void)graph_id;
+  (void)output;
+  (void)index;
+  (void)memory;
+  return UDONONNX_STATUS_NOT_SUPPORTED;
+}
+
+udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
+                                      cl_event *completion) {
+  (void)graph_id;
+  (void)queue;
   (void)completion;
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }

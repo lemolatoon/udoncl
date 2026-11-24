@@ -1,8 +1,24 @@
 #ifndef UDONONNXRUNTIME_H
 #define UDONONNXRUNTIME_H
 
+/* UdonONNX: run the ONNX model a Host was built with on Device buffers the
+ * Host owns. The API mirrors the ONNX Runtime C API 1.32 (OrtApi in
+ * onnxruntime_c_api.h) after the Ort -> udononnx substitution:
+ *
+ *   udononnxCreateSession  CreateSession
+ *   udononnxBindInput      CreateIoBinding + BindInput
+ *   udononnxBindOutput     CreateIoBinding + BindOutput
+ *   udononnxRun            RunWithBinding
+ *   udononnxReleaseSession ReleaseSession
+ *
+ * docs/architecture/operator-ownership.md lists where it deviates: the model
+ * is compiled into the Host (no environment, options or model path, and one
+ * live session per Host), the session owns its binding, a tensor is a cl_mem
+ * with a rank and dimensions whose element type is the model's, every call
+ * returns a udononnxStatus_t, and Run returns once the graph is enqueued on
+ * the session's in-order queue. */
+
 #include <CL/cl.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <udoncl/onnx_types.h>
 
@@ -10,148 +26,38 @@
 extern "C" {
 #endif
 
-typedef struct udononnxModel {
-  const char *name;
-  uint32_t graph_id;
-  const udononnxTensorMetadata_t *inputs;
-  size_t input_count;
-  const udononnxTensorMetadata_t *outputs;
-  size_t output_count;
-} udononnxModel_t;
+typedef struct udononnxSession udononnxSession_t;
 
-typedef enum udononnxSessionState {
-  UDONONNX_SESSION_EMPTY = 0,
-  UDONONNX_SESSION_CREATED = 1,
-  UDONONNX_SESSION_INITIALIZING = 2,
-  UDONONNX_SESSION_READY = 3,
-  UDONONNX_SESSION_RUNNING = 4,
-  UDONONNX_SESSION_DISPOSED = 5
-} udononnxSessionState_t;
+/* Creates the session of the Host's model on `context` and `queue`. It
+ * allocates the Device buffers the session owns and enqueues nothing; the
+ * model weights are compiled into the Host. A Host has one live session:
+ * a second Create before Release is UDONONNX_STATUS_INVALID_STATE. */
+udononnxStatus_t udononnxCreateSession(cl_context context,
+                                       cl_command_queue queue,
+                                       udononnxSession_t **session);
 
-/* The model metadata and binding arrays are borrowed for the session
- * lifetime. Every bound device allocation remains owned by the caller.
- * Bindings change only through the bind functions: the first run after a
- * bind validates the whole binding table, and later runs of the unchanged
- * table only check that every bound buffer is still alive in the session
- * context, which is known without a check while no device buffer handle
- * was destroyed since (udonclDeviceBufferEpoch).
- *
- * binding_version identifies the binding table: creating the session and
- * every bind or invalidation give it a value no session had before, so code
- * that derived anything from the bound buffers (the generated run resolves
- * them to physical tokens once) can reuse it while the version is equal. */
-typedef struct udononnxLegacySession {
-  const udononnxModel_t *model;
-  cl_context context;
-  udononnxTensor_t *input_bindings;
-  udononnxTensor_t *output_bindings;
-  uint32_t generation;
-  uint32_t operation_generation;
-  udononnxStatus_t last_status;
-  const char *last_error;
-  cl_event active_event;
-  udononnxSessionState_t state;
-  uint32_t bindings_validated;
-  uint32_t validated_buffer_epoch;
-  uint32_t binding_version;
-} udononnxLegacySession_t;
+/* Binds `memory` (owned by the caller) to the graph input or output `name`.
+ * `rank` and `dims` must be the model's; `buffer_dims` is NULL or equal to
+ * `dims` (another extent is UDONONNX_STATUS_NOT_SUPPORTED). Building for
+ * Udon, `name` must be a compile-time constant, every graph input and output
+ * must be bound, and each to exactly one buffer. */
+udononnxStatus_t udononnxBindInput(udononnxSession_t *session, const char *name,
+                                   cl_mem memory, int rank, const int64_t *dims,
+                                   const int64_t *buffer_dims);
+udononnxStatus_t udononnxBindOutput(udononnxSession_t *session,
+                                    const char *name, cl_mem memory, int rank,
+                                    const int64_t *dims,
+                                    const int64_t *buffer_dims);
 
-udononnxStatus_t udononnxCreateTensor(udonclBufferView_t storage, uint32_t rank,
-                                      const int64_t *dimensions,
-                                      udononnxTensor_t *tensor);
-udononnxStatus_t udononnxGetTensorElementCount(udononnxTensor_t tensor,
-                                               size_t *elements);
-udononnxStatus_t udononnxGetTensorDimension(udononnxTensor_t tensor,
-                                            uint32_t axis, int64_t *dimension);
-udononnxStatus_t udononnxGetTensorStorage(udononnxTensor_t tensor,
-                                          udonclBufferView_t *storage);
-udononnxStatus_t udononnxValidateTensor(udononnxTensor_t tensor);
+/* Runs the graph on the bound buffers: it returns once the run is enqueued
+ * on the session's in-order queue, so every later command on that queue
+ * observes the outputs. UDONONNX_STATUS_MISSING_BINDING while a graph input
+ * or output is unbound. */
+udononnxStatus_t udononnxRun(udononnxSession_t *session);
 
-udononnxStatus_t udononnxFindModel(const udononnxModel_t *models,
-                                   size_t model_count, const char *name,
-                                   const udononnxModel_t **model);
-size_t udononnxGeneratedGetModelCount(void);
-udononnxStatus_t udononnxGeneratedGetModel(size_t index,
-                                           const udononnxModel_t **model);
-size_t udononnxGetModelCount(void);
-udononnxStatus_t udononnxGetModel(size_t index, const udononnxModel_t **model);
-udononnxStatus_t udononnxFindGeneratedModel(const char *name,
-                                            const udononnxModel_t **model);
-udononnxStatus_t udononnxLegacySessionCreate(udononnxLegacySession_t *session,
-                                             const udononnxModel_t *model,
-                                             cl_context context,
-                                             udononnxTensor_t *input_bindings,
-                                             udononnxTensor_t *output_bindings);
-size_t udononnxSessionGetInputCount(const udononnxLegacySession_t *session);
-size_t udononnxSessionGetOutputCount(const udononnxLegacySession_t *session);
-const udononnxTensorMetadata_t *
-udononnxSessionGetInputMetadata(const udononnxLegacySession_t *session,
-                                size_t index);
-const udononnxTensorMetadata_t *
-udononnxSessionGetOutputMetadata(const udononnxLegacySession_t *session,
-                                 size_t index);
-int udononnxSessionFindInput(const udononnxLegacySession_t *session,
-                             const char *name);
-int udononnxSessionFindOutput(const udononnxLegacySession_t *session,
-                              const char *name);
-udononnxStatus_t
-udononnxLegacySessionBindInput(udononnxLegacySession_t *session, size_t index,
-                               udononnxTensor_t tensor);
-/* For a caller that writes the borrowed binding arrays itself: the next run
- * validates the whole binding table again. */
-void udononnxSessionInvalidateBindings(udononnxLegacySession_t *session);
-/* The current binding version (see udononnxLegacySession_t); 0 without a
- * session. */
-uint32_t udononnxSessionBindingVersion(const udononnxLegacySession_t *session);
-udononnxStatus_t
-udononnxLegacySessionBindOutput(udononnxLegacySession_t *session, size_t index,
-                                udononnxTensor_t tensor);
-udononnxStatus_t
-udononnxSessionResolveInput(const udononnxLegacySession_t *session,
-                            size_t index, cl_mem *memory, size_t *byte_offset,
-                            size_t *byte_length);
-udononnxStatus_t
-udononnxSessionResolveOutput(const udononnxLegacySession_t *session,
-                             size_t index, cl_mem *memory, size_t *byte_offset,
-                             size_t *byte_length);
-
-/* These generated, whole-program-visible dispatchers are supplied by the
- * linked model host. They dispatch graph_id with direct calls; they are not a
- * public model-specific API or an external execution plan.
- *
- * Create allocates the Device buffers the session owns on `queue` and
- * enqueues nothing; EnqueueInitialize is Create followed by a marker that
- * reports completion. */
-udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
-                                         udononnxLegacySession_t *session,
-                                         cl_command_queue queue);
-udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion);
-udononnxStatus_t
-udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxLegacySession_t *session,
-                            cl_command_queue queue, cl_uint wait_count,
-                            const cl_event *wait_list, cl_event *completion);
-udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
-                                          udononnxLegacySession_t *session);
-
-udononnxStatus_t udononnxLegacySessionEnqueueInitialize(
-    udononnxLegacySession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion);
-udononnxStatus_t udononnxLegacySessionEnqueueRun(
-    udononnxLegacySession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion);
-/* Called by the Host continuation that observes completion. It never releases
- * the caller-owned event. */
-udononnxStatus_t
-udononnxLegacySessionCompleteEvent(udononnxLegacySession_t *session,
-                                   cl_event completion,
-                                   udononnxStatus_t result);
-udononnxStatus_t udononnxLegacySessionDispose(udononnxLegacySession_t *session);
-udononnxStatus_t
-udononnxSessionGetLastStatus(const udononnxLegacySession_t *session);
-const char *udononnxSessionGetLastError(const udononnxLegacySession_t *session);
-const char *udononnxStatusString(udononnxStatus_t status);
+/* Releases the Device buffers the session owns and forgets the bound ones.
+ * A new session may be created afterwards. */
+udononnxStatus_t udononnxReleaseSession(udononnxSession_t *session);
 
 #ifdef __cplusplus
 }

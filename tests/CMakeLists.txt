@@ -79,6 +79,7 @@ target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/libraries/udondnn/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src"
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
@@ -143,11 +144,32 @@ if(TARGET VRCOpenCLRuntime)
   target_include_directories(udononnx-runtime PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
     "${PROJECT_SOURCE_DIR}/include"
-    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include")
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src")
   target_compile_definitions(udononnx-runtime PRIVATE
     CL_TARGET_OPENCL_VERSION=120)
   target_link_libraries(udononnx-runtime PRIVATE VRCOpenCLRuntime)
   add_test(NAME udononnx-runtime COMMAND udononnx-runtime)
+
+  # The public UdonONNX session API: behavior on the native runtime, and its
+  # signatures pinned to the mirrored ONNX Runtime C API.
+  add_executable(udononnx-api
+    runtime/udononnx_api.c
+    runtime/udononnx_api_conformance.c
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/onnx_binding_abi.c")
+  target_compile_features(udononnx-api PRIVATE c_std_11)
+  set_target_properties(udononnx-api PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+  target_include_directories(udononnx-api PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src")
+  target_compile_definitions(udononnx-api PRIVATE
+    CL_TARGET_OPENCL_VERSION=120)
+  target_link_libraries(udononnx-api PRIVATE VRCOpenCLRuntime)
+  add_test(NAME udononnx-api COMMAND udononnx-api)
 
   add_executable(tinyllama-conversation-input
     runtime/tinyllama_conversation_input.c
