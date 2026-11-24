@@ -2782,17 +2782,17 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
               return multiplyValues(pitchOf(tensor), columns);
             return multiplyValues(rows, columns);
           };
-          dispatch(needsLargeBatchedSgemm(*shape)
-                       ? "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
-                         "batched_large"
-                       : "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
-                         "batched",
-                   ValueRange{
-                       buffer(node.inputs[0]), buffer(node.inputs[1]), output,
-                       m, n, k, batchStride(left, m, k, shape->leftBatches),
-                       batchStride(right, k, n, shape->rightBatches),
-                       multiplyValues(m, n), constant(shape->outputBatches),
-                       constant(0), constant(0), floating(1.0f), constant(0)});
+          dispatch(
+              needsLargeBatchedSgemm(*shape)
+                  ? "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                    "batched_large"
+                  : "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                    "batched",
+              ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]), output,
+                         m, n, k, batchStride(left, m, k, shape->leftBatches),
+                         batchStride(right, k, n, shape->rightBatches),
+                         multiplyValues(m, n), constant(shape->outputBatches),
+                         constant(0), constant(0), floating(1.0f)});
           return success();
         }
         if (shape->outputBatches == 1 && smallOperands) {
@@ -2816,7 +2816,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                   constant(shape->leftBatches == 1 ? 0 : shape->m * shape->k),
                   constant(shape->rightBatches == 1 ? 0 : shape->k * shape->n),
                   constant(shape->m * shape->n), constant(shape->outputBatches),
-                  constant(0), constant(0), floating(1.0f), constant(0)});
+                  constant(0), constant(0), floating(1.0f)});
         }
         return success();
       }
@@ -2852,7 +2852,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                               constant(left[1]), constant(0), constant(0),
                               constant(left[0] * right[1]), constant(1),
                               constant(transA), constant(transB),
-                              floating(alpha), constant(0)});
+                              floating(alpha)});
         if (hasBias) {
           SmallVector<int64_t, 4> a = tensor4d(graph.tensors[node.output].type);
           SmallVector<int64_t, 4> b =
@@ -2938,11 +2938,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                          {i32, i32, i32, i32, i32, i32, i32, i32, f32}, {i32});
     declarations.require(
         "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
-        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, i32},
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
         {i32});
     declarations.require(
         "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched_large",
-        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, i32},
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
         {i32});
     declarations.require("__vrc_opencl_dispatch_udononnx_unary_f32",
                          {i32, i32, i32, i32}, {i32});

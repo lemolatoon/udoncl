@@ -41,7 +41,7 @@ static float runCase(int batches, int m, int n, int k, bool broadcastB) {
          ++udonblas_arena_sgemm_cpu_gid_x)
       udonblas_arena_sgemm_strided_batched(a.data(), b.data(), output.data(), m,
                                            n, k, strideA, strideB, strideC,
-                                           batches, 0, 0, 1.0f, 0);
+                                           batches, 0, 0, 1.0f);
   float maximumError = 0.0f;
   for (int index = 0; index < static_cast<int>(expected.size()); ++index)
     maximumError =
@@ -102,7 +102,7 @@ static std::vector<float> runBatched(const std::vector<float> &a,
          ++udonblas_arena_sgemm_cpu_gid_x)
       udonblas_arena_sgemm_strided_batched(a.data(), b.data(), output.data(), m,
                                            n, k, m * k, k * n, m * n, batches,
-                                           0, 0, 1.0f, 0);
+                                           0, 0, 1.0f);
   output.resize(batches * m * n);
   return output;
 }
@@ -157,7 +157,7 @@ static float runLargeCase(int batches, int m, int n, int k, int &mismatches) {
          ++udonblas_arena_sgemm_cpu_gid_x)
       udonblas_arena_sgemm_strided_batched_large(
           a.data(), b.data(), output.data(), m, n, k, m * k, k * n, m * n,
-          batches, 0, 0, 1.0f, 0);
+          batches, 0, 0, 1.0f);
   int words = batches * m * n;
   double maximumError = 0.0;
   for (int batch = 0; batch < batches; ++batch)
@@ -187,57 +187,7 @@ static float runLargeCase(int batches, int m, int n, int k, int &mismatches) {
   return static_cast<float>(maximumError);
 }
 
-/* k_begin skips the first terms of every dot product. ONNX Host finalization
- * passes it only when the right operand's first k_begin rows are signed zeros
- * and every left row is finite or entirely NaN (a Softmax result); then each
- * output word must equal the full product bit for bit, also where a skipped
- * left element is negative or a denormal, and a NaN row must stay NaN. */
-static int runSkippedRowsCase(int batches, int m, int n, int k, int skipped,
-                              bool large) {
-  std::vector<float> a(batches * m * k);
-  std::vector<float> b(batches * k * n);
-  for (int index = 0; index < static_cast<int>(a.size()); ++index)
-    a[index] = value(index, 11) * (index % 9 == 0 ? 1.0e-39f : 1.0f);
-  for (int row = 0; row < m; row += 3)
-    for (int inner = 0; inner < k; ++inner)
-      a[row * k + inner] = NAN;
-  for (int index = 0; index < static_cast<int>(b.size()); ++index) {
-    int inner = (index / n) % k;
-    b[index] = inner < skipped ? (index % 2 ? -0.0f : 0.0f) : value(index, 12);
-  }
-  int surfaceRows = large ? 16 : 2;
-  auto run = [&](int kBegin) {
-    std::vector<float> output(8192 * surfaceRows, -37.0f);
-    for (udonblas_arena_sgemm_cpu_gid_y = 0;
-         udonblas_arena_sgemm_cpu_gid_y < static_cast<size_t>(surfaceRows);
-         ++udonblas_arena_sgemm_cpu_gid_y)
-      for (udonblas_arena_sgemm_cpu_gid_x = 0;
-           udonblas_arena_sgemm_cpu_gid_x < 8192;
-           ++udonblas_arena_sgemm_cpu_gid_x)
-        (large ? udonblas_arena_sgemm_strided_batched_large
-               : udonblas_arena_sgemm_strided_batched)(
-            a.data(), b.data(), output.data(), m, n, k, m * k, k * n, m * n,
-            batches, 0, 0, 1.0f, kBegin);
-    return output;
-  };
-  std::vector<float> full = run(0);
-  std::vector<float> partial = run(skipped);
-  int mismatches = 0;
-  for (size_t index = 0; index < full.size(); ++index)
-    mismatches +=
-        std::isnan(full[index])
-            ? !std::isnan(partial[index])
-            : std::memcmp(&full[index], &partial[index], sizeof(float)) != 0;
-  std::cout << "arena_sgemm_skipped_rows k=" << k << " skipped=" << skipped
-            << " large=" << large << " mismatches=" << mismatches << '\n';
-  return mismatches;
-}
-
 int main() {
-  int skippedMismatches = runSkippedRowsCase(4, 8, 64, 512, 300, false) +
-                          runSkippedRowsCase(4, 8, 64, 512, 511, false) +
-                          runSkippedRowsCase(2, 5, 7, 130, 64, false) +
-                          runSkippedRowsCase(4, 8, 64, 4096, 4000, true);
   int largeMismatches = 0;
   float largeError = std::max({runLargeCase(4, 8, 4096, 64, largeMismatches),
                                runLargeCase(4, 8, 64, 4096, largeMismatches),
@@ -263,10 +213,9 @@ int main() {
             << std::max({attentionError, m1AttentionError, broadcastError})
             << '\n';
   return repeatedMismatches == 0 && largeMismatches == 0 &&
-                 skippedMismatches == 0 && largeError < 0.0001f &&
-                 attentionError < 0.0001f && m1AttentionError < 0.0001f &&
-                 broadcastError < 0.0001f && longKBatchedError < 0.001f &&
-                 longKError < 0.0001f
+                 largeError < 0.0001f && attentionError < 0.0001f &&
+                 m1AttentionError < 0.0001f && broadcastError < 0.0001f &&
+                 longKBatchedError < 0.001f && longKError < 0.0001f
              ? 0
              : 1;
 }

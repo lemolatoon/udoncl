@@ -103,7 +103,7 @@ public:
     };
     if (name == "udonblas_arena_sgemm_strided_batched" ||
         name == "udonblas_arena_sgemm_strided_batched_large") {
-      expect(14);
+      expect(13);
       auto kernel = name == "udonblas_arena_sgemm_strided_batched"
                         ? udonblas_arena_sgemm_strided_batched
                         : udonblas_arena_sgemm_strided_batched_large;
@@ -112,8 +112,7 @@ public:
                       kernel(floats(a[0]), floats(a[1]), floats(a[2]),
                              asInt(a[3]), asInt(a[4]), asInt(a[5]), asInt(a[6]),
                              asInt(a[7]), asInt(a[8]), asInt(a[9]),
-                             asInt(a[10]), asInt(a[11]), asFloat(a[12]),
-                             asInt(a[13]));
+                             asInt(a[10]), asInt(a[11]), asFloat(a[12]));
                     });
     } else if (name == "udononnx_cast_i64_f32") {
       expect(3);

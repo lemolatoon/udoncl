@@ -139,8 +139,7 @@ const std::vector<LibraryKernelContract> &libraryKernelContracts() {
         {8, 1, 16384},
         {9, 1, 16384},
         {10, 0, 1},
-        {11, 0, 1},
-        {13, 0, 8192}},
+        {11, 0, 1}},
        FragmentCost{0, {3, 4, 9}, {{5, 2}}}},
       {238,
        "udononnx_transpose_f32",
@@ -212,8 +211,7 @@ const std::vector<LibraryKernelContract> &libraryKernelContracts() {
         {8, 1, 131072},
         {9, 1, 131072},
         {10, 0, 1},
-        {11, 0, 1},
-        {13, 0, 8192}},
+        {11, 0, 1}},
        FragmentCost{0, {3, 4, 9}, {{5, 2}}}},
   };
   return contracts;

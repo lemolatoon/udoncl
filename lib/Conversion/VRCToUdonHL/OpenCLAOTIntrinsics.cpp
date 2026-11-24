@@ -206,7 +206,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                name == "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
                        "batched_large")
         arguments = {i32, i32, i32, i32, i32, i32, i32,
-                     i32, i32, i32, i32, i32, f32, i32};
+                     i32, i32, i32, i32, i32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_sgemv")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udondnn_large_convolution")
@@ -566,7 +566,6 @@ struct LowerOpenCLAOTIntrinsicsPass
         if (arenaBatchedSgemm || arenaBatchedSgemmLarge) {
           scalarKinds.append(9, rewriter.getStringAttr("i32"));
           scalarKinds.push_back(rewriter.getStringAttr("f32"));
-          scalarKinds.push_back(rewriter.getStringAttr("i32"));
         } else if (arenaSgemm) {
           scalarKinds.append(5, rewriter.getStringAttr("i32"));
           scalarKinds.push_back(rewriter.getStringAttr("f32"));

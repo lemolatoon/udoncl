@@ -52,19 +52,12 @@ __kernel void udonblas_arena_sgemm(__global const float *a,
 /* Device-resident counterpart of udonblasSgemmStridedBatched. A zero input
  * stride broadcasts one matrix across every batch, matching the public API.
  * OPERAND_MASK bounds every operand address for the gather proof: one less
- * than a power of two that holds the largest operand the kernel admits.
- *
- * k_begin is private to the Device backend and 0 for the public call: the
- * terms whose inner index is below it are not accumulated. ONNX Host
- * finalization passes a larger value only where it proves those terms are
- * signed zeros added to the +0 the sum starts from, or the result is NaN
- * anyway (ONNXHostSequenceExtents.h), so the result does not change. */
+ * than a power of two that holds the largest operand the kernel admits. */
 #define UDONBLAS_ARENA_SGEMM_STRIDED_BATCHED(NAME, OPERAND_MASK)               \
   __kernel void NAME(__global const float *a, __global const float *b,         \
                      __global float *output, int m, int n, int k,              \
                      int stride_a, int stride_b, int stride_c,                 \
-                     int batch_count, int transa, int transb, float alpha,     \
-                     int k_begin) {                                            \
+                     int batch_count, int transa, int transb, float alpha) {   \
     size_t gid =                                                               \
         UDONBLAS_ARENA_Y() * UDONBLAS_ARENA_WIDTH + UDONBLAS_ARENA_X();        \
     size_t matrix_words = (size_t)m * (size_t)n;                               \
@@ -80,11 +73,10 @@ __kernel void udonblas_arena_sgemm(__global const float *a,
       (void)stride_c;                                                          \
       float sum = 0.0f;                                                        \
       for (int chunk = 0; chunk < UDONBLAS_ARENA_K_CHUNKS; ++chunk)            \
-        if (chunk * UDONBLAS_ARENA_K_CHUNK < k &&                              \
-            (chunk + 1) * UDONBLAS_ARENA_K_CHUNK > k_begin)                    \
+        if (chunk * UDONBLAS_ARENA_K_CHUNK < k)                                \
           for (int lane = 0; lane < UDONBLAS_ARENA_K_CHUNK; ++lane) {          \
             int inner = chunk * UDONBLAS_ARENA_K_CHUNK + lane;                 \
-            if (inner < k && inner >= k_begin) {                               \
+            if (inner < k) {                                                   \
               int a_index = transa ? inner * m + row : row * k + inner;        \
               int b_index = transb ? column * k + inner : inner * n + column;  \
               sum += a[(a_base + (size_t)a_index) & OPERAND_MASK] *            \

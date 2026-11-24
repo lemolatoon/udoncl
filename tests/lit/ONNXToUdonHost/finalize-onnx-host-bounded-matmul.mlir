@@ -35,5 +35,5 @@ module attributes {udoncl.dimension_bounds = {past = 7 : i64}} {
 // CHECK: udonhl.address_of @__udon_onnx_dimension_0
 // CHECK-NEXT: %[[PAST:.*]] = "udonhl.load"
 // CHECK: %[[WORDS:.*]] = arith.muli %[[PAST]], %c3_i32
-// CHECK: call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(%{{.*}}, %{{.*}}, %{{.*}}, %[[PAST]], %c3_i32, %c4_i32, %c0_i32, %c0_i32, %[[WORDS]], %c1_i32,
-// CHECK: call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(%{{.*}}, %{{.*}}, %{{.*}}, %c1_i32, %c3_i32, %[[PAST]], %c0_i32, %c0_i32, %c3_i32, %c1_i32,
+// CHECK: call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(%{{.*}}, %{{.*}}, %{{.*}}, %[[PAST]], %c3_i32, %c4_i32, %c0_i32, %c0_i32, %[[WORDS]], %c1_i32, %c0_i32, %c0_i32, %cst) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
+// CHECK: call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(%{{.*}}, %{{.*}}, %{{.*}}, %c1_i32, %c3_i32, %[[PAST]], %c0_i32, %c0_i32, %c3_i32, %c1_i32, %c0_i32, %c0_i32, %cst) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
