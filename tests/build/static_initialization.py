@@ -105,9 +105,8 @@ def main():
             encoding='utf-8')
         assert 'relocations = [' in evaluated
         for symbol in (
-            'udon_onnx_binding_create', 'udon_onnx_binding_bind_all',
-            'udononnxLegacySessionCreate', 'clCreateContext',
-            'clCreateCommandQueue',
+            'udononnxCreateSession', 'udononnxBindInputAt',
+            'udononnxBindOutputAt', 'clCreateContext', 'clCreateCommandQueue',
         ):
             assert not defines(evaluated, symbol), symbol
             assert defines(recovered, symbol), symbol
@@ -138,9 +137,10 @@ def main():
     assert not re.search(r'func\.func @initialize\(', evaluated)
     remaining = re.search(r'func\.func private @initialize\(.*', evaluated)
     assert not remaining or 'vrc.export_id' not in remaining.group(0)
-    assert 'StartInitialize(' in (static / 'binding.cs').read_text(
+    # initialize enqueues no Device work, so the export is synchronous.
+    assert 'public int TryInitialize(' in (static / 'binding.cs').read_text(
         encoding='utf-8')
-    assert 'StartInitialize(' not in (hidden / 'binding.cs').read_text(
+    assert 'Initialize(' not in (hidden / 'binding.cs').read_text(
         encoding='utf-8')
     assert '.export Initialize' not in assembly
 
