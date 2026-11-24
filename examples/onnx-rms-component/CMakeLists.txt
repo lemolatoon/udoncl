@@ -29,7 +29,6 @@ udoncl_add_host_library(rms_component_user_host host.c)
 target_include_directories(rms_component_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
 udoncl_add_unity_library(onnx-rms-component
-  ONNX_PUBLIC_TENSOR_BUFFERS
   HOST_LIBRARIES
     rms_component_model_host
     rms_component_user_host

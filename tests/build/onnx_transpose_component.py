@@ -50,8 +50,9 @@ def main():
     artifact = consumer / 'udoncl/onnx-transpose-component/artifact'
     recovered = (artifact / 'frontend.recovered.mlir').read_text(encoding='utf-8')
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
-    # The Host C names the program (UDONCL_PROGRAM) and CMake passes
-    # ONNX_PUBLIC_TENSOR_BUFFERS; the binding class is the default one.
+    # The Host C names the program (UDONCL_PROGRAM) and binds its
+    # UDONCL_PUBLIC input and output to the graph tensors of the same names;
+    # the binding class is the default one.
     assert manifest['program']['name'] == 'onnx_transpose_component'
     assert manifest['program']['binding_class'] == 'UdonclOnnxTransposeComponentBinding'
     assert 'vrc.assigned_buffer' in recovered

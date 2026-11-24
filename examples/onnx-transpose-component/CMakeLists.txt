@@ -25,7 +25,6 @@ udoncl_add_host_library(transpose_component_user_host host.c)
 target_include_directories(transpose_component_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
 udoncl_add_unity_library(onnx-transpose-component
-  ONNX_PUBLIC_TENSOR_BUFFERS
   HOST_LIBRARIES
     transpose_component_model_host
     transpose_component_user_host

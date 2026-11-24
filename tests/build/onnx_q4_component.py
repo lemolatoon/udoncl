@@ -76,8 +76,9 @@ def main():
     recovered = (artifact / 'frontend.recovered.mlir').read_text(encoding='utf-8')
     udon_async = (artifact / 'host.udon-async.mlir').read_text(encoding='utf-8')
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
-    # The Host C names the program (UDONCL_PROGRAM) and CMake passes
-    # ONNX_PUBLIC_TENSOR_BUFFERS; the binding class is the default one.
+    # The Host C names the program (UDONCL_PROGRAM) and binds its
+    # UDONCL_PUBLIC input and output to the graph tensors of the same names;
+    # the binding class is the default one.
     assert manifest['program']['name'] == 'onnx_q4_component'
     assert manifest['program']['binding_class'] == 'UdonclOnnxQ4ComponentBinding'
     assert 'vrc.assigned_buffer' in recovered
@@ -106,7 +107,7 @@ def main():
         for item in manifest['device']['buffers']
     ] == [
         ('input', 32768, 32768, 'float32', 'input', '__udoncl_buffer_1'),
-        ('output', 528, 524288, 'float32', 'output', '__udoncl_buffer_2'),
+        ('output', 528, 528, 'float32', 'output', '__udoncl_buffer_2'),
         ('private_3', 524288, 524288, None, None, '__udoncl_buffer_3'),
         ('private_4', 524288, 524288, None, None, '__udoncl_buffer_4'),
     ]

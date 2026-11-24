@@ -58,8 +58,9 @@ def main():
     artifact = consumer / 'udoncl/onnx-rms-component/artifact'
     recovered = (artifact / 'frontend.recovered.mlir').read_text(encoding='utf-8')
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
-    # The Host C names the program (UDONCL_PROGRAM) and CMake passes
-    # ONNX_PUBLIC_TENSOR_BUFFERS; the binding class is the default one.
+    # The Host C names the program (UDONCL_PROGRAM) and binds its
+    # UDONCL_PUBLIC input and output to the graph tensors of the same names;
+    # the binding class is the default one.
     assert manifest['program']['name'] == 'onnx_rms_component'
     assert manifest['program']['binding_class'] == 'UdonclOnnxRmsComponentBinding'
     assert 'vrc.assigned_buffer' in recovered
@@ -80,15 +81,18 @@ def main():
     public = {item.get('public_access'): item for item in buffers if item.get('public_access')}
     assert public['input']['logical_bytes'] == 32768
     assert public['output']['logical_bytes'] == 32768
-    # A public tensor buffer states the ONNX tensor it holds.
+    # A public buffer states its Host variable and the ONNX tensor bound
+    # to it.
     for item in public.values():
         assert item['source'] == {
-            'kind': 'onnx_tensor', 'tensor': item['name']}, item
+            'kind': 'host_variable', 'symbol': item['name'],
+            'onnx_tensor': item['name']}, item
     # The binding documents the tensor each public buffer method transfers.
     binding = (artifact / manifest['program']['binding_source']).read_text(
         encoding='utf-8')
     for item in public.values():
-        assert (f"/// Device buffer of the ONNX tensor <c>{item['name']}</c>: "
+        assert (f"/// Device buffer of the Host variable <c>{item['name']}</c> "
+                f"(UDONCL_PUBLIC), bound to the ONNX tensor <c>{item['name']}</c>: "
                 '8192 float elements (float32).') in binding, binding
     static_tensors = manifest['static_tensors']
     assert [item['name'] for item in static_tensors] == ['scale', 'epsilon']
