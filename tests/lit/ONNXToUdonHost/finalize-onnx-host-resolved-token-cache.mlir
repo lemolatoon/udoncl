@@ -38,14 +38,8 @@ func.func @main_graph(
 // CHECK-NOT: clEnqueueMarkerWithWaitList
 // CHECK: return
 
-// The legacy initialization is Create followed by a completion marker.
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueInitialize
-// CHECK: %[[CREATED:.*]] = call @udononnxGeneratedCreate(%arg0, %arg1, %arg2)
-// CHECK: cf.cond_br %{{.*}}, ^[[MARK:bb[0-9]+]], ^[[FAIL:bb[0-9]+]]
-// CHECK: ^[[MARK]]:
-// CHECK: call @clEnqueueMarkerWithWaitList(%arg2, %arg3, %arg4, %arg5)
-// CHECK: ^[[FAIL]]:
-// CHECK: return %[[CREATED]]
+// No dispatcher enqueues a marker for the creation.
+// CHECK-NOT: udononnxGeneratedEnqueueInitialize
 
 // Disposing forgets the buffers a UdonONNX session bound.
 // CHECK-LABEL: func.func @udononnxGeneratedDispose

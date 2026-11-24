@@ -970,8 +970,6 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
      clCreateCommandQueue ... */
   status = __udononnx_transitional_create(context, queue);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = __udononnx_transitional_enqueue_initialize();
-  if (status == UDONONNX_STATUS_SUCCESS)
     status = __udononnx_transitional_bind_all();
   /* ... resolve the input_ids, attention_mask, position_ids and logits
      buffers, create the argmax buffers, clear the sequence state ... */

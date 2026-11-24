@@ -198,7 +198,8 @@ assert "func.func @udon_onnx_session_write_input_float" not in host.stdout
 assert "func.func @udon_onnx_session_run" not in host.stdout
 assert "func.func @udon_onnx_session_read_output_float" not in host.stdout
 assert "func.func @udononnxGeneratedCreate" in host.stdout
-assert "func.func @udononnxGeneratedEnqueueInitialize" in host.stdout
+# Creating the session enqueues nothing: no initialization marker.
+assert "udononnxGeneratedEnqueueInitialize" not in host.stdout
 assert "func.func @udononnxGeneratedEnqueueRun" in host.stdout
 assert "func.func @udononnxGeneratedDispose" in host.stdout
 assert "func.func @udononnxGeneratedGetModelCount" in host.stdout
@@ -260,8 +261,7 @@ assert "call @udononnxBindingStateCompleteStaticBind" in bind_all
 assert bind_all.count("call @udonclDeviceBufferView") == 3
 assert "udonhl.alloca" not in bind_all
 assert "vrc.static_public_resource_binding" not in transitional.stdout
-assert "func.func @__udononnx_transitional_enqueue_initialize" in (
-    transitional.stdout)
+assert "__udononnx_transitional_enqueue_initialize" not in transitional.stdout
 assert "func.func @__udononnx_transitional_enqueue_run" in transitional.stdout
 assert "func.func @__udononnx_transitional_dispose" in transitional.stdout
 assert "call @udononnxSessionResolveInput" in host.stdout

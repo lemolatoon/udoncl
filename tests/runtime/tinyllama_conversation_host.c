@@ -126,7 +126,6 @@ udononnxStatus_t __udononnx_transitional_create(cl_context c,
              ? UDONONNX_STATUS_SUCCESS
              : UDONONNX_STATUS_OPENCL_ERROR;
 }
-udononnxStatus_t __udononnx_transitional_enqueue_initialize(void) { return 0; }
 udononnxStatus_t __udononnx_transitional_bind_all(void) { return 0; }
 udononnxStatus_t __udononnx_transitional_resolve_input(uint32_t i, cl_mem *m,
                                                        size_t *o, size_t *n) {

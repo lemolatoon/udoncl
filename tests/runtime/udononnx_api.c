@@ -93,19 +93,6 @@ udononnxGeneratedDispose(uint32_t graph_id,
 }
 
 /* The transitional binding is not used here. */
-udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxTransitionalSession_t *session,
-    cl_command_queue queue, cl_uint wait_count, const cl_event *wait_list,
-    cl_event *completion) {
-  (void)graph_id;
-  (void)session;
-  (void)queue;
-  (void)wait_count;
-  (void)wait_list;
-  (void)completion;
-  return UDONONNX_STATUS_NOT_SUPPORTED;
-}
-
 udononnxStatus_t
 udononnxGeneratedEnqueueRun(uint32_t graph_id,
                             udononnxTransitionalSession_t *session,

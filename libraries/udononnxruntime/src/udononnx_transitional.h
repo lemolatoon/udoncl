@@ -29,10 +29,12 @@ typedef struct udononnxTensor {
   int64_t dimensions[UDONONNX_MAX_TENSOR_RANK];
 } udononnxTensor_t;
 
+/* CreateSession, which the generated create calls once it has allocated the
+ * graph inputs and outputs, creates the session's own Device buffers,
+ * enqueues nothing and leaves the session READY. */
 typedef enum udononnxTransitionalSessionState {
   UDONONNX_SESSION_EMPTY = 0,
   UDONONNX_SESSION_CREATED = 1,
-  UDONONNX_SESSION_INITIALIZING = 2,
   UDONONNX_SESSION_READY = 3,
   UDONONNX_SESSION_RUNNING = 4,
   UDONONNX_SESSION_DISPOSED = 5
@@ -74,6 +76,7 @@ udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
                            uint32_t model_index, void *input_bindings,
                            uint32_t input_binding_bytes, void *output_bindings,
                            uint32_t output_binding_bytes);
+udononnxStatus_t udononnxBindingStateCreateSession(void *state_storage);
 udononnxStatus_t
 udononnxBindingStateAllocateBuffer(void *state_storage, uint32_t access,
                                    uint32_t byte_capacity,
@@ -85,10 +88,6 @@ udononnxStatus_t udononnxBindingStateBeginStaticBind(void *state_storage);
 udononnxStatus_t
 udononnxBindingStateCompleteStaticBind(void *state_storage,
                                        udononnxStatus_t status);
-udononnxStatus_t
-udononnxBindingStateEnqueueInitialize(void *state_storage, uint32_t wait_count,
-                                      const cl_event *wait_list,
-                                      cl_event *completion);
 udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                                                 uint32_t wait_count,
                                                 const cl_event *wait_list,
@@ -107,7 +106,7 @@ udononnxStatus_t udononnxBindingStateResolveOutput(void *state_storage,
                                                    size_t *byte_offset,
                                                    size_t *byte_length);
 /* Called by the generated continuation that observes the completion of an
- * enqueued initialize or run. It never releases the event. */
+ * enqueued run. It never releases the event. */
 udononnxStatus_t udononnxBindingStateCompleteEvent(void *state_storage,
                                                    cl_event completion,
                                                    udononnxStatus_t result);
@@ -129,13 +128,8 @@ udononnxSessionResolveOutput(const udononnxTransitionalSession_t *session,
 uint32_t
 udononnxSessionBindingVersion(const udononnxTransitionalSession_t *session);
 
-/* The generated dispatchers of the transitional session. EnqueueInitialize
- * is Create followed by a marker that reports completion; EnqueueRun runs
- * the graph on the bound tables and enqueues a marker. */
-udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxTransitionalSession_t *session,
-    cl_command_queue queue, cl_uint wait_count, const cl_event *wait_list,
-    cl_event *completion);
+/* The generated run of the transitional session: it runs the graph on the
+ * bound tables and enqueues a marker. */
 udononnxStatus_t
 udononnxGeneratedEnqueueRun(uint32_t graph_id,
                             udononnxTransitionalSession_t *session,

@@ -27,7 +27,7 @@ module attributes {
 
 // Every symbol of a private binding but the sequence-state ones is named.
 
-// expected-error @below {{ONNX binding metadata has no physical enqueue_initialize_symbol}}
+// expected-error @below {{ONNX binding metadata has no physical bind_all_symbol}}
 module attributes {
   udoncl.onnx_binding = {
     abi = "udononnx-runtime-v2", model_index = 0 : i32, model_name = "model_0",

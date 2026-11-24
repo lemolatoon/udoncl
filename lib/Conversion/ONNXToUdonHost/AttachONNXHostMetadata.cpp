@@ -61,9 +61,6 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
           "resolve_output_symbol",
           builder.getStringAttr("__udononnx_transitional_resolve_output")),
       builder.getNamedAttr(
-          "enqueue_initialize_symbol",
-          builder.getStringAttr("__udononnx_transitional_enqueue_initialize")),
-      builder.getNamedAttr(
           "enqueue_run_symbol",
           builder.getStringAttr("__udononnx_transitional_enqueue_run")),
       builder.getNamedAttr(

@@ -97,9 +97,8 @@ struct DescribeONNXBindingManifestPass
     if (physical) {
       SmallVector<NamedAttribute> symbols;
       for (StringRef name :
-           {"create_symbol", "enqueue_initialize_symbol", "bind_all_symbol",
-            "resolve_input_symbol", "resolve_output_symbol",
-            "enqueue_run_symbol", "dispose_symbol"}) {
+           {"create_symbol", "bind_all_symbol", "resolve_input_symbol",
+            "resolve_output_symbol", "enqueue_run_symbol", "dispose_symbol"}) {
         auto value = physical.getAs<StringAttr>(name);
         if (!value)
           return module.emitError()

@@ -2,8 +2,8 @@
  * (udononnx_transitional.h) on the native OpenCL runtime: the binding-state
  * functions the generated __udononnx_transitional_* binding of the TinyLlama
  * Conversation and Chat Hosts calls. The generated dispatchers of the model
- * are stubbed: initialize enqueues one write, and the run copies the bound
- * input to the bound output. */
+ * are stubbed: create makes one buffer, and the run copies the bound input
+ * to the bound output. */
 #include <CL/cl.h>
 #include <stddef.h>
 #include <string.h>
@@ -88,24 +88,6 @@ int udoncl_cl_draw(uint32_t buffer, uint32_t generation,
   return 0;
 }
 
-udononnxStatus_t udononnxGeneratedEnqueueInitialize(
-    uint32_t graph_id, udononnxTransitionalSession_t *session,
-    cl_command_queue queue, cl_uint wait_count, const cl_event *wait_list,
-    cl_event *completion) {
-  static const unsigned char initialized = 1;
-  cl_int error;
-  if ((graph_id != 7 && graph_id != 8) || !session || initialization_buffer)
-    return UDONONNX_STATUS_INVALID_VALUE;
-  initialization_buffer =
-      clCreateBuffer(session->context, CL_MEM_READ_WRITE, 1, 0, &error);
-  if (!initialization_buffer || error != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  error = clEnqueueWriteBuffer(queue, initialization_buffer, CL_FALSE, 0, 1,
-                               &initialized, wait_count, wait_list, completion);
-  return error == CL_SUCCESS ? UDONONNX_STATUS_SUCCESS
-                             : UDONONNX_STATUS_OPENCL_ERROR;
-}
-
 udononnxStatus_t
 udononnxGeneratedEnqueueRun(uint32_t graph_id,
                             udononnxTransitionalSession_t *session,
@@ -143,16 +125,22 @@ udononnxGeneratedDispose(uint32_t graph_id,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-/* The session API is not used here. */
+/* Creates the model's own Device buffer (one byte) and enqueues nothing. */
 udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
                                          udononnxTransitionalSession_t *session,
                                          cl_command_queue queue) {
-  (void)graph_id;
-  (void)session;
+  cl_int error;
   (void)queue;
-  return UDONONNX_STATUS_NOT_SUPPORTED;
+  if ((graph_id != 7 && graph_id != 8) || !session || initialization_buffer)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  initialization_buffer =
+      clCreateBuffer(session->context, CL_MEM_READ_WRITE, 1, 0, &error);
+  return initialization_buffer && error == CL_SUCCESS
+             ? UDONONNX_STATUS_SUCCESS
+             : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
+/* The session API is not used here. */
 udononnxStatus_t udononnxGeneratedBindMemory(uint32_t graph_id, uint32_t output,
                                              uint32_t index, cl_mem memory) {
   (void)graph_id;
@@ -183,19 +171,6 @@ static int bind(udononnxTensor_t *entry, udonclBufferHandle_t buffer,
   for (axis = 0; axis < UDONONNX_MAX_TENSOR_RANK; ++axis)
     entry->dimensions[axis] = axis < rank ? dimensions[axis] : 0;
   return 1;
-}
-
-/* Initializes the binding in `state`: initialize, wait, complete. */
-static int initialize(void *state) {
-  cl_event completion = 0;
-  if (udononnxBindingStateEnqueueInitialize(state, 0, 0, &completion) !=
-          UDONONNX_STATUS_SUCCESS ||
-      !completion || clWaitForEvents(1, &completion) != CL_SUCCESS ||
-      udononnxBindingStateCompleteEvent(state, completion,
-                                        UDONONNX_STATUS_SUCCESS) !=
-          UDONONNX_STATUS_SUCCESS)
-    return 0;
-  return clReleaseEvent(completion) == CL_SUCCESS;
 }
 
 /* Runs the binding in `state` to completion. */
@@ -263,6 +238,14 @@ int main(void) {
   EXPECT(udononnxBindingStateCreate(
              state, sizeof(state), context, queue, 0, inputs, sizeof(inputs),
              outputs, sizeof(outputs)) == UDONONNX_STATUS_INVALID_VALUE);
+  /* The session is ready once the generated create has made its own
+   * buffers, after the graph inputs and outputs. */
+  EXPECT(udononnxBindingStateBeginStaticBind(state) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(initialization_buffer == 0);
+  EXPECT(udononnxBindingStateCreateSession(state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateCreateSession(state) ==
+         UDONONNX_STATUS_INVALID_STATE);
   EXPECT(udononnxBindingStateGetCommandQueue(state, &binding_queue) ==
              UDONONNX_STATUS_SUCCESS &&
          binding_queue == queue);
@@ -270,25 +253,10 @@ int main(void) {
              UDONONNX_STATUS_SUCCESS &&
          session && session->model == &models[0]);
 
-  /* Nothing is bound or run before the binding is initialized, and it is
-   * not disposed while initializing. */
-  EXPECT(udononnxBindingStateBeginStaticBind(state) ==
-         UDONONNX_STATUS_NOT_INITIALIZED);
-  EXPECT(udononnxBindingStateEnqueueRun(state, 0, 0, &completion) ==
-             UDONONNX_STATUS_NOT_INITIALIZED &&
-         !completion);
-  EXPECT(udononnxBindingStateEnqueueInitialize(state, 0, 0, &completion) ==
-             UDONONNX_STATUS_SUCCESS &&
-         completion);
-  EXPECT(udononnxBindingStateDispose(state) == UDONONNX_STATUS_BUSY);
-  EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
-  EXPECT(udononnxBindingStateCompleteEvent(state, completion,
-                                           UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindingStateCompleteEvent(state, completion,
+  EXPECT(initialization_buffer != 0);
+  EXPECT(udononnxBindingStateCompleteEvent(state, (cl_event)state,
                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_STALE_HANDLE);
-  EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
 
   /* The binding allocates its Device buffers read-only, write-only or
    * read-write. */
@@ -418,7 +386,7 @@ int main(void) {
   EXPECT(udononnxBindingStateCreate(state, sizeof(state), context, queue, 1,
                                     inputs, sizeof(inputs), 0,
                                     0) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(initialize(state));
+  EXPECT(udononnxBindingStateCreateSession(state) == UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateBeginStaticBind(state) == UDONONNX_STATUS_SUCCESS);
   EXPECT(bind(&inputs[0], input, sizeof(source), 0, 4, empty_dimensions));
   EXPECT(udononnxBindingStateCompleteStaticBind(

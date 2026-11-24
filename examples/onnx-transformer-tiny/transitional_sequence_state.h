@@ -13,7 +13,8 @@
  * use it.
  *
  * The binding borrows the OpenCL context and queue the Host passes to create
- * until dispose returns. */
+ * until dispose returns. Create also creates the model's own Device buffers;
+ * it enqueues nothing. */
 
 #include <CL/cl.h>
 #include <stddef.h>
@@ -26,7 +27,6 @@ extern "C" {
 
 udononnxStatus_t __udononnx_transitional_create(cl_context context,
                                                 cl_command_queue queue);
-udononnxStatus_t __udononnx_transitional_enqueue_initialize(void);
 udononnxStatus_t __udononnx_transitional_bind_all(void);
 udononnxStatus_t __udononnx_transitional_resolve_input(uint32_t input_index,
                                                        cl_mem *memory,

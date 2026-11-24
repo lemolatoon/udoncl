@@ -202,8 +202,6 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
   }
   status = __udononnx_transitional_create(context, queue);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = __udononnx_transitional_enqueue_initialize();
-  if (status == UDONONNX_STATUS_SUCCESS)
     status = __udononnx_transitional_bind_all();
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_buffers();

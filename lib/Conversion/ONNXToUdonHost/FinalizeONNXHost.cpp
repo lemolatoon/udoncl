@@ -1499,13 +1499,12 @@ LogicalResult declareBindingRuntime(ModuleOp module) {
       {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32}, {i32});
   declarations.require("udononnxBindingStateAllocateBuffer",
                        {pointer, i32, i32, pointer}, {i32});
+  declarations.require("udononnxBindingStateCreateSession", {pointer}, {i32});
   declarations.require("udononnxBindingStateBeginStaticBind", {pointer}, {i32});
   declarations.require("udononnxBindingStateCompleteStaticBind", {pointer, i32},
                        {i32});
   declarations.require("udonclDeviceBufferView",
                        {pointer, i32, i32, i32, pointer}, {i32});
-  declarations.require("udononnxBindingStateEnqueueInitialize",
-                       {pointer, i32, pointer, pointer}, {i32});
   declarations.require("udononnxBindingStateEnqueueRun",
                        {pointer, i32, pointer, pointer}, {i32});
   declarations.require("udononnxBindingStateGetSession", {pointer, pointer},
@@ -1641,6 +1640,13 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
     allocate(isSequenceStateOutput(graph, index) ? 2 : 1, tensorIndex,
              handleIndex++);
+  // The session's own Device buffers come after the graph inputs and
+  // outputs: the run-time buffer pool numbers buffers in the plan's order
+  // (udoncl.mutable_buffer_bytes), inputs and outputs first.
+  auto createdSession = func::CallOp::create(
+      builder, location, "udononnxBindingStateCreateSession", TypeRange{i32},
+      ValueRange{state()});
+  returnIfNonzero(create, createdSession.getResult(0));
   if (!graph.sequenceStates.empty()) {
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStateOwnedSymbol));
@@ -1773,7 +1779,8 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   createResolve("__udononnx_transitional_resolve_output",
                 "udononnxBindingStateResolveOutput", false);
 
-  auto createEnqueue = [&](StringRef name, StringRef callee, bool run) {
+  // The run enqueues the graph and waits for its completion marker.
+  auto createEnqueue = [&](StringRef name, StringRef callee) {
     builder.setInsertionPointToEnd(module.getBody());
     auto function =
         func::FuncOp::create(builder, location, name,
@@ -1786,7 +1793,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     Block *waitEvent = function.addBlock();
     Block *enqueueFailed = function.addBlock();
     builder.setInsertionPointToEnd(enqueueEntry);
-    if (run && !graph.sequenceStates.empty()) {
+    if (!graph.sequenceStates.empty()) {
       Block *stateReady = function.addBlock();
       Block *invalidState = function.addBlock();
       Value owned =
@@ -1864,34 +1871,16 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
       Value succeeded =
           arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
                                 finalStatus, constant(0));
-      if (run) {
-        Value pending =
-            addressOf(builder, location, sequenceStatePendingSymbol);
-        store(builder, location,
-              arith::SelectOp::create(builder, location, succeeded, constant(1),
-                                      loadI32(builder, location, pending)),
-              pending);
-      } else {
-        Value pending =
-            addressOf(builder, location, sequenceStatePendingSymbol);
-        store(builder, location,
-              arith::SelectOp::create(builder, location, succeeded, constant(0),
-                                      loadI32(builder, location, pending)),
-              pending);
-        Value poisoned =
-            addressOf(builder, location, sequenceStatePoisonedSymbol);
-        store(builder, location,
-              arith::SelectOp::create(builder, location, succeeded, constant(0),
-                                      loadI32(builder, location, poisoned)),
-              poisoned);
-      }
+      Value pending = addressOf(builder, location, sequenceStatePendingSymbol);
+      store(builder, location,
+            arith::SelectOp::create(builder, location, succeeded, constant(1),
+                                    loadI32(builder, location, pending)),
+            pending);
     }
     func::ReturnOp::create(builder, location, finalStatus);
   };
-  createEnqueue("__udononnx_transitional_enqueue_initialize",
-                "udononnxBindingStateEnqueueInitialize", false);
   createEnqueue("__udononnx_transitional_enqueue_run",
-                "udononnxBindingStateEnqueueRun", true);
+                "udononnxBindingStateEnqueueRun");
 
   if (!graph.sequenceStates.empty()) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -2384,42 +2373,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                            bytes);
   }
   func::ReturnOp::create(builder, location, onnxStatus(0));
-
-  // The transitional session's initialization is Create followed by a
-  // marker that completes once everything enqueued before it has.
-  builder.setInsertionPointToEnd(module.getBody());
-  auto enqueueInitialize = func::FuncOp::create(
-      builder, location, "udononnxGeneratedEnqueueInitialize", signature);
-  Block *enqueueInitializeEntry = enqueueInitialize.addEntryBlock();
-  Block *enqueueInitializeMarker = enqueueInitialize.addBlock();
-  Block *enqueueInitializeFailure = enqueueInitialize.addBlock();
-  builder.setInsertionPointToEnd(enqueueInitializeEntry);
-  auto created =
-      func::CallOp::create(builder, location, initialize,
-                           ValueRange{enqueueInitializeEntry->getArgument(0),
-                                      enqueueInitializeEntry->getArgument(1),
-                                      enqueueInitializeEntry->getArgument(2)});
-  Value createSucceeded =
-      arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                            created.getResult(0), onnxStatus(0));
-  cf::CondBranchOp::create(builder, location, createSucceeded,
-                           enqueueInitializeMarker, ValueRange{},
-                           enqueueInitializeFailure, ValueRange{});
-  builder.setInsertionPointToEnd(enqueueInitializeFailure);
-  func::ReturnOp::create(builder, location, created.getResult(0));
-  builder.setInsertionPointToEnd(enqueueInitializeMarker);
-  auto marker = func::CallOp::create(
-      builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
-      ValueRange{enqueueInitializeEntry->getArgument(2),
-                 enqueueInitializeEntry->getArgument(3),
-                 enqueueInitializeEntry->getArgument(4),
-                 enqueueInitializeEntry->getArgument(5)});
-  Value markerSucceeded =
-      arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                            marker.getResult(0), onnxStatus(0));
-  Value markerStatus = arith::SelectOp::create(
-      builder, location, markerSucceeded, onnxStatus(0), onnxStatus(5));
-  func::ReturnOp::create(builder, location, markerStatus);
 
   builder.setInsertionPointToEnd(module.getBody());
   auto disposeSignature =
@@ -3846,7 +3799,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     builder.setInsertionPointToEnd(nextOutput);
   }
 
-  marker = func::CallOp::create(
+  auto marker = func::CallOp::create(
       builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
       ValueRange{entry->getArgument(2), onnxStatus(0),
                  nullPointer(builder, location), entry->getArgument(5)});

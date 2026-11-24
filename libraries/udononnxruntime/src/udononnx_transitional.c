@@ -408,39 +408,6 @@ udononnxRecordFailure(udononnxTransitionalSession_t *session,
   return status;
 }
 
-static udononnxStatus_t udononnxSessionEnqueueInitialize(
-    udononnxTransitionalSession_t *session, cl_command_queue queue,
-    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
-  udononnxStatus_t status;
-  if (!session || !completion || (!!wait_count != !!wait_list))
-    return udononnxRecordFailure(session, UDONONNX_STATUS_INVALID_VALUE);
-  *completion = 0;
-  if (session->state == UDONONNX_SESSION_DISPOSED)
-    return udononnxRecordFailure(session, UDONONNX_STATUS_DISPOSED);
-  if (session->state == UDONONNX_SESSION_INITIALIZING ||
-      session->state == UDONONNX_SESSION_RUNNING)
-    return udononnxRecordFailure(session, UDONONNX_STATUS_BUSY);
-  if (session->state != UDONONNX_SESSION_CREATED)
-    return udononnxRecordFailure(session, UDONONNX_STATUS_INVALID_VALUE);
-  status = udononnxValidateQueue(session, queue);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return udononnxRecordFailure(session, status);
-  status = udononnxGeneratedEnqueueInitialize(session->model->graph_id, session,
-                                              queue, wait_count, wait_list,
-                                              completion);
-  if (status != UDONONNX_STATUS_SUCCESS || !*completion)
-    return udononnxRecordFailure(session,
-                                 status == UDONONNX_STATUS_SUCCESS
-                                     ? UDONONNX_STATUS_EXECUTION_FAILURE
-                                     : status);
-  session->operation_generation =
-      udononnxNextGeneration(session->operation_generation);
-  session->active_event = *completion;
-  session->state = UDONONNX_SESSION_INITIALIZING;
-  session->last_status = UDONONNX_STATUS_BUSY;
-  return UDONONNX_STATUS_SUCCESS;
-}
-
 static udononnxStatus_t
 udononnxSessionEnqueueRun(udononnxTransitionalSession_t *session,
                           cl_command_queue queue, cl_uint wait_count,
@@ -451,8 +418,7 @@ udononnxSessionEnqueueRun(udononnxTransitionalSession_t *session,
   *completion = 0;
   if (session->state == UDONONNX_SESSION_DISPOSED)
     return udononnxRecordFailure(session, UDONONNX_STATUS_DISPOSED);
-  if (session->state == UDONONNX_SESSION_INITIALIZING ||
-      session->state == UDONONNX_SESSION_RUNNING)
+  if (session->state == UDONONNX_SESSION_RUNNING)
     return udononnxRecordFailure(session, UDONONNX_STATUS_BUSY);
   if (session->state != UDONONNX_SESSION_READY)
     return udononnxRecordFailure(session, UDONONNX_STATUS_NOT_INITIALIZED);
@@ -480,24 +446,14 @@ udononnxSessionEnqueueRun(udononnxTransitionalSession_t *session,
 static udononnxStatus_t
 udononnxSessionCompleteEvent(udononnxTransitionalSession_t *session,
                              cl_event completion, udononnxStatus_t result) {
-  udononnxTransitionalSessionState_t pending_state;
   if (!session || !completion)
     return UDONONNX_STATUS_INVALID_VALUE;
-  if (session->state == UDONONNX_SESSION_DISPOSED)
-    return UDONONNX_STATUS_STALE_HANDLE;
-  pending_state = session->state;
-  if ((pending_state != UDONONNX_SESSION_INITIALIZING &&
-       pending_state != UDONONNX_SESSION_RUNNING) ||
+  if (session->state != UDONONNX_SESSION_RUNNING ||
       completion != session->active_event)
     return UDONONNX_STATUS_STALE_HANDLE;
   session->active_event = 0;
   session->last_status = result;
-  if (pending_state == UDONONNX_SESSION_INITIALIZING)
-    session->state = result == UDONONNX_STATUS_SUCCESS
-                         ? UDONONNX_SESSION_READY
-                         : UDONONNX_SESSION_CREATED;
-  else
-    session->state = UDONONNX_SESSION_READY;
+  session->state = UDONONNX_SESSION_READY;
   return result;
 }
 
@@ -508,8 +464,7 @@ udononnxSessionDispose(udononnxTransitionalSession_t *session) {
     return UDONONNX_STATUS_INVALID_VALUE;
   if (session->state == UDONONNX_SESSION_DISPOSED)
     return UDONONNX_STATUS_SUCCESS;
-  if (session->state == UDONONNX_SESSION_INITIALIZING ||
-      session->state == UDONONNX_SESSION_RUNNING)
+  if (session->state == UDONONNX_SESSION_RUNNING)
     return UDONONNX_STATUS_BUSY;
   if (session->model) {
     status = udononnxGeneratedDispose(session->model->graph_id, session);
@@ -584,6 +539,26 @@ udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
   return UDONONNX_STATUS_SUCCESS;
 }
 
+udononnxStatus_t udononnxBindingStateCreateSession(void *state_storage) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  udononnxStatus_t status;
+  if (!state)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (state->session.state != UDONONNX_SESSION_CREATED)
+    return UDONONNX_STATUS_INVALID_STATE;
+  /* Under the static Unity lowering the session's buffers are assigned
+   * Textures, so creating them enqueues nothing. */
+  status = udononnxGeneratedCreate(state->session.model->graph_id,
+                                   &state->session, state->queue);
+  if (status != UDONONNX_STATUS_SUCCESS) {
+    udononnxGeneratedDispose(state->session.model->graph_id, &state->session);
+    state->session.last_status = status;
+    return status;
+  }
+  state->session.state = UDONONNX_SESSION_READY;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 udononnxStatus_t
 udononnxBindingStateAllocateBuffer(void *state_storage, uint32_t access,
                                    uint32_t byte_capacity,
@@ -603,17 +578,6 @@ udononnxBindingStateAllocateBuffer(void *state_storage, uint32_t access,
     return UDONONNX_STATUS_OPENCL_ERROR;
   return status == UDONCL_STATUS_SUCCESS ? UDONONNX_STATUS_SUCCESS
                                          : UDONONNX_STATUS_INVALID_VALUE;
-}
-
-udononnxStatus_t
-udononnxBindingStateEnqueueInitialize(void *state_storage, uint32_t wait_count,
-                                      const cl_event *wait_list,
-                                      cl_event *completion) {
-  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
-  return state ? udononnxSessionEnqueueInitialize(&state->session, state->queue,
-                                                  wait_count, wait_list,
-                                                  completion)
-               : UDONONNX_STATUS_NOT_INITIALIZED;
 }
 
 udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
@@ -645,8 +609,7 @@ udononnxStatus_t udononnxBindingStateBeginStaticBind(void *state_storage) {
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (state->session.state == UDONONNX_SESSION_DISPOSED)
     status = UDONONNX_STATUS_DISPOSED;
-  else if (state->session.state == UDONONNX_SESSION_INITIALIZING ||
-           state->session.state == UDONONNX_SESSION_RUNNING)
+  else if (state->session.state == UDONONNX_SESSION_RUNNING)
     status = UDONONNX_STATUS_BUSY;
   else if (state->session.state != UDONONNX_SESSION_READY)
     status = UDONONNX_STATUS_NOT_INITIALIZED;

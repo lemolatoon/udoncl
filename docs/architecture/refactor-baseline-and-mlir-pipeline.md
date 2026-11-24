@@ -449,7 +449,6 @@ buffers through the UdonONNX session API. Representative output:
 ```mlir
 func.func @__udononnx_transitional_create(...)
 func.func @__udononnx_transitional_bind_all(...)
-func.func @__udononnx_transitional_enqueue_initialize(...)
 func.func @__udononnx_transitional_enqueue_run(...)
 func.func @__udononnx_transitional_dispose(...)
 ```
