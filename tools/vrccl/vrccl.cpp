@@ -321,7 +321,8 @@ cl::opt<bool> emitOpenCLUserKernels(
              "directory)"));
 cl::opt<bool> planHostBufferCapacity(
     "plan-host-buffer-capacity",
-    cl::desc("Plan constant C Host cl_mem allocations before runtime linking"));
+    cl::desc("Plan one OpenCL buffer handle per allocation context of the "
+             "runtime-free C Host (vrc-plan-host-device-handle-pipeline)"));
 cl::opt<bool> omitIntermediateIR(
     "omit-intermediate-ir",
     cl::desc("Omit diagnostic MLIR snapshots from a Unity library bundle"));
@@ -2509,26 +2510,6 @@ int main(int argc, char **argv) {
                ? 1
                : 0;
   }
-  if (planHostBufferCapacity) {
-    if (outputDirectory.empty() || capacityHeader.empty()) {
-      errs() << "Host buffer planning requires -o plan.json and "
-                "--capacity-header\n";
-      return 1;
-    }
-    LLVMContext llvmContext;
-    SMDiagnostic diagnostic;
-    auto inputModule = parseIRFile(inputFilename, diagnostic, llvmContext);
-    if (!inputModule) {
-      diagnostic.print(argv[0], errs());
-      return 1;
-    }
-    auto plan = udoncl::planHostBuffers(*inputModule, baseMutableHandleCapacity,
-                                        errs());
-    return failed(plan) || failed(udoncl::writeHostBufferPlan(
-                               *plan, outputDirectory, capacityHeader, errs()))
-               ? 1
-               : 0;
-  }
   if (checkRequest) {
     auto manifest = MemoryBuffer::getFile(inputFilename),
          request = MemoryBuffer::getFile(requestFilename);
@@ -2568,6 +2549,57 @@ int main(int argc, char **argv) {
                   cf::ControlFlowDialect, func::FuncDialect, gpu::GPUDialect,
                   math::MathDialect, memref::MemRefDialect, scf::SCFDialect>();
   MLIRContext context(registry);
+  if (planHostBufferCapacity) {
+    if (capacityHeader.empty()) {
+      errs() << "Host buffer planning requires -o plan.json and "
+                "--capacity-header\n";
+      return 1;
+    }
+    if (baseMutableHandleCapacity < 0) {
+      errs() << "base mutable handle capacity must be non-negative\n";
+      return 1;
+    }
+    context.loadAllAvailableDialects();
+    context.getOrLoadDialect<LLVM::LLVMDialect>();
+    udoncl::HostBufferPlan plan;
+    plan.baseCapacity = baseMutableHandleCapacity;
+    // The C Host as the main compile recovers it before the ONNX Host and the
+    // runtime are linked: one handle per allocation context
+    // (vrc-plan-host-device-handle-pipeline). A generated ONNX Host can be
+    // used without a C export layer; its plan is the base capacity alone.
+    auto program = recoverRuntimeFreeUnityHost(inputFilename, context);
+    if (failed(program))
+      return 1;
+    ModuleOp host = **program;
+    bool hasRoots =
+        llvm::any_of(host.getOps<func::FuncOp>(), [](func::FuncOp function) {
+          return function->hasAttr("udoncl.export") ||
+                 function->hasAttr("udoncl.static_constructor");
+        });
+    if (hasRoots) {
+      if (!configureUnityExports(host, json::Object{},
+                                 /*finalizeReachability=*/false))
+        return 1;
+      PassManager manager(&context);
+      ::vrc::buildHostDeviceHandlePlanPipeline(manager);
+      if (failed(manager.run(host)))
+        return 1;
+      auto handles =
+          host->getAttrOfType<DictionaryAttr>("vrc.host_device_handle_plan");
+      auto bytes =
+          handles ? handles.getAs<DenseI64ArrayAttr>("buffer_bytes") : nullptr;
+      if (!bytes) {
+        errs() << "the Host device handle plan is missing\n";
+        return 1;
+      }
+      plan.extraBufferBytes.assign(bytes.asArrayRef().begin(),
+                                   bytes.asArrayRef().end());
+    }
+    return failed(udoncl::writeHostBufferPlan(plan, outputDirectory,
+                                              capacityHeader, errs()))
+               ? 1
+               : 0;
+  }
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
   std::map<std::string, std::string> externalFiles;

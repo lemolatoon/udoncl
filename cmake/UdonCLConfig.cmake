@@ -769,6 +769,12 @@ function(udoncl_add_unity_library target)
           "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-plan.json")
       set(_capacity_header
           "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-capacity.h")
+      # The plan recovers the C Host as the main compile does, user kernel
+      # launches included, and counts its allocation contexts.
+      set(_plan_device_argument)
+      if(_device_module)
+        set(_plan_device_argument --device-llvm "${_device_module}")
+      endif()
       add_custom_command(
         OUTPUT "${_host_buffer_plan}" "${_capacity_header}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -777,8 +783,9 @@ function(udoncl_add_unity_library target)
                 "${_host_plan_module}"
                 --base-mutable-handle-capacity "${_mutable_handle_capacity}"
                 --capacity-header "${_capacity_header}"
+                ${_plan_device_argument}
                 -o "${_host_buffer_plan}"
-        DEPENDS "${UDONCLC_EXECUTABLE}" "${_host_plan_module}"
+        DEPENDS "${UDONCLC_EXECUTABLE}" "${_host_plan_module}" ${_device_module}
         COMMENT "Planning final Host cl_mem capacity for ${target}"
         VERBATIM)
       list(APPEND _runtime_dependencies "${_capacity_header}")

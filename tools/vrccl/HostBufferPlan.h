@@ -8,20 +8,18 @@
 #include <cstdint>
 
 namespace llvm {
-class Module;
 class raw_ostream;
 } // namespace llvm
 
 namespace udoncl {
 
+/// The handles of a Unity library's OpenCL runtime: the `baseCapacity`
+/// handles of its ONNX Host, then one Device buffer of each extra byte size
+/// per allocation context of its C Host.
 struct HostBufferPlan {
   int64_t baseCapacity = 0;
   llvm::SmallVector<int64_t> extraBufferBytes;
 };
-
-mlir::FailureOr<HostBufferPlan> planHostBuffers(llvm::Module &module,
-                                                int64_t baseCapacity,
-                                                llvm::raw_ostream &diagnostics);
 
 mlir::LogicalResult writeHostBufferPlan(const HostBufferPlan &plan,
                                         llvm::StringRef jsonPath,
