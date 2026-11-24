@@ -1,3 +1,5 @@
+#include "ONNXDimensionExprs.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -992,6 +994,86 @@ struct InferONNXShapesPass
                                            returnOp->getOperandTypes()));
       }
     };
+    // With bounded dimensions, the symbolic analysis also gives every axis
+    // that depends on a bounded dimension its extent expression, keeps it
+    // dynamic in the type, and folds the shape values it proves constant.
+    bool bounded = module->hasAttr(vrc::onnxDimensionBoundsAttr);
+    vrc::ONNXConstantReader reader =
+        [](Operation *op) -> std::optional<SmallVector<int64_t>> {
+      auto disposable = op->getAttrOfType<DisposableElementsAttr>("value");
+      if (!disposable || !isa<IntegerType>(disposable.getElementType()) ||
+          disposable.getNumElements() > 64)
+        return std::nullopt;
+      SmallVector<int64_t> values;
+      for (APInt integer : disposable.toDenseElementsAttr().getValues<APInt>())
+        values.push_back(integer.getSExtValue());
+      return values;
+    };
+    auto inferSymbolicShapes = [&] {
+      bool changed = false;
+      for (auto function : module.getOps<func::FuncOp>()) {
+        if (function.isDeclaration())
+          continue;
+        vrc::ONNXDimensionExprs analysis(function, reader);
+        function.walk([&](Operation *op) {
+          if (!op->getName().getStringRef().starts_with("onnx."))
+            return;
+          for (OpResult result : op->getResults()) {
+            const vrc::DimShape *shape = analysis.getShape(result);
+            auto current = dyn_cast<TensorType>(result.getType());
+            if (!shape || !current)
+              continue;
+            Type inferred = vrc::ONNXDimensionExprs::typeOf(
+                *shape, current.getElementType());
+            if (!isBetterShapedType(result.getType(), inferred))
+              continue;
+            result.setType(inferred);
+            changed = true;
+          }
+        });
+      }
+      return changed;
+    };
+    auto materializeSymbolicValues = [&]() -> LogicalResult {
+      for (auto function : module.getOps<func::FuncOp>()) {
+        if (function.isDeclaration())
+          continue;
+        vrc::ONNXDimensionExprs analysis(function, reader);
+        for (const auto &[op, message] : analysis.getErrors())
+          op->emitError("ONNX operation ") << message;
+        if (!analysis.getErrors().empty())
+          return failure();
+        SmallVector<Operation *> erase;
+        function.walk([&](Operation *op) {
+          StringRef name = op->getName().getStringRef();
+          if (!name.starts_with("onnx.") || name == "onnx.Constant" ||
+              op->getNumResults() != 1)
+            return;
+          auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+          const vrc::DimShape *values = analysis.getIntegers(op->getResult(0));
+          if (!type || !type.hasStaticShape() ||
+              !isa<IntegerType>(type.getElementType()) || !values ||
+              values->size() != static_cast<size_t>(type.getNumElements()) ||
+              llvm::any_of(*values, [](const vrc::DimExpr &value) {
+                return !value.isConstant();
+              }))
+            return;
+          SmallVector<APInt> integers;
+          for (const vrc::DimExpr &value : *values)
+            integers.emplace_back(type.getElementTypeBitWidth(), value.offset,
+                                  true);
+          OpBuilder builder(op);
+          Value constant = builder.create<arith::ConstantOp>(
+              op->getLoc(), DenseElementsAttr::get(type, integers));
+          op->getResult(0).replaceAllUsesWith(constant);
+          erase.push_back(op);
+        });
+        for (Operation *op : llvm::reverse(erase))
+          if (op->use_empty())
+            op->erase();
+      }
+      return success();
+    };
     unsigned operationCount = 0;
     module.walk([&](Operation *) { ++operationCount; });
     for (unsigned iteration = 0; iteration < operationCount; ++iteration) {
@@ -1026,8 +1108,12 @@ struct InferONNXShapesPass
           }
         }
       });
+      if (bounded && inferSymbolicShapes())
+        changed = true;
       if (!changed) {
         materializeShapeValues();
+        if (bounded && failed(materializeSymbolicValues()))
+          return signalPassFailure();
         updateFunctionResults();
         return;
       }

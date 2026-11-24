@@ -9,6 +9,7 @@ add_mlir_library(VRCONNXToUdonHost DISABLE_INSTALL
   ONNXHostGraph.cpp
   ONNXHostPlan.cpp
   ONNXHostSequenceExtents.cpp
+  ONNXDimensionExprs.cpp
   ONNXHostSymbols.cpp
   ONNXToUdonHost.cpp
   ONNXToUdonHostCore.cpp
