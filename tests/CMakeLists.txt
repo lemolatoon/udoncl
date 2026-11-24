@@ -1118,4 +1118,21 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
       $<TARGET_FILE:onnx-fusion-kernels>
       "${PROJECT_BINARY_DIR}/tests/onnx-fusion")
   set_tests_properties(onnx-fusion-execution PROPERTIES TIMEOUT 600)
+  # The bounded decoder fixture run as the generated Host dispatches it,
+  # against ONNX Runtime.
+  add_executable(onnx-host-trace boundary/onnx_host_trace.cpp)
+  target_compile_features(onnx-host-trace PRIVATE cxx_std_20)
+  set_target_properties(onnx-host-trace PROPERTIES CXX_EXTENSIONS OFF)
+  if(MSVC)
+    target_compile_options(onnx-host-trace PRIVATE /fp:precise)
+  endif()
+  target_link_libraries(onnx-host-trace PRIVATE VRCNativeOpenCLRuntime)
+  add_test(NAME onnx-bounded-kv-execution
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_bounded_kv.py"
+      $<TARGET_FILE:vrccl> $<TARGET_FILE:vrc-opt>
+      $<TARGET_FILE:udoncl-onnx-frontend>
+      $<TARGET_FILE:onnx-host-trace>
+      "${PROJECT_BINARY_DIR}/tests/onnx-bounded-kv")
+  set_tests_properties(onnx-bounded-kv-execution PROPERTIES TIMEOUT 900)
 endif()
