@@ -539,9 +539,8 @@ do the words at or beyond a smaller `n`.
 
 > **Screenshot (pending):** Unity Console in Play Mode showing the sixteen SAXPY result lines — docs/images/getting-started/saxpy-console-output.png
 
-The generic buffer-ID methods `TryWriteFloatBuffer` / `TryWriteIntBuffer` and
-`StartReadFloatBuffer` / `StartReadIntBuffer` remain available as a low-level
-alternative to the named transfers.
+The named transfers are the only way U# moves a public buffer: the binding has
+no buffer-ID methods, and each named method addresses its buffer directly.
 
 ### Compile your own ONNX model with Host C (MNIST)
 

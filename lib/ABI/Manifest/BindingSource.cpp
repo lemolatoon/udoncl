@@ -79,7 +79,9 @@ struct AsyncExportBinding {
 };
 
 struct PublicBufferBinding {
-  int64_t id = 0;
+  /// Position of the buffer in the manifest's Device buffer list, which is
+  /// its index in the binding's `deviceBuffers` array.
+  size_t index = 0;
   int64_t words = 0;
   int64_t elements = 0;
   std::string suffix;
@@ -304,8 +306,10 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
   if (hasAsync && !hasBuffers)
     return invalid("async binding requires at least one Device buffer");
   SmallVector<PublicBufferBinding> publicBuffers;
-  bool hasPublicInput = false;
-  bool hasPublicOutput = false;
+  // The element types U# writes and reads; each gets one private transfer
+  // helper that the named methods call.
+  std::set<std::string> writtenTypes;
+  std::set<std::string> readTypes;
   if (buffers)
     for (auto indexed : llvm::enumerate(*buffers)) {
       const json::Value &value = indexed.value();
@@ -348,13 +352,17 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
         } else
           return invalid("Device buffer has an invalid source");
       }
-      publicBuffers.push_back({*id, *bytes / 4, *bytes / elementBytes,
-                               publicIoName(*name, indexed.index()),
-                               elementType->str(), access->str(),
-                               std::move(origin)});
-      hasPublicInput |= *access != "output";
-      hasPublicOutput |= *access != "input";
+      publicBuffers.push_back(
+          {indexed.index(), *bytes / 4, *bytes / elementBytes,
+           publicIoName(*name, indexed.index()), elementType->str(),
+           access->str(), std::move(origin)});
+      if (*access != "output")
+        writtenTypes.insert(elementType->str());
+      if (*access != "input")
+        readTypes.insert(elementType->str());
     }
+  bool hasPublicInput = !writtenTypes.empty();
+  bool hasPublicOutput = !readTypes.empty();
   bool hasPublicBuffers = !publicBuffers.empty();
 
   std::string source;
@@ -395,8 +403,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
          "        [SerializeField] private Texture2D[] staticTensors;\n";
   if (hasBuffers)
     output
-        << "        [SerializeField] private int[] deviceBufferIds;\n"
-           "        [SerializeField] private int[] deviceBufferLogicalBytes;\n"
+        << "        [SerializeField] private int[] deviceBufferLogicalBytes;\n"
            "        [SerializeField] private RenderTexture[] deviceBuffers;\n"
            "        [SerializeField] private Material bufferCopyMaterial;\n"
            "        private Texture2D[] uploadTextures;\n";
@@ -502,16 +509,6 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                     "IsAsyncFrameAdaptive"});
   if (hasBuffers)
     output << R"(
-        private int FindDeviceBuffer(int bufferId)
-        {
-            if (deviceBufferIds == null || deviceBuffers == null || deviceBufferLogicalBytes == null)
-                return -1;
-            for (int index = 0; index < deviceBufferIds.Length; ++index)
-                if (deviceBufferIds[index] == bufferId)
-                    return index;
-            return -1;
-        }
-
         private int EnsureDeviceBuffersCreated()
         {
             if (deviceBuffers == null)
@@ -579,21 +576,22 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
 )";
   if (hasPublicBuffers)
     output << R"(
-        private int ValidateTransfer(int bufferId, int words)
+        // Checks a transfer of `words` words with the Device buffer at
+        // `index` of deviceBuffers, a constant of the named method.
+        private int ValidateTransfer(int index, int words)
         {
             if (disposed)
                 return StatusDisposed;
             if (busy || readbackBusy)
                 return StatusBusy;
-            if (program == null || bufferCopyMaterial == null)
+            if (program == null || bufferCopyMaterial == null || deviceBufferLogicalBytes == null)
                 return StatusNotInitialized;
             int deviceBufferStatus = EnsureDeviceBuffersCreated();
             if (deviceBufferStatus != StatusSuccess)
                 return deviceBufferStatus;
-            int index = FindDeviceBuffer(bufferId);
-            if (index < 0 || deviceBuffers[index] == null || words < 0 || words != deviceBufferLogicalBytes[index] / 4)
+            if (index >= deviceBuffers.Length || index >= deviceBufferLogicalBytes.Length || words < 0 || words != deviceBufferLogicalBytes[index] / 4)
                 return StatusInvalidArgument;
-            return index;
+            return StatusSuccess;
         }
 
         private Color32 PackWord(int word)
@@ -606,44 +604,59 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             return pixel.r | (pixel.g << 8) | (pixel.b << 16) | (pixel.a << 24);
         }
 )";
+  // The id-based transfer methods of earlier bindings stay reserved, so no
+  // named method can take one of their names.
   if (hasPublicInput) {
     methods.insert("TryWriteFloatBuffer");
     methods.insert("TryWriteIntBuffer");
     methods.insert("TryWriteLongBuffer");
+  }
+  if (hasPublicOutput) {
+    methods.insert("StartReadFloatBuffer");
+    methods.insert("StartReadIntBuffer");
+    methods.insert("StartReadLongBuffer");
+  }
+  // Private word helpers of the named methods, one per element type: each
+  // takes the constant index of its Device buffer in deviceBuffers.
+  if (writtenTypes.count("float32"))
     output << R"(
-        public int TryWriteFloatBuffer(int bufferId, float[] source)
+        private int WriteFloatWords(int index, float[] source)
         {
             if (source == null)
                 return StatusInvalidArgument;
-            int index = ValidateTransfer(bufferId, source.Length);
-            if (index < 0)
-                return index;
+            int status = ValidateTransfer(index, source.Length);
+            if (status != StatusSuccess)
+                return status;
             Color32[] pixels = new Color32[deviceBuffers[index].width * deviceBuffers[index].height];
             for (int word = 0; word < source.Length; ++word)
                 pixels[word] = PackWord(System.BitConverter.SingleToInt32Bits(source[word]));
             return UploadWords(index, pixels);
         }
-
-        public int TryWriteIntBuffer(int bufferId, int[] source)
+)";
+  if (writtenTypes.count("int32"))
+    output << R"(
+        private int WriteIntWords(int index, int[] source)
         {
             if (source == null)
                 return StatusInvalidArgument;
-            int index = ValidateTransfer(bufferId, source.Length);
-            if (index < 0)
-                return index;
+            int status = ValidateTransfer(index, source.Length);
+            if (status != StatusSuccess)
+                return status;
             Color32[] pixels = new Color32[deviceBuffers[index].width * deviceBuffers[index].height];
             for (int word = 0; word < source.Length; ++word)
                 pixels[word] = PackWord(source[word]);
             return UploadWords(index, pixels);
         }
-
-        public int TryWriteLongBuffer(int bufferId, long[] source)
+)";
+  if (writtenTypes.count("int64"))
+    output << R"(
+        private int WriteLongWords(int index, long[] source)
         {
             if (source == null)
                 return StatusInvalidArgument;
-            int index = ValidateTransfer(bufferId, source.Length * 2);
-            if (index < 0)
-                return index;
+            int status = ValidateTransfer(index, source.Length * 2);
+            if (status != StatusSuccess)
+                return status;
             Color32[] pixels = new Color32[deviceBuffers[index].width * deviceBuffers[index].height];
             for (int element = 0; element < source.Length; ++element)
             {
@@ -654,20 +667,16 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             return UploadWords(index, pixels);
         }
 )";
-  }
   if (hasPublicOutput) {
-    methods.insert("StartReadFloatBuffer");
-    methods.insert("StartReadIntBuffer");
-    methods.insert("StartReadLongBuffer");
     methods.insert("GetLastReadbackStatus");
     output << R"(
-        private int StartReadback(int bufferId, int words, UdonSharpBehaviour receiver, string completionEvent)
+        private int StartReadback(int index, int words, UdonSharpBehaviour receiver, string completionEvent)
         {
             if (receiver == null || string.IsNullOrEmpty(completionEvent))
                 return StatusInvalidArgument;
-            int index = ValidateTransfer(bufferId, words);
-            if (index < 0)
-                return index;
+            int status = ValidateTransfer(index, words);
+            if (status != StatusSuccess)
+                return status;
             readbackBusy = true;
             pendingReadbackIndex = index;
             pendingReadbackReceiver = receiver;
@@ -693,8 +702,10 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             if (receiver != null)
                 receiver.SendCustomEvent(completionEvent);
         }
-
-        public int StartReadFloatBuffer(int bufferId, float[] destination, UdonSharpBehaviour receiver, string completionEvent)
+)";
+    if (readTypes.count("float32"))
+      output << R"(
+        private int ReadFloatWords(int index, float[] destination, UdonSharpBehaviour receiver, string completionEvent)
         {
             if (destination == null)
                 return StatusInvalidArgument;
@@ -703,13 +714,15 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             pendingFloatReadback = destination;
             pendingIntReadback = null;
             pendingLongReadback = null;
-            int status = StartReadback(bufferId, destination.Length, receiver, completionEvent);
+            int status = StartReadback(index, destination.Length, receiver, completionEvent);
             if (status != StatusSuccess)
                 pendingFloatReadback = null;
             return status;
         }
-
-        public int StartReadIntBuffer(int bufferId, int[] destination, UdonSharpBehaviour receiver, string completionEvent)
+)";
+    if (readTypes.count("int32"))
+      output << R"(
+        private int ReadIntWords(int index, int[] destination, UdonSharpBehaviour receiver, string completionEvent)
         {
             if (destination == null)
                 return StatusInvalidArgument;
@@ -718,13 +731,15 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             pendingIntReadback = destination;
             pendingFloatReadback = null;
             pendingLongReadback = null;
-            int status = StartReadback(bufferId, destination.Length, receiver, completionEvent);
+            int status = StartReadback(index, destination.Length, receiver, completionEvent);
             if (status != StatusSuccess)
                 pendingIntReadback = null;
             return status;
         }
-
-        public int StartReadLongBuffer(int bufferId, long[] destination, UdonSharpBehaviour receiver, string completionEvent)
+)";
+    if (readTypes.count("int64"))
+      output << R"(
+        private int ReadLongWords(int index, long[] destination, UdonSharpBehaviour receiver, string completionEvent)
         {
             if (destination == null)
                 return StatusInvalidArgument;
@@ -733,12 +748,13 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             pendingLongReadback = destination;
             pendingFloatReadback = null;
             pendingIntReadback = null;
-            int status = StartReadback(bufferId, destination.Length * 2, receiver, completionEvent);
+            int status = StartReadback(index, destination.Length * 2, receiver, completionEvent);
             if (status != StatusSuccess)
                 pendingLongReadback = null;
             return status;
         }
-
+)";
+    output << R"(
         public int GetLastReadbackStatus()
         {
             return lastReadbackStatus;
@@ -752,9 +768,9 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
     StringRef arrayType = buffer.elementType == "float32" ? "float[]"
                           : buffer.elementType == "int64" ? "long[]"
                                                           : "int[]";
-    StringRef suffix = buffer.elementType == "float32" ? "FloatBuffer("
-                       : buffer.elementType == "int64" ? "LongBuffer("
-                                                       : "IntBuffer(";
+    StringRef helper = buffer.elementType == "float32" ? "FloatWords("
+                       : buffer.elementType == "int64" ? "LongWords("
+                                                       : "IntWords(";
     StringRef direction = buffer.access == "input"
                               ? "U# writes it; the Device reads it."
                           : buffer.access == "output"
@@ -779,8 +795,8 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
         output << "\n        public int " << method << '(' << arrayType
                << " source)\n"
                   "        {\n"
-                  "            return TryWrite"
-               << suffix << buffer.id
+                  "            return Write"
+               << helper << buffer.index
                << ", source);\n"
                   "        }\n";
       else
@@ -788,8 +804,8 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                << " destination, UdonSharpBehaviour receiver, string "
                   "completionEvent)\n"
                   "        {\n"
-                  "            return StartRead"
-               << suffix << buffer.id
+                  "            return Read"
+               << helper << buffer.index
                << ", destination, receiver, completionEvent);\n"
                   "        }\n";
     }

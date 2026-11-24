@@ -186,6 +186,22 @@ def assert_binding_identity(manifest, source):
     assert source.startswith(header)
 
 
+def assert_no_id_based_transfers(source):
+    """U# transfers name their buffer; nothing takes or looks up a buffer id."""
+    for removed in [
+        'TryWriteFloatBuffer(',
+        'TryWriteIntBuffer(',
+        'TryWriteLongBuffer(',
+        'StartReadFloatBuffer(',
+        'StartReadIntBuffer(',
+        'StartReadLongBuffer(',
+        'FindDeviceBuffer(',
+        'deviceBufferIds',
+        'int bufferId',
+    ]:
+        assert removed not in source, removed
+
+
 def assert_static_async_artifact(artifact, assembly):
     assert_host_storage_finalization(artifact)
     assert '.export __udoncl_async_complete' in assembly
@@ -797,6 +813,7 @@ def main():
     assert 'public int TryInitialize(out int result)' in mnist_binding
     assert 'public int StartInitialize(' not in mnist_binding
     assert 'public int TryWriteImage(float[] source)' in mnist_binding
+    assert_no_id_based_transfers(mnist_binding)
     assert 'public int StartRun(' in mnist_binding
     assert 'public int GetRunStatus()' in mnist_binding
     assert 'public int TryGetRunResult(out int result)' in mnist_binding
@@ -1056,7 +1073,7 @@ def main():
     )
     complete_readback = mnist_binding.split(
         'private void CompletePublicReadback(', 1
-    )[1].split('public int StartReadFloatBuffer(', 1)[0]
+    )[1].split('private int ReadFloatWords(', 1)[0]
     for cleanup in [
         'readbackBusy = false;',
         'pendingFloatReadback = null;',
@@ -1403,7 +1420,8 @@ def main():
     # initialize enqueues no Device work: it is a synchronous export.
     assert 'public int TryInitialize(out int result)' in transformer_binding
     assert 'public int TryWriteInputIds(long[] source)' in transformer_binding
-    assert 'return TryWriteLongBuffer(1, source);' in transformer_binding
+    assert 'return WriteLongWords(0, source);' in transformer_binding
+    assert_no_id_based_transfers(transformer_binding)
     assert 'pixels[element * 2] = PackWord((int)value);' in transformer_binding
     assert (
         'pixels[element * 2 + 1] = PackWord((int)(value >> 32));'
@@ -2061,14 +2079,17 @@ def main():
     assert '[SerializeField] private RenderTexture[] deviceBuffers;' in (
         udonblas_binding)
     assert 'public int TryWriteMatrixA(float[] source)' in udonblas_binding
-    assert 'return TryWriteFloatBuffer(1, source);' in udonblas_binding
+    # Each named method passes the constant index of its Device buffer in
+    # deviceBuffers (manifest order) to a private word helper.
+    assert 'return WriteFloatWords(0, source);' in udonblas_binding
     assert 'public int TryWriteMatrixB(float[] source)' in udonblas_binding
-    assert 'return TryWriteFloatBuffer(2, source);' in udonblas_binding
+    assert 'return WriteFloatWords(1, source);' in udonblas_binding
     assert 'public int StartReadMatrixC(' in udonblas_binding
     assert (
-        'return StartReadFloatBuffer(3, destination, receiver, completionEvent);'
+        'return ReadFloatWords(2, destination, receiver, completionEvent);'
         in udonblas_binding
     )
+    assert_no_id_based_transfers(udonblas_binding)
     assert 'public int GetLastReadbackStatus()' in udonblas_binding
     assert 'private bool readbackBusy;' in udonblas_binding
     assert 'if (busy || readbackBusy)' in udonblas_binding

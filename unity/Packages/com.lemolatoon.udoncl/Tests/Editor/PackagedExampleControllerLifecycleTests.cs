@@ -319,20 +319,25 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 )
             );
             Assert.NotNull(hostProgram);
+            // The named transfer methods index deviceBuffers by constant;
+            // the binding has no buffer id table to fill.
+            Assert.IsFalse(
+                bindingBacking.publicVariables.TryGetVariableType("deviceBufferIds", out Type _)
+            );
             Assert.IsTrue(
                 bindingBacking.publicVariables.TryGetVariableValue(
-                    "deviceBufferIds",
-                    out int[] deviceBufferIds
+                    "deviceBufferLogicalBytes",
+                    out int[] deviceBufferLogicalBytes
                 )
             );
-            Assert.IsNotEmpty(deviceBufferIds);
+            Assert.IsNotEmpty(deviceBufferLogicalBytes);
             Assert.IsTrue(
                 bindingBacking.publicVariables.TryGetVariableValue(
                     "deviceBuffers",
                     out RenderTexture[] deviceBuffers
                 )
             );
-            Assert.AreEqual(deviceBufferIds.Length, deviceBuffers.Length);
+            Assert.AreEqual(deviceBufferLogicalBytes.Length, deviceBuffers.Length);
             Assert.IsTrue(
                 hostProgram.publicVariables.TryGetVariableValue(
                     "__udoncl_buffer_pool",

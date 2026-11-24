@@ -141,6 +141,12 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     ]
     for method in required_methods:
         require(method in source, f"generated U# binding is missing {method}")
+    # The controller reads every present through its named method; the
+    # binding has no id-based transfer method.
+    for method in ("TryWriteFloatBuffer(", "TryWriteLongBuffer(",
+                   "StartReadFloatBuffer(", "deviceBufferIds"):
+        require(method not in source,
+                f"generated U# binding still has the id-based {method}")
 
     return {
         "inputs": len(inputs),

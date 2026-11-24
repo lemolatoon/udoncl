@@ -109,6 +109,17 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not the Host variable"):
                 VALIDATOR.validate_artifact(artifact)
 
+    def test_rejects_id_based_transfer_methods(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            binding = artifact / "binding.cs"
+            binding.write_text(
+                binding.read_text(encoding="utf-8")
+                + "\nStartReadFloatBuffer(int bufferId, float[] destination",
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "id-based"):
+                VALIDATOR.validate_artifact(artifact)
+
     def test_rejects_unexpected_binding_class(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self.make_artifact(Path(directory))

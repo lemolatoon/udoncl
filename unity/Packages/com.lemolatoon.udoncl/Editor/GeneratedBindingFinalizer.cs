@@ -242,7 +242,6 @@ namespace Lemolatoon.Udoncl.Editor
                         "Generated wrapper does not contain its program binding."
                     );
                 programProperty.objectReferenceValue = program;
-                int[] bufferIds = null;
                 int[] bufferLogicalBytes = null;
                 RenderTexture[] bufferTextures = null;
                 Texture2D[] staticTensorTextures = null;
@@ -254,10 +253,8 @@ namespace Lemolatoon.Udoncl.Editor
                 )
                 {
                     DeviceBufferInfo[] buffers = manifest.device.buffers;
-                    bufferIds = new int[buffers.Length];
                     bufferLogicalBytes = new int[buffers.Length];
                     bufferTextures = new RenderTexture[buffers.Length];
-                    SerializedProperty ids = serializedWrapper.FindProperty("deviceBufferIds");
                     SerializedProperty logicalBytes = serializedWrapper.FindProperty(
                         "deviceBufferLogicalBytes"
                     );
@@ -265,22 +262,15 @@ namespace Lemolatoon.Udoncl.Editor
                     SerializedProperty copyMaterial = serializedWrapper.FindProperty(
                         "bufferCopyMaterial"
                     );
-                    if (
-                        ids == null
-                        || logicalBytes == null
-                        || textures == null
-                        || copyMaterial == null
-                    )
+                    if (logicalBytes == null || textures == null || copyMaterial == null)
                         throw new InvalidDataException(
                             "Generated wrapper does not contain its Device buffer transfer binding."
                         );
-                    ids.arraySize = buffers.Length;
                     logicalBytes.arraySize = buffers.Length;
                     textures.arraySize = buffers.Length;
                     for (int index = 0; index < buffers.Length; ++index)
                     {
                         DeviceBufferInfo buffer = buffers[index];
-                        bufferIds[index] = buffer.id;
                         bufferLogicalBytes[index] = buffer.logical_bytes;
                         string texturePath =
                             programRoot
@@ -293,7 +283,6 @@ namespace Lemolatoon.Udoncl.Editor
                             throw new InvalidDataException(
                                 "Generated Device buffer is missing: " + texturePath
                             );
-                        ids.GetArrayElementAtIndex(index).intValue = bufferIds[index];
                         logicalBytes.GetArrayElementAtIndex(index).intValue = bufferLogicalBytes[
                             index
                         ];
@@ -395,9 +384,8 @@ namespace Lemolatoon.Udoncl.Editor
                 SetPublicVariable(wrapperBacking, "program", program);
                 if (staticTensorTextures != null)
                     SetPublicVariable(wrapperBacking, "staticTensors", staticTensorTextures);
-                if (bufferIds != null)
+                if (bufferLogicalBytes != null)
                 {
-                    SetPublicVariable(wrapperBacking, "deviceBufferIds", bufferIds);
                     SetPublicVariable(
                         wrapperBacking,
                         "deviceBufferLogicalBytes",
