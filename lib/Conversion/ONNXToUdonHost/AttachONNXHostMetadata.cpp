@@ -74,6 +74,17 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
       builder.getNamedAttr("inputs", ioMetadata(graph.inputs)),
       builder.getNamedAttr("outputs", ioMetadata(graph.outputs)),
   };
+  // The graph outputs a session may bind to the buffer of their Concat's
+  // first operand (inPlaceConcats): {input, output, axis}.
+  SmallVector<Attribute> inPlace;
+  for (const InPlaceConcat &pair : inPlaceConcats(graph))
+    inPlace.push_back(builder.getDictionaryAttr(
+        {builder.getNamedAttr("input", builder.getI32IntegerAttr(pair.input)),
+         builder.getNamedAttr("output", builder.getI32IntegerAttr(pair.output)),
+         builder.getNamedAttr("axis", builder.getI32IntegerAttr(pair.axis))}));
+  if (!inPlace.empty())
+    fields.push_back(builder.getNamedAttr("in_place_concats",
+                                          builder.getArrayAttr(inPlace)));
   // Transitional (removed in stage 3): a library built with
   // TRANSITIONAL_SEQUENCE_STATE names the symbols of the private binding
   // FinalizeONNXHost generates for it, the sequence-state ones when the graph

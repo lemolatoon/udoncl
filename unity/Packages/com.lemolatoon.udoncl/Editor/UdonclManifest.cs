@@ -236,6 +236,18 @@ namespace Lemolatoon.Udoncl.Editor
         public string model_name;
         public UdonOnnxBindingTensorInfo[] inputs;
         public UdonOnnxBindingTensorInfo[] outputs;
+
+        // Graph outputs a session may bind to the buffer of their Concat's
+        // first operand, a graph input (absent when there is none).
+        public UdonOnnxInPlaceConcatInfo[] in_place_concats;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxInPlaceConcatInfo
+    {
+        public int input;
+        public int output;
+        public int axis;
     }
 
     [Serializable]

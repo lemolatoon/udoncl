@@ -112,6 +112,31 @@ struct DescribeONNXBindingManifestPass
         builder.getNamedAttr("inputs", *describedInputs),
         builder.getNamedAttr("outputs", *describedOutputs),
     };
+    // The in-place Concat pairs: a graph output a session may bind to the
+    // buffer of its Concat's first operand, a graph input.
+    if (auto pairs = binding.getAs<ArrayAttr>("in_place_concats")) {
+      SmallVector<Attribute> described;
+      for (Attribute attribute : pairs) {
+        auto pair = dyn_cast<DictionaryAttr>(attribute);
+        auto input = pair ? pair.getAs<IntegerAttr>("input") : IntegerAttr();
+        auto output = pair ? pair.getAs<IntegerAttr>("output") : IntegerAttr();
+        auto axis = pair ? pair.getAs<IntegerAttr>("axis") : IntegerAttr();
+        if (!input || !output || !axis ||
+            input.getInt() >= static_cast<int64_t>(inputs.size()) ||
+            output.getInt() >= static_cast<int64_t>(outputs.size()))
+          return module.emitError(
+              "ONNX binding in-place Concat metadata is malformed");
+        described.push_back(builder.getDictionaryAttr(
+            {builder.getNamedAttr("input",
+                                  builder.getI64IntegerAttr(input.getInt())),
+             builder.getNamedAttr("output",
+                                  builder.getI64IntegerAttr(output.getInt())),
+             builder.getNamedAttr("axis",
+                                  builder.getI64IntegerAttr(axis.getInt()))}));
+      }
+      fields.push_back(builder.getNamedAttr("in_place_concats",
+                                            builder.getArrayAttr(described)));
+    }
     // Transitional (removed in stage 3): only a library built with
     // TRANSITIONAL_SEQUENCE_STATE names the symbols of its private binding,
     // the sequence-state ones when the graph has sequence state.

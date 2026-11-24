@@ -151,6 +151,48 @@ bool hasDenseDynamicLayout(const GraphRecord &graph, unsigned tensor) {
   return aroundAxis(record.type.getShape(), record.dynamic->axis).first == 1;
 }
 
+SmallVector<InPlaceConcat> inPlaceConcats(const GraphRecord &graph) {
+  SmallVector<InPlaceConcat> pairs;
+  for (auto [outputIndex, output] : llvm::enumerate(graph.outputs)) {
+    const NodeRecord *node =
+        llvm::find_if(graph.nodes, [&, output = output](const NodeRecord &n) {
+          return n.output == output;
+        });
+    if (node == graph.nodes.end() || node->operation != "Concat" ||
+        node->inputs.size() != 2 || node->inputs[0] < 0 || node->inputs[1] < 0)
+      continue;
+    unsigned first = static_cast<unsigned>(node->inputs[0]);
+    const unsigned *input = llvm::find(graph.inputs, first);
+    if (input == graph.inputs.end())
+      continue;
+    const TensorRecord &source = graph.tensors[first];
+    const TensorRecord &result = graph.tensors[output];
+    int64_t rank = result.type.getRank();
+    int64_t axis = integerAttribute(*node, "axis", 0);
+    if (axis < 0)
+      axis += rank;
+    if (!source.dynamic || !result.dynamic || source.dynamic->axis != axis ||
+        result.dynamic->axis != axis ||
+        source.dynamic->symbol != result.dynamic->symbol ||
+        source.type.getElementType() != result.type.getElementType() ||
+        source.type.getRank() != rank)
+      continue;
+    bool sameOtherExtents = true;
+    for (int64_t other = 0; other < rank; ++other)
+      sameOtherExtents &= other == axis || source.type.getDimSize(other) ==
+                                               result.type.getDimSize(other);
+    int64_t row = 1;
+    for (int64_t inner = axis + 1; inner < rank; ++inner)
+      row *= result.type.getDimSize(inner);
+    if (!sameOtherExtents || row % 4 != 0)
+      continue;
+    pairs.push_back({static_cast<unsigned>(input - graph.inputs.begin()),
+                     static_cast<unsigned>(outputIndex), axis,
+                     static_cast<unsigned>(node - graph.nodes.begin())});
+  }
+  return pairs;
+}
+
 unsigned dimensionIndex(const GraphRecord &graph, StringRef symbol) {
   for (auto [index, dimension] : llvm::enumerate(graph.dimensionBounds))
     if (dimension.first == symbol)

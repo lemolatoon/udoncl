@@ -117,6 +117,20 @@ std::optional<DynamicLayout> dynamicLayout(const GraphRecord &graph,
 bool hasDenseDynamicLayout(const GraphRecord &graph, unsigned tensor);
 /// The index of the bounded dimension `symbol` in GraphRecord::dimensionBounds.
 unsigned dimensionIndex(const GraphRecord &graph, llvm::StringRef symbol);
+/// A graph output that is Concat(graph input, x) along an axis of a bounded
+/// dimension, with that input as the first operand: the same element type
+/// and the same extents on every other axis. When a session binds both to
+/// the same buffer with the same pitch, the input is the leading block of
+/// the output, and the run writes only the rows of `x` (in-place Concat).
+/// A row (the words after the axis) is a multiple of four words, so the
+/// rows are whole texels in every Device texel format.
+struct InPlaceConcat {
+  unsigned input;
+  unsigned output;
+  int64_t axis;
+  unsigned node;
+};
+llvm::SmallVector<InPlaceConcat> inPlaceConcats(const GraphRecord &graph);
 /// Why `node` cannot run with the dynamic extents of its tensors (axes of a
 /// bounded dimension), or nothing when it has none or supports them.
 std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
