@@ -2839,11 +2839,14 @@ int main(int argc, char **argv) {
     // binding (vrc-derive-onnx-unity-buffers). The Device import below takes
     // its texture shape and row pitch decisions from these buffers.
     phase("unity-buffers");
-    if (!hostBufferPlan.empty()) {
-      PassManager apply(&context);
-      apply.addPass(::vrc::createApplyHostBufferPlanPass());
-      if (failed(udoncl::readHostBufferPlan(*module, hostBufferPlan)) ||
-          failed(apply.run(*module)))
+    {
+      // The runtime's handle pool covers every allocation context.
+      PassManager handles(&context);
+      handles.addPass(::vrc::createApplyHostBufferPlanPass());
+      handles.addPass(::vrc::createVerifyHostDeviceHandleCapacityPass());
+      if ((!hostBufferPlan.empty() &&
+           failed(udoncl::readHostBufferPlan(*module, hostBufferPlan))) ||
+          failed(handles.run(*module)))
         return 1;
     }
     if (failed(deriveOnnxUnityBufferConfig(*module, *unityConfig)))

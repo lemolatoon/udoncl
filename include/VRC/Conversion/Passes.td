@@ -361,6 +361,21 @@ def ApplyHostBufferPlanPass : Pass<"vrc-apply-host-buffer-plan", "mlir::ModuleOp
     the module.
   }];
 }
+def VerifyHostDeviceHandleCapacityPass : Pass<"vrc-verify-host-device-handle-capacity", "mlir::ModuleOp"> {
+  let summary = "Verify that the OpenCL runtime has a buffer handle per allocation context";
+  let description = [{
+    Every static allocation context of a Unity Host is live at most once,
+    so the OpenCL runtime the library compiles needs one buffer handle per
+    context of `vrc.static_device_resource_discovery`. The pass reports an
+    error, naming both numbers and the Host buffer plan
+    (`vrc.host_buffer_plan`), when `udoncl.mutable_handle_capacity` is
+    smaller: a plan that ever undercounts is a compile error, not a
+    CL_OUT_OF_RESOURCES at run time.
+
+    It runs in the main compile after vrc-apply-host-buffer-plan. A module
+    without a handle capacity or without discovered contexts is not checked.
+  }];
+}
 def DeriveONNXUnityBuffersPass : Pass<"vrc-derive-onnx-unity-buffers", "mlir::ModuleOp"> {
   let summary = "Derive the Unity buffers of an ONNX Host from its execution plan";
   let description = [{

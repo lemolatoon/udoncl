@@ -94,6 +94,27 @@ def main():
     assert based_plan['base_capacity'] == 3, based_plan
     assert based_plan['total_capacity'] == allocations + 3, based_plan
     assert based_plan['extra_buffer_bytes'] == plan['extra_buffer_bytes']
+    # A plan that undercounts the allocation contexts, as the LLVM IR scan
+    # of call sites did for the helper in the loop, is a compile error.
+    undercount = output / 'undercount-plan.json'
+    undercount.write_text(json.dumps({
+        'schema_version': 1, 'base_capacity': 0,
+        'extra_buffer_bytes': [16, 256, 512, 16],
+        'total_capacity': 4,
+    }), encoding='utf-8')
+    rejected = subprocess.run([
+        str(compiler), '--emit-unity-library-bundle',
+        '--host-llvm', str(target / 'host.bc'),
+        '--host-library-llvm',
+        str(target / 'modules/host/capacity_runtime.bc'),
+        '--host-buffer-plan', str(undercount), '--no-runtime-validation',
+        '-o', str(output / 'undercount-artifact'),
+    ], text=True, capture_output=True)
+    assert rejected.returncode != 0, rejected.stderr
+    assert (f'the OpenCL runtime has 4 buffer handles but the Host has '
+            f'{allocations} allocation contexts, each of which needs one '
+            f'(Host buffer plan {undercount})') in rejected.stderr, \
+        rejected.stderr
     print(f'host_buffer_plan=valid handles={allocations}')
 
 
