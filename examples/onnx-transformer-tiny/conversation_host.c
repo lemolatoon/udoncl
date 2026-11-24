@@ -270,10 +270,34 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
   logits = create_buffer(TINYLLAMA_LOGIT_WORDS * sizeof(float), &error);
   if (!logits || error != CL_SUCCESS)
     return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
-  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
-    *keys[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
-    *values[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
-  }
+  /* One allocation call site per buffer: the Host buffer plan sizes the
+   * handle and byte pools by counting allocation call sites. */
+#define TINYLLAMA_CREATE_LAYER_CACHE(n)                                        \
+  key_cache_##n = create_buffer(TINYLLAMA_CACHE_BYTES, &error);                \
+  value_cache_##n = create_buffer(TINYLLAMA_CACHE_BYTES, &error)
+  TINYLLAMA_CREATE_LAYER_CACHE(0);
+  TINYLLAMA_CREATE_LAYER_CACHE(1);
+  TINYLLAMA_CREATE_LAYER_CACHE(2);
+  TINYLLAMA_CREATE_LAYER_CACHE(3);
+  TINYLLAMA_CREATE_LAYER_CACHE(4);
+  TINYLLAMA_CREATE_LAYER_CACHE(5);
+  TINYLLAMA_CREATE_LAYER_CACHE(6);
+  TINYLLAMA_CREATE_LAYER_CACHE(7);
+  TINYLLAMA_CREATE_LAYER_CACHE(8);
+  TINYLLAMA_CREATE_LAYER_CACHE(9);
+  TINYLLAMA_CREATE_LAYER_CACHE(10);
+  TINYLLAMA_CREATE_LAYER_CACHE(11);
+  TINYLLAMA_CREATE_LAYER_CACHE(12);
+  TINYLLAMA_CREATE_LAYER_CACHE(13);
+  TINYLLAMA_CREATE_LAYER_CACHE(14);
+  TINYLLAMA_CREATE_LAYER_CACHE(15);
+  TINYLLAMA_CREATE_LAYER_CACHE(16);
+  TINYLLAMA_CREATE_LAYER_CACHE(17);
+  TINYLLAMA_CREATE_LAYER_CACHE(18);
+  TINYLLAMA_CREATE_LAYER_CACHE(19);
+  TINYLLAMA_CREATE_LAYER_CACHE(20);
+  TINYLLAMA_CREATE_LAYER_CACHE(21);
+#undef TINYLLAMA_CREATE_LAYER_CACHE
   for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer)
     if (!*keys[layer] || !*values[layer])
       return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
