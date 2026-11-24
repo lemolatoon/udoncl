@@ -14,6 +14,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
 #include <cstring>
+#include <limits>
 
 using namespace mlir;
 
@@ -285,8 +286,68 @@ aggregateElement(Type type, ArrayRef<int64_t> position,
   return std::pair<uint64_t, Type>{offset, type};
 }
 
+/// The pointer words of a global initializer whose value is the address of
+/// another global: the image of a pointer-typed C initializer such as a
+/// constant table of strings.
+struct InitializerRelocations {
+  /// The first byte of the initializer image.
+  const int8_t *image = nullptr;
+  SmallVector<::vrc::udonhl::GlobalRelocation> relocations;
+};
+
+/// The internal address-space-zero global `value` points into and the byte
+/// offset, for the address of a global or a constant GEP of it.
+FailureOr<std::pair<FlatSymbolRefAttr, int64_t>>
+globalAddress(Value value, const DataLayout &layout) {
+  if (auto address = value.getDefiningOp<LLVM::AddressOfOp>()) {
+    // The global may already be converted when its user is.
+    auto module = address->getParentOfType<ModuleOp>();
+    Operation *symbol =
+        module ? module.lookupSymbol(address.getGlobalNameAttr()) : nullptr;
+    auto global = dyn_cast_or_null<LLVM::GlobalOp>(symbol);
+    auto converted = dyn_cast_or_null<::vrc::udonhl::GlobalOp>(symbol);
+    bool internal = (global && global.getAddrSpace() == 0 &&
+                     (global.getLinkage() == LLVM::Linkage::Internal ||
+                      global.getLinkage() == LLVM::Linkage::Private)) ||
+                    (converted && converted.getAddressSpace() == 0 &&
+                     converted.getLinkage() == "internal");
+    if (!internal)
+      return failure();
+    return std::pair<FlatSymbolRefAttr, int64_t>{address.getGlobalNameAttr(),
+                                                 0};
+  }
+  auto gep = value.getDefiningOp<LLVM::GEPOp>();
+  if (!gep || !gep.getDynamicIndices().empty())
+    return failure();
+  auto base = globalAddress(gep.getBase(), layout);
+  if (failed(base))
+    return failure();
+  auto indices = gep.getRawConstantIndices();
+  if (indices.empty())
+    return base;
+  auto elementSize = fixedSize(layout, gep.getElemType());
+  auto elementAlignment = abiAlignment(layout, gep.getElemType());
+  if (failed(elementSize) || failed(elementAlignment))
+    return failure();
+  int64_t offset =
+      base->second + indices.front() * static_cast<int64_t>(llvm::alignTo(
+                                           *elementSize, *elementAlignment));
+  if (indices.size() > 1) {
+    SmallVector<int64_t> position(indices.begin() + 1, indices.end());
+    auto selected = aggregateElement(gep.getElemType(), position, layout);
+    if (failed(selected))
+      return failure();
+    offset += static_cast<int64_t>(selected->first);
+  }
+  if (offset < std::numeric_limits<int32_t>::min() ||
+      offset > std::numeric_limits<int32_t>::max())
+    return failure();
+  return std::pair<FlatSymbolRefAttr, int64_t>{base->first, offset};
+}
+
 LogicalResult serializeValue(Value value, Type type, const DataLayout &layout,
-                             MutableArrayRef<int8_t> out) {
+                             MutableArrayRef<int8_t> out,
+                             InitializerRelocations *relocations) {
   if (isa_and_nonnull<LLVM::UndefOp>(value.getDefiningOp()) ||
       isa_and_nonnull<LLVM::ZeroOp>(value.getDefiningOp())) {
     llvm::fill(out, 0);
@@ -294,9 +355,24 @@ LogicalResult serializeValue(Value value, Type type, const DataLayout &layout,
   }
   if (auto constant = value.getDefiningOp<LLVM::ConstantOp>())
     return serializeAttribute(constant.getValue(), type, layout, out);
+  // A pointer word naming a global is a relocation; its image bytes are
+  // ignored.
+  if (relocations && isa<LLVM::LLVMPointerType>(type) && out.size() == 4) {
+    auto address = globalAddress(value, layout);
+    uint64_t offset = out.data() - relocations->image;
+    if (failed(address) || offset % 4)
+      return failure();
+    llvm::fill(out, 0);
+    ::vrc::udonhl::GlobalRelocation relocation;
+    relocation.offset = static_cast<uint32_t>(offset);
+    relocation.symbol = address->first;
+    relocation.addend = static_cast<int32_t>(address->second);
+    relocations->relocations.push_back(relocation);
+    return success();
+  }
   auto insert = value.getDefiningOp<LLVM::InsertValueOp>();
-  if (!insert ||
-      failed(serializeValue(insert.getContainer(), type, layout, out)))
+  if (!insert || failed(serializeValue(insert.getContainer(), type, layout, out,
+                                       relocations)))
     return failure();
   auto selected = aggregateElement(type, insert.getPosition(), layout);
   if (failed(selected))
@@ -306,12 +382,13 @@ LogicalResult serializeValue(Value value, Type type, const DataLayout &layout,
       *size > out.size() - selected->first)
     return failure();
   return serializeValue(insert.getValue(), selected->second, layout,
-                        out.slice(selected->first, *size));
+                        out.slice(selected->first, *size), relocations);
 }
 
-FailureOr<Attribute> globalInitializer(LLVM::GlobalOp op, Type storageType,
-                                       OpBuilder &builder,
-                                       const DataLayout &layout) {
+FailureOr<Attribute>
+globalInitializer(LLVM::GlobalOp op, Type storageType, OpBuilder &builder,
+                  const DataLayout &layout,
+                  SmallVectorImpl<::vrc::udonhl::GlobalRelocation> &relocated) {
   bool aggregate = isa<LLVM::LLVMArrayType, LLVM::LLVMStructType, VectorType>(
       op.getGlobalType());
   if (aggregate) {
@@ -324,10 +401,13 @@ FailureOr<Attribute> globalInitializer(LLVM::GlobalOp op, Type storageType,
         return failure();
     } else if (Block *block = op.getInitializerBlock()) {
       auto returned = dyn_cast<LLVM::ReturnOp>(block->getTerminator());
+      InitializerRelocations relocations;
+      relocations.image = bytes.data();
       if (!returned || returned.getNumOperands() != 1 ||
           failed(serializeValue(returned.getOperand(0), op.getGlobalType(),
-                                layout, bytes)))
+                                layout, bytes, &relocations)))
         return failure();
+      relocated.append(relocations.relocations);
     }
     return builder.getDenseI8ArrayAttr(bytes);
   }
@@ -349,6 +429,17 @@ FailureOr<Attribute> globalInitializer(LLVM::GlobalOp op, Type storageType,
     return zeroInitializer(builder, storageType);
   if (auto constant = dyn_cast_or_null<LLVM::ConstantOp>(value))
     return constant.getValue();
+  // A pointer initialized to the address of a global.
+  if (isa<LLVM::LLVMPointerType>(op.getGlobalType())) {
+    auto address = globalAddress(returned.getOperand(0), layout);
+    if (failed(address))
+      return failure();
+    ::vrc::udonhl::GlobalRelocation relocation;
+    relocation.symbol = address->first;
+    relocation.addend = static_cast<int32_t>(address->second);
+    relocated.push_back(relocation);
+    return zeroInitializer(builder, storageType);
+  }
   return failure();
 }
 
@@ -370,9 +461,16 @@ struct GlobalPattern : OpConversionPattern<LLVM::GlobalOp> {
     if (!storageType)
       return failure();
     DataLayout layout(op->getParentOfType<ModuleOp>());
-    auto initial = globalInitializer(op, storageType, rewriter, layout);
+    SmallVector<::vrc::udonhl::GlobalRelocation> relocations;
+    auto initial =
+        globalInitializer(op, storageType, rewriter, layout, relocations);
     if (failed(initial))
-      return reject(op, "global initializer is not a constant or zero value");
+      return reject(op, "global initializer is not a constant, a zero value "
+                        "or the address of an internal global");
+    if (!relocations.empty() &&
+        (op.getAddrSpace() != 0 || linkage != "internal"))
+      return reject(op, "a global initialized with an address must be an "
+                        "internal address-space-zero global");
     auto naturalAlignment = abiAlignment(layout, op.getGlobalType());
     if (failed(naturalAlignment))
       return reject(op, "global alignment is not representable by ILP32");
@@ -390,6 +488,14 @@ struct GlobalPattern : OpConversionPattern<LLVM::GlobalOp> {
     state.addAttribute("alignment", rewriter.getI64IntegerAttr(alignment));
     if (op.getConstant())
       state.addAttribute("constant", rewriter.getUnitAttr());
+    // The words naming another global are patched once the raw heap is laid
+    // out.
+    if (!relocations.empty()) {
+      SmallVector<Attribute> entries;
+      for (const ::vrc::udonhl::GlobalRelocation &relocation : relocations)
+        entries.push_back(relocation.build(rewriter.getContext()));
+      state.addAttribute("relocations", rewriter.getArrayAttr(entries));
+    }
     rewriter.create(state);
     rewriter.eraseOp(op);
     return success();
