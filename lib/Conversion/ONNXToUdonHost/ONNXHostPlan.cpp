@@ -101,6 +101,19 @@ static std::pair<int64_t, int64_t> aroundAxis(ArrayRef<int64_t> shape,
   return {outer, inner};
 }
 
+int64_t dimensionCapacity(const GraphRecord &graph, StringRef symbol) {
+  int64_t capacity = 0;
+  for (ArrayRef<unsigned> tensors :
+       {ArrayRef<unsigned>(graph.inputs), ArrayRef<unsigned>(graph.outputs)})
+    for (unsigned index : tensors) {
+      const TensorRecord &tensor = graph.tensors[index];
+      if (tensor.dynamic && tensor.dynamic->symbol == symbol)
+        capacity =
+            std::max(capacity, tensor.type.getDimSize(tensor.dynamic->axis));
+    }
+  return capacity;
+}
+
 std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
                                                     const NodeRecord &node) {
   const TensorRecord &output = graph.tensors[node.output];

@@ -15,8 +15,10 @@
 extern "C" {
 #endif
 
-/* A graph input or output of the model. A -1 dimension is dynamic and
- * requires a positive value at the matching position in dimension_bounds.
+/* A graph input or output of the model. A -1 dimension is dynamic (an
+ * axis of a bounded dimension, at most one per tensor) and requires a
+ * positive value at the matching position in dimension_bounds: the largest
+ * extent that axis takes.
  * The layout is UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_* (the generated model
  * registry). */
 typedef struct udononnxTensorMetadata {
@@ -52,7 +54,10 @@ udononnxStatus_t udononnxGetModel(size_t index, const udononnxModel_t **model);
  * Create allocates the Device buffers the session owns on `queue` and
  * enqueues nothing. BindMemory keeps the cl_mem a UdonONNX session binds to
  * graph input (output = 0) or output (output = 1) `index`, or forgets it for
- * a null memory; Run runs the graph on the bound buffers on `queue` and
+ * a null memory; for a tensor with a dynamic axis it also keeps that axis's
+ * extent and its pitch in the buffer (0 otherwise), and a pitch beyond the
+ * largest extent of the dimension is UDONONNX_STATUS_NOT_SUPPORTED. Run
+ * runs the graph on the bound buffers on `queue` and
  * enqueues a marker that reports completion. Dispose releases the session's
  * buffers and forgets every bound one. The session API passes no
  * transitional session. */
@@ -60,7 +65,8 @@ udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
                                          udononnxTransitionalSession_t *session,
                                          cl_command_queue queue);
 udononnxStatus_t udononnxGeneratedBindMemory(uint32_t graph_id, uint32_t output,
-                                             uint32_t index, cl_mem memory);
+                                             uint32_t index, cl_mem memory,
+                                             int32_t extent, int32_t pitch);
 udononnxStatus_t udononnxGeneratedRun(uint32_t graph_id, cl_command_queue queue,
                                       cl_event *completion);
 udononnxStatus_t

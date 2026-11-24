@@ -201,17 +201,25 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph,
     // The fill pattern that clears every sequence state: one zero word.
     createZeroGlobal(module, onnxHostSequenceStateZeroSymbol, 4, 4);
   }
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    createStringGlobal(module, onnxHostIoNameSymbol(false, index), tensor.name);
-    createI64ArrayGlobal(module, onnxHostIoDimensionsSymbol(false, index),
-                         tensor.type.getShape());
-  }
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs)) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    createStringGlobal(module, onnxHostIoNameSymbol(true, index), tensor.name);
-    createI64ArrayGlobal(module, onnxHostIoDimensionsSymbol(true, index),
-                         tensor.type.getShape());
+  // A dynamic axis is -1 in the dimensions and its largest extent in the
+  // dimension bounds of the registry.
+  for (bool output : {false, true}) {
+    ArrayRef<unsigned> tensors = output ? graph.outputs : graph.inputs;
+    for (auto [index, tensorIndex] : llvm::enumerate(tensors)) {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      createStringGlobal(module, onnxHostIoNameSymbol(output, index),
+                         tensor.name);
+      SmallVector<int64_t> dimensions(tensor.type.getShape());
+      if (tensor.dynamic) {
+        SmallVector<int64_t> bounds(dimensions.size(), 0);
+        bounds[tensor.dynamic->axis] = dimensions[tensor.dynamic->axis];
+        dimensions[tensor.dynamic->axis] = -1;
+        createI64ArrayGlobal(
+            module, onnxHostIoDimensionBoundsSymbol(output, index), bounds);
+      }
+      createI64ArrayGlobal(module, onnxHostIoDimensionsSymbol(output, index),
+                           dimensions);
+    }
   }
 }
 
@@ -244,18 +252,22 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
           onnxHostSequenceStatePoisonedSymbol, onnxHostSequenceStateZeroSymbol})
       if (failed(reserve(symbol)))
         return failure();
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
-    (void)tensorIndex;
-    if (failed(reserve(onnxHostIoNameSymbol(false, index))) ||
-        failed(reserve(onnxHostIoDimensionsSymbol(false, index))))
-      return failure();
+  for (bool output : {false, true}) {
+    ArrayRef<unsigned> tensors = output ? graph.outputs : graph.inputs;
+    for (auto [index, tensorIndex] : llvm::enumerate(tensors)) {
+      if (failed(reserve(onnxHostIoNameSymbol(output, index))) ||
+          failed(reserve(onnxHostIoDimensionsSymbol(output, index))))
+        return failure();
+      if (graph.tensors[tensorIndex].dynamic &&
+          (failed(reserve(onnxHostIoDimensionBoundsSymbol(output, index))) ||
+           failed(reserve(onnxHostBoundExtentSymbol(output, index))) ||
+           failed(reserve(onnxHostBoundPitchSymbol(output, index)))))
+        return failure();
+    }
   }
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs)) {
-    (void)tensorIndex;
-    if (failed(reserve(onnxHostIoNameSymbol(true, index))) ||
-        failed(reserve(onnxHostIoDimensionsSymbol(true, index))))
+  for (unsigned index = 0; index < graph.dimensionBounds.size(); ++index)
+    if (failed(reserve(onnxHostDimensionSymbol(index))))
       return failure();
-  }
   if (!plan.deviceGraph) {
     for (const TensorRecord &tensor : graph.tensors)
       if (failed(reserve(tensor.symbol)))
@@ -373,6 +385,18 @@ struct MaterializeONNXHostGlobalsPass
     for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph->outputs)) {
       (void)tensorIndex;
       createPointerGlobal(module, onnxHostBoundMemorySymbol(true, outputIndex));
+    }
+    // The value of every bounded dimension in the current run.
+    for (unsigned index = 0; index < graph->dimensionBounds.size(); ++index)
+      createI32Global(module, onnxHostDimensionSymbol(index));
+    // The extent and pitch of the dynamic axis each binding gave.
+    for (bool output : {false, true}) {
+      ArrayRef<unsigned> tensors = output ? graph->outputs : graph->inputs;
+      for (auto [index, tensorIndex] : llvm::enumerate(tensors))
+        if (graph->tensors[tensorIndex].dynamic) {
+          createI32Global(module, onnxHostBoundExtentSymbol(output, index));
+          createI32Global(module, onnxHostBoundPitchSymbol(output, index));
+        }
     }
     for (unsigned tensorIndex : plan->ownedDeviceBuffers) {
       createPointerGlobal(module, onnxHostDeviceBufferSymbol(tensorIndex));

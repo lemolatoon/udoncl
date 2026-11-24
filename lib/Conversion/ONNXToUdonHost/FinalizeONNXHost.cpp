@@ -2442,14 +2442,17 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                          loadI32(builder, location, disposeStatus));
   declarations.require("clReleaseMemObject", {pointer}, {i32});
 
-  // BindMemory(graph_id, output, index, memory) keeps the cl_mem a UdonONNX
-  // session binds to graph input (output = 0) or output (output = 1) `index`
-  // in the generated memory cell udononnxGeneratedRun reads; a null memory
-  // unbinds it.
+  // BindMemory(graph_id, output, index, memory, extent, pitch) keeps the
+  // cl_mem a UdonONNX session binds to graph input (output = 0) or output
+  // (output = 1) `index` in the generated memory cell udononnxGeneratedRun
+  // reads; a null memory unbinds it. For a tensor with an axis of a bounded
+  // dimension it also keeps that axis's extent and its pitch in the buffer;
+  // a pitch beyond the largest extent of the dimension is not supported.
   builder.setInsertionPointToEnd(module.getBody());
   auto bindMemory = func::FuncOp::create(
       builder, location, "udononnxGeneratedBindMemory",
-      FunctionType::get(module.getContext(), {i32, i32, i32, pointer}, {i32}));
+      FunctionType::get(module.getContext(), {i32, i32, i32, pointer, i32, i32},
+                        {i32}));
   {
     Block *bindEntry = bindMemory.addEntryBlock();
     Block *bindValid = bindMemory.addBlock();
@@ -2473,6 +2476,29 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       for (unsigned index = 0; index < count; ++index) {
         Block *bind = bindMemory.addBlock();
         builder.setInsertionPointToEnd(bind);
+        const TensorRecord &tensor =
+            graph.tensors[output ? graph.outputs[index] : graph.inputs[index]];
+        if (tensor.dynamic) {
+          Value pitch = bindEntry->getArgument(5);
+          Value capacity = arith::ConstantIntOp::create(
+              builder, location,
+              dimensionCapacity(graph, tensor.dynamic->symbol), 32);
+          Value fits = arith::CmpIOp::create(
+              builder, location, arith::CmpIPredicate::ule, pitch, capacity);
+          Block *store_ = bindMemory.addBlock();
+          Block *tooWide = bindMemory.addBlock();
+          cf::CondBranchOp::create(builder, location, fits, store_,
+                                   ValueRange{}, tooWide, ValueRange{});
+          builder.setInsertionPointToEnd(tooWide);
+          func::ReturnOp::create(builder, location, onnxStatus(4));
+          builder.setInsertionPointToEnd(store_);
+          store(builder, location, bindEntry->getArgument(4),
+                addressOf(builder, location,
+                          onnxHostBoundExtentSymbol(output, index)));
+          store(builder, location, pitch,
+                addressOf(builder, location,
+                          onnxHostBoundPitchSymbol(output, index)));
+        }
         store(builder, location, bindEntry->getArgument(3),
               addressOf(builder, location,
                         onnxHostBoundMemorySymbol(output, index)));
@@ -2514,6 +2540,15 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   builder.setInsertionPointToEnd(invalidGraph);
   func::ReturnOp::create(builder, location, onnxStatus(1));
   builder.setInsertionPointToEnd(body);
+  // The legacy run checks the byte length of every binding, which a tensor
+  // with an axis of a bounded dimension does not have; such a graph runs
+  // through the session API only.
+  if (llvm::any_of(graph.tensors,
+                   [](const TensorRecord &tensor) { return tensor.dynamic; })) {
+    func::ReturnOp::create(builder, location, onnxStatus(4));
+    body = run.addBlock();
+    builder.setInsertionPointToEnd(body);
+  }
 
   auto returnIfNonzero = [&](Value status) {
     Block *next = run.addBlock();
@@ -2718,6 +2753,61 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         resolveCell(false, inputIndex, tensorIndex);
       for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph.outputs))
         resolveCell(true, outputIndex, tensorIndex);
+      // Every bounded dimension takes its value from the first binding of a
+      // tensor that has it, inputs first: the extent minus the tensor's
+      // offset. Every other such binding, inputs and outputs, must have the
+      // extent that value gives it (a present of past + 1); a disagreement
+      // is INVALID_VALUE, as a preallocated output of the wrong shape is for
+      // ONNX Runtime's RunWithBinding.
+      for (auto [symbolIndex, dimension] :
+           llvm::enumerate(graph.dimensionBounds)) {
+        Value value;
+        for (bool output : {false, true}) {
+          ArrayRef<unsigned> tensors = output ? graph.outputs : graph.inputs;
+          for (auto [index, tensorIndex] : llvm::enumerate(tensors)) {
+            const TensorRecord &tensor = graph.tensors[tensorIndex];
+            if (!tensor.dynamic || tensor.dynamic->symbol != dimension.first)
+              continue;
+            Value extent =
+                loadI32(builder, location,
+                        addressOf(builder, location,
+                                  onnxHostBoundExtentSymbol(output, index)));
+            Value offset = constant(tensor.dynamic->offset);
+            if (!value) {
+              // The bind kept the extent within [0, bound + offset].
+              Value fits = arith::CmpIOp::create(
+                  builder, location, arith::CmpIPredicate::sge, extent, offset);
+              Block *next = run.addBlock();
+              Block *invalid = run.addBlock();
+              cf::CondBranchOp::create(builder, location, fits, next,
+                                       ValueRange{}, invalid, ValueRange{});
+              builder.setInsertionPointToEnd(invalid);
+              func::ReturnOp::create(builder, location, onnxStatus(1));
+              builder.setInsertionPointToEnd(next);
+              value = arith::SubIOp::create(builder, location, extent, offset);
+              continue;
+            }
+            Value expected =
+                arith::AddIOp::create(builder, location, value, offset);
+            Value agrees = arith::CmpIOp::create(
+                builder, location, arith::CmpIPredicate::eq, extent, expected);
+            Block *next = run.addBlock();
+            Block *invalid = run.addBlock();
+            cf::CondBranchOp::create(builder, location, agrees, next,
+                                     ValueRange{}, invalid, ValueRange{});
+            builder.setInsertionPointToEnd(invalid);
+            func::ReturnOp::create(builder, location, onnxStatus(1));
+            builder.setInsertionPointToEnd(next);
+          }
+        }
+        if (!value)
+          return emitError(location)
+                 << "bounded ONNX dimension '" << dimension.first
+                 << "' is not a dimension of any graph input or output";
+        store(
+            builder, location, value,
+            addressOf(builder, location, onnxHostDimensionSymbol(symbolIndex)));
+      }
       for (unsigned tensorIndex : plan.ownedDeviceBuffers) {
         if (sessionTokens[tensorIndex])
           continue;

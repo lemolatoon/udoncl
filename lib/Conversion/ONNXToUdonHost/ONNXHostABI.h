@@ -150,6 +150,36 @@ inline std::string onnxHostBoundMemorySymbol(bool output, unsigned index) {
       .str();
 }
 
+/// The largest extent each axis of graph input or output `index` takes: the
+/// bound of its dimension plus its offset on the dynamic axis, 0 elsewhere.
+inline std::string onnxHostIoDimensionBoundsSymbol(bool output,
+                                                   unsigned index) {
+  return (llvm::Twine("__udon_onnx_") + (output ? "output" : "input") +
+          "_dimension_bounds_" + llvm::Twine(index))
+      .str();
+}
+
+/// The run-time extent of the dynamic axis of graph input or output `index`
+/// (an axis of a bounded dimension) a UdonONNX session bound.
+inline std::string onnxHostBoundExtentSymbol(bool output, unsigned index) {
+  return (llvm::Twine("__udon_onnx_bound_") + (output ? "output" : "input") +
+          "_extent_" + llvm::Twine(index))
+      .str();
+}
+
+/// The pitch of that dynamic axis in the bound buffer (buffer_dims).
+inline std::string onnxHostBoundPitchSymbol(bool output, unsigned index) {
+  return (llvm::Twine("__udon_onnx_bound_") + (output ? "output" : "input") +
+          "_pitch_" + llvm::Twine(index))
+      .str();
+}
+
+/// The value of bounded dimension `index` (in GraphRecord::dimensionBounds)
+/// the current run derived from its bindings.
+inline std::string onnxHostDimensionSymbol(unsigned index) {
+  return (llvm::Twine("__udon_onnx_dimension_") + llvm::Twine(index)).str();
+}
+
 /// The session binding version the run's resolved physical tokens belong to
 /// (0: none resolved).
 inline constexpr llvm::StringLiteral onnxHostResolvedBindingVersionSymbol =

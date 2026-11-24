@@ -97,6 +97,9 @@ static udononnxStatus_t udononnxBindAt(udononnxSession_t *session,
   const udononnxTensorMetadata_t *metadata;
   size_t count;
   uint32_t axis;
+  int dynamic_axis = -1;
+  int64_t extent = 0;
+  int64_t pitch = 0;
   udononnxStatus_t status = udononnxCheckSession(session);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
@@ -107,22 +110,41 @@ static udononnxStatus_t udononnxBindAt(udononnxSession_t *session,
       output ? &session->model->outputs[index] : &session->model->inputs[index];
   if (rank < 0 || (uint32_t)rank != metadata->rank || (rank && !dims))
     return UDONONNX_STATUS_INVALID_VALUE;
+  /* A static dimension is the model's. A dimension the model leaves
+   * dynamic (-1) takes any extent from 0 to its bound; the run reads the
+   * extent from this binding. */
   for (axis = 0; axis < metadata->rank; ++axis) {
-    /* A dimension the model leaves dynamic is bound with its extent once
-     * the run supports it. */
-    if (metadata->dimensions[axis] < 0)
-      return UDONONNX_STATUS_NOT_SUPPORTED;
+    if (metadata->dimensions[axis] < 0) {
+      if (!metadata->dimension_bounds || dims[axis] < 0 ||
+          dims[axis] > metadata->dimension_bounds[axis])
+        return UDONONNX_STATUS_INVALID_VALUE;
+      dynamic_axis = (int)axis;
+      continue;
+    }
     if (dims[axis] != metadata->dimensions[axis])
       return UDONONNX_STATUS_INVALID_VALUE;
   }
-  /* A buffer larger than the tensor is bound with the extent it has once
-   * the run supports it; buffer_dims equal to dims is the tensor itself. */
+  /* buffer_dims is the layout of the buffer, as the shape of the OrtValue a
+   * shared-buffer binding allocates; NULL is `dims`. It is never smaller
+   * than the tensor, and only the dynamic axis may be larger: its extent
+   * is the pitch of that axis in the buffer, and the tensor is the leading
+   * block. A larger static axis is not supported. */
   if (buffer_dims)
-    for (axis = 0; axis < metadata->rank; ++axis)
-      if (buffer_dims[axis] != dims[axis])
+    for (axis = 0; axis < metadata->rank; ++axis) {
+      if (buffer_dims[axis] < dims[axis])
+        return UDONONNX_STATUS_INVALID_VALUE;
+      if (buffer_dims[axis] != dims[axis] && (int)axis != dynamic_axis)
         return UDONONNX_STATUS_NOT_SUPPORTED;
+    }
+  if (dynamic_axis >= 0) {
+    extent = dims[dynamic_axis];
+    pitch = buffer_dims ? buffer_dims[dynamic_axis] : extent;
+    if (pitch > INT32_MAX)
+      return UDONONNX_STATUS_NOT_SUPPORTED;
+  }
   return udononnxGeneratedBindMemory(session->model->graph_id, output,
-                                     (uint32_t)index, memory);
+                                     (uint32_t)index, memory, (int32_t)extent,
+                                     (int32_t)pitch);
 }
 
 udononnxStatus_t udononnxBindInputAt(udononnxSession_t *session, int index,

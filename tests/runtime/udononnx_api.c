@@ -17,16 +17,16 @@
 int udononnx_api_conformance(void);
 
 /* Model 3: input "x" and output "y", float32 [2, 2]. Model 4: input "mask"
- * with a dynamic dimension (bound 8) and output "y". */
+ * [2, d] with a dynamic dimension d of bound 8, and output "y". */
 static const int64_t static_dimensions[2] = {2, 2};
-static const int64_t dynamic_dimensions[1] = {-1};
-static const int64_t dynamic_bounds[1] = {8};
+static const int64_t dynamic_dimensions[2] = {2, -1};
+static const int64_t dynamic_bounds[2] = {0, 8};
 static const udononnxTensorMetadata_t copy_inputs[1] = {
     {"x", UDONCL_DATA_FLOAT32, 2, static_dimensions, 0}};
 static const udononnxTensorMetadata_t copy_outputs[1] = {
     {"y", UDONCL_DATA_FLOAT32, 2, static_dimensions, 0}};
 static const udononnxTensorMetadata_t dynamic_inputs[1] = {
-    {"mask", UDONCL_DATA_FLOAT32, 1, dynamic_dimensions, dynamic_bounds}};
+    {"mask", UDONCL_DATA_FLOAT32, 2, dynamic_dimensions, dynamic_bounds}};
 static const udononnxModel_t copy_model = {"copy",       3, copy_inputs, 1,
                                            copy_outputs, 1};
 static const udononnxModel_t dynamic_model = {
@@ -35,6 +35,9 @@ static const udononnxModel_t *active_model = &copy_model;
 
 static cl_mem bound_input;
 static cl_mem bound_output;
+/* The extent and pitch of the dynamic axis of the last bind. */
+static int32_t bound_extent = -1;
+static int32_t bound_pitch = -1;
 static int creates;
 static int disposes;
 static udononnxStatus_t dispose_status = UDONONNX_STATUS_SUCCESS;
@@ -59,9 +62,12 @@ udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
 }
 
 udononnxStatus_t udononnxGeneratedBindMemory(uint32_t graph_id, uint32_t output,
-                                             uint32_t index, cl_mem memory) {
+                                             uint32_t index, cl_mem memory,
+                                             int32_t extent, int32_t pitch) {
   if (graph_id != active_model->graph_id || index != 0)
     return UDONONNX_STATUS_INVALID_VALUE;
+  bound_extent = extent;
+  bound_pitch = pitch;
   if (output)
     bound_output = memory;
   else
@@ -164,7 +170,15 @@ int main(void) {
   const int64_t dims[2] = {2, 2};
   const int64_t wrong_dims[2] = {2, 3};
   const int64_t larger_buffer[2] = {2, 4};
-  const int64_t mask_dims[1] = {8};
+  const int64_t smaller_buffer[2] = {2, 1};
+  const int64_t mask_dims[2] = {2, 5};
+  const int64_t empty_mask[2] = {2, 0};
+  const int64_t full_mask[2] = {2, 8};
+  const int64_t long_mask[2] = {2, 9};
+  const int64_t negative_mask[2] = {2, -1};
+  const int64_t mask_pitch[2] = {2, 8};
+  const int64_t mask_wide[2] = {3, 8};
+  const int64_t mask_short[2] = {2, 4};
   int conformance = udononnx_api_conformance();
   if (conformance)
     return 1000 + conformance;
@@ -237,15 +251,18 @@ int main(void) {
          UDONONNX_STATUS_INVALID_VALUE);
   EXPECT(!bound_input);
 
-  /* A buffer whose extent differs from the tensor is not supported yet. */
+  /* A buffer larger than the tensor on a static axis is not supported, and
+   * one smaller than the tensor is invalid. */
   EXPECT(udononnxBindInput(session, "x", input, 2, dims, larger_buffer) ==
          UDONONNX_STATUS_NOT_SUPPORTED);
+  EXPECT(udononnxBindInput(session, "x", input, 2, dims, smaller_buffer) ==
+         UDONONNX_STATUS_INVALID_VALUE);
   EXPECT(!bound_input);
 
   /* buffer_dims equal to dims is the tensor itself. */
   EXPECT(udononnxBindInput(session, "x", input, 2, dims, dims) ==
              UDONONNX_STATUS_SUCCESS &&
-         bound_input == input);
+         bound_input == input && bound_extent == 0 && bound_pitch == 0);
   EXPECT(udononnxRun(session) == UDONONNX_STATUS_MISSING_BINDING);
   EXPECT(udononnxBindOutput(session, "y", output, 2, dims, 0) ==
              UDONONNX_STATUS_SUCCESS &&
@@ -280,11 +297,34 @@ int main(void) {
   dispose_status = UDONONNX_STATUS_SUCCESS;
   EXPECT(udononnxRun(session) == UDONONNX_STATUS_NOT_INITIALIZED);
 
-  /* A dimension the model leaves dynamic is not supported yet. */
+  /* A dimension the model bounds takes any extent from 0 to its bound, and
+   * the binding passes it with its pitch (the extent for NULL buffer_dims). */
   active_model = &dynamic_model;
   EXPECT(udononnxCreateSession(context, queue, &session) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxBindInput(session, "mask", input, 1, mask_dims, 0) ==
+  EXPECT(udononnxBindInput(session, "mask", input, 2, mask_dims, 0) ==
+             UDONONNX_STATUS_SUCCESS &&
+         bound_input == input && bound_extent == 5 && bound_pitch == 5);
+  EXPECT(udononnxBindInput(session, "mask", input, 2, empty_mask, 0) ==
+             UDONONNX_STATUS_SUCCESS &&
+         bound_extent == 0 && bound_pitch == 0);
+  EXPECT(udononnxBindInput(session, "mask", input, 2, full_mask, 0) ==
+             UDONONNX_STATUS_SUCCESS &&
+         bound_extent == 8 && bound_pitch == 8);
+  /* A buffer larger on the dynamic axis gives that axis's pitch. */
+  EXPECT(udononnxBindInput(session, "mask", input, 2, mask_dims, mask_pitch) ==
+             UDONONNX_STATUS_SUCCESS &&
+         bound_extent == 5 && bound_pitch == 8);
+  /* An extent beyond the bound or negative, and a buffer smaller than the
+   * tensor are invalid; a larger static axis is not supported. */
+  bound_input = 0;
+  EXPECT(udononnxBindInput(session, "mask", input, 2, long_mask, 0) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindInput(session, "mask", input, 2, negative_mask, 0) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindInput(session, "mask", input, 2, mask_dims, mask_short) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindInput(session, "mask", input, 2, mask_dims, mask_wide) ==
          UDONONNX_STATUS_NOT_SUPPORTED);
   EXPECT(!bound_input);
   EXPECT(udononnxReleaseSession(session) == UDONONNX_STATUS_SUCCESS);

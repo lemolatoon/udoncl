@@ -90,6 +90,9 @@ llvm::SmallVector<int64_t>
 integerArrayAttribute(const NodeRecord &node, llvm::StringRef name,
                       llvm::ArrayRef<int64_t> fallback);
 bool isMetadataOnlyAlias(const NodeRecord &node);
+/// The largest extent of the bounded dimension `symbol` on any graph input
+/// or output: the largest pitch a bound buffer may give its axis.
+int64_t dimensionCapacity(const GraphRecord &graph, llvm::StringRef symbol);
 /// Why `node` cannot run with the dynamic extents of its tensors (axes of a
 /// bounded dimension), or nothing when it has none or supports them.
 std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,

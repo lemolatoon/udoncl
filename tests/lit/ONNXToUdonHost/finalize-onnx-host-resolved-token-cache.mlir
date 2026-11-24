@@ -50,7 +50,7 @@ func.func @main_graph(
 
 // A UdonONNX session keeps the cl_mem it binds to each graph input and
 // output in a generated memory cell.
-// CHECK-LABEL: func.func @udononnxGeneratedBindMemory(%arg0: i32, %arg1: i32, %arg2: i32, %arg3: !udonhl.ptr<0>) -> i32
+// CHECK-LABEL: func.func @udononnxGeneratedBindMemory(%arg0: i32, %arg1: i32, %arg2: i32, %arg3: !udonhl.ptr<0>, %arg4: i32, %arg5: i32) -> i32
 // CHECK: cf.switch %arg2 : i32, [
 // CHECK: udonhl.address_of @__udon_onnx_bound_input_0
 // CHECK-NEXT: "udonhl.store"(%arg3,

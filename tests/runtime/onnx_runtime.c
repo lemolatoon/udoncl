@@ -142,11 +142,14 @@ udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
 
 /* The session API is not used here. */
 udononnxStatus_t udononnxGeneratedBindMemory(uint32_t graph_id, uint32_t output,
-                                             uint32_t index, cl_mem memory) {
+                                             uint32_t index, cl_mem memory,
+                                             int32_t extent, int32_t pitch) {
   (void)graph_id;
   (void)output;
   (void)index;
   (void)memory;
+  (void)extent;
+  (void)pitch;
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 

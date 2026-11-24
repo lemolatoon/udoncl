@@ -215,11 +215,25 @@ Deviations, each forced by the Udon target or stated by a test:
   ReleaseSession is allowed.
 - The session owns its binding; there is no `OrtIoBinding` object.
 - A bound tensor is a `cl_mem` with a rank and dimensions instead of an
-  `OrtValue`; the element type is the model's. The dimensions must be the
-  model's (`UDONONNX_STATUS_INVALID_VALUE` otherwise); a dimension the model
-  leaves dynamic is `UDONONNX_STATUS_NOT_SUPPORTED` until bounded dynamic
-  dimensions exist. `buffer_dims` has no ORT counterpart: NULL or equal to
-  `dims` binds the tensor itself, any other extent is
+  `OrtValue`; the element type is the model's. A static dimension must be the
+  model's (`UDONONNX_STATUS_INVALID_VALUE` otherwise). A dimension the build
+  bounds (`DIMENSION_BOUNDS`; at most one per tensor) takes any extent from 0
+  to its bound, beyond it `UDONONNX_STATUS_INVALID_VALUE`; Bind copies the
+  dimensions as ORT copies an `OrtValue`'s shape, so a Host binds every such
+  tensor again when its extent changes. Run derives each bounded dimension
+  from the first binding of a tensor that has it and returns
+  `UDONONNX_STATUS_INVALID_VALUE` when another binding disagrees (a present
+  that is not past + 1), as `RunWithBinding` fails on a preallocated output
+  of the wrong shape.
+- `buffer_dims` is the layout of the buffer, as the shape of the max-length
+  `OrtValue` that ONNX Runtime's shared-buffer decoding allocates and binds
+  (`onnxruntime/transformers/models/llama/llama_inputs.py`,
+  `enable_past_present_share_buffer`), while `dims` is the logical extent ORT
+  passes separately. NULL is `dims`. It is never smaller than `dims`
+  (`UDONONNX_STATUS_INVALID_VALUE`) and may be larger only on the dynamic
+  axis, whose pitch it is, up to the largest extent of that dimension on any
+  graph input or output; the tensor is the leading block of the buffer and a
+  run leaves the rest undefined. A larger static axis or pitch is
   `UDONONNX_STATUS_NOT_SUPPORTED`.
 - Built for Udon, every tensor name is a compile-time constant
   (`vrc-resolve-onnx-tensor-names` folds it to the graph index;

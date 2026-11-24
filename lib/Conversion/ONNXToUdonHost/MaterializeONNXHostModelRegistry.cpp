@@ -166,11 +166,18 @@ LogicalResult materializeModelRegistry(ModuleOp module,
                         base +
                             UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
                         0)) ||
-          failed(writeWord(
-              *image,
-              base +
-                  UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
-              0)))
+          failed(
+              tensor.dynamic
+                  ? writeAddress(
+                        *image,
+                        base +
+                            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
+                        onnxHostIoDimensionBoundsSymbol(output, index))
+                  : writeWord(
+                        *image,
+                        base +
+                            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
+                        0)))
         return failure();
     }
     commitImage(*image);

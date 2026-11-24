@@ -37,10 +37,17 @@ udononnxStatus_t udononnxCreateSession(cl_context context,
                                        udononnxSession_t **session);
 
 /* Binds `memory` (owned by the caller) to the graph input or output `name`.
- * `rank` and `dims` must be the model's; `buffer_dims` is NULL or equal to
- * `dims` (another extent is UDONONNX_STATUS_NOT_SUPPORTED). Building for
- * Udon, `name` must be a compile-time constant, every graph input and output
- * must be bound, and each to exactly one buffer. */
+ * `rank` and the static `dims` must be the model's; a dimension the model
+ * bounds (DIMENSION_BOUNDS) takes any extent from 0 to its bound, which the
+ * next Run uses (bind every such tensor again when it changes). Bind copies
+ * the dimensions it is given. `buffer_dims` is the layout of the buffer
+ * (NULL is `dims`): it is never smaller than `dims` and may be larger only
+ * on the dynamic axis, whose pitch it then is; the tensor is the leading
+ * block and Run leaves the rest of the buffer undefined. A larger static
+ * axis is UDONONNX_STATUS_NOT_SUPPORTED, an extent beyond the bound or a
+ * smaller buffer UDONONNX_STATUS_INVALID_VALUE. Building for Udon, `name`
+ * must be a compile-time constant, every graph input and output must be
+ * bound, and each to exactly one buffer. */
 udononnxStatus_t udononnxBindInput(udononnxSession_t *session, const char *name,
                                    cl_mem memory, int rank, const int64_t *dims,
                                    const int64_t *buffer_dims);
