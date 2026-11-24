@@ -1,7 +1,7 @@
 #include <CL/cl.h>
 #include <stdint.h>
 #include <string.h>
-#include <udoncl/onnx_generated_binding.h>
+#include <udoncl/onnx_types.h>
 #include <udoncl/string.h>
 #include <udontokenizers.h>
 #include <VRC/Runtime/OpenCL/Backend.h>
@@ -58,20 +58,6 @@ int udoncl_cl_draw(uint32_t buffer, uint32_t generation,
 }
 
 static cl_mem input_buffers[3];
-static int32_t resolve_counts[3];
-
-udononnxStatus_t udon_onnx_binding_resolve_input(uint32_t input_index,
-                                                 cl_mem *memory,
-                                                 size_t *byte_offset,
-                                                 size_t *byte_length) {
-  if (input_index >= 3 || !memory || !byte_offset || !byte_length)
-    return UDONONNX_STATUS_INVALID_VALUE;
-  ++resolve_counts[input_index];
-  *memory = input_buffers[input_index];
-  *byte_offset = 8;
-  *byte_length = 4 * sizeof(int64_t);
-  return UDONONNX_STATUS_SUCCESS;
-}
 
 int main(void) {
   static const uint32_t scalar_values[] = {0x61};
@@ -110,33 +96,47 @@ int main(void) {
   queue = clCreateCommandQueue(context, device, 0, &error);
   EXPECT(queue && error == CL_SUCCESS);
   for (index = 0; index < 3; ++index) {
+    int64_t sentinel[4] = {-1, -1, -1, -1};
     input_buffers[index] =
-        clCreateBuffer(context, CL_MEM_READ_WRITE, 48, 0, &error);
+        clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(sentinel), 0, &error);
     EXPECT(input_buffers[index] && error == CL_SUCCESS);
+    EXPECT(clEnqueueWriteBuffer(queue, input_buffers[index], CL_TRUE, 0,
+                                sizeof(sentinel), sentinel, 0, 0,
+                                0) == CL_SUCCESS);
   }
 
-  EXPECT(tinyllamaPrepareFixedPrefillInputs(&tokenizer, &long_text, queue) ==
-         UDONONNX_STATUS_CAPACITY_EXCEEDED);
-  for (index = 0; index < 3; ++index)
-    EXPECT(resolve_counts[index] == 0);
-
-  EXPECT(tinyllamaPrepareFixedPrefillInputs(&tokenizer, &text, queue) ==
-         UDONONNX_STATUS_SUCCESS);
+  /* A text of too many tokens writes nothing. */
+  EXPECT(tinyllamaPrepareFixedPrefillInputs(
+             &tokenizer, &long_text, queue, input_buffers[0], input_buffers[1],
+             input_buffers[2]) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
   EXPECT(clFinish(queue) == CL_SUCCESS);
-  EXPECT(clEnqueueReadBuffer(queue, input_buffers[0], CL_TRUE, 8,
+  for (index = 0; index < 3; ++index) {
+    int32_t element;
+    EXPECT(clEnqueueReadBuffer(queue, input_buffers[index], CL_TRUE, 0,
+                               sizeof(values), values, 0, 0, 0) == CL_SUCCESS);
+    for (element = 0; element < 4; ++element)
+      EXPECT(values[element] == -1);
+  }
+  EXPECT(tinyllamaPrepareFixedPrefillInputs(
+             &tokenizer, &text, queue, 0, input_buffers[1], input_buffers[2]) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+
+  EXPECT(tinyllamaPrepareFixedPrefillInputs(
+             &tokenizer, &text, queue, input_buffers[0], input_buffers[1],
+             input_buffers[2]) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(clFinish(queue) == CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, input_buffers[0], CL_TRUE, 0,
                              sizeof(values), values, 0, 0, 0) == CL_SUCCESS);
   for (index = 0; index < 4; ++index)
     EXPECT(values[index] == 7);
-  EXPECT(clEnqueueReadBuffer(queue, input_buffers[1], CL_TRUE, 8,
+  EXPECT(clEnqueueReadBuffer(queue, input_buffers[1], CL_TRUE, 0,
                              sizeof(values), values, 0, 0, 0) == CL_SUCCESS);
   for (index = 0; index < 4; ++index)
     EXPECT(values[index] == 1);
-  EXPECT(clEnqueueReadBuffer(queue, input_buffers[2], CL_TRUE, 8,
+  EXPECT(clEnqueueReadBuffer(queue, input_buffers[2], CL_TRUE, 0,
                              sizeof(values), values, 0, 0, 0) == CL_SUCCESS);
   for (index = 0; index < 4; ++index)
     EXPECT(values[index] == index);
-  for (index = 0; index < 3; ++index)
-    EXPECT(resolve_counts[index] == 1);
 
   for (index = 0; index < 3; ++index)
     EXPECT(clReleaseMemObject(input_buffers[index]) == CL_SUCCESS);

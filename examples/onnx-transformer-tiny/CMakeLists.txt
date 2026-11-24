@@ -240,8 +240,9 @@ if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
     SOURCES conversation_tokenizer.c)
 endif()
 # The synthetic transformer and the real prefill artifact expose the ONNX
-# graph inputs and outputs as public buffers (transitional
-# ONNX_PUBLIC_TENSOR_BUFFERS).
+# graph inputs and outputs as public buffers: host.c declares one
+# UDONCL_PUBLIC variable per tensor (transformer_tensors.h) and binds it by
+# name.
 set(unity_library_arguments)
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
   list(APPEND unity_library_arguments
@@ -250,7 +251,6 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     OMIT_INTERMEDIATE_IR)
 endif()
 udoncl_add_unity_library(onnx-transformer-tiny
-  ONNX_PUBLIC_TENSOR_BUFFERS
   ${unity_library_arguments}
   HOST_LIBRARIES
     transformer_host
@@ -275,8 +275,9 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   udoncl_add_host_library(transformer_step_user_host step_host.c)
   target_include_directories(transformer_step_user_host INTERFACE
     "${UdonONNXRuntime_INCLUDE_DIRS}")
+  target_compile_definitions(transformer_step_user_host INTERFACE
+    TINYLLAMA_CONTEXT_CAPACITY=${UDONCL_TINYLLAMA_CONTEXT_CAPACITY})
   udoncl_add_unity_library(onnx-transformer-tiny-m1-step
-    ONNX_PUBLIC_TENSOR_BUFFERS
     BINDING_CLASS UdonclTinyLlamaStepBinding
     DEVICE_TEXEL_FORMAT "${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}"
     OMIT_INTERMEDIATE_IR
@@ -296,7 +297,6 @@ endif()
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY AND
    NOT UDONCL_TINYLLAMA_ONNX_MODEL)
   udoncl_add_unity_library(onnx-transformer-conversation-input
-    ONNX_PUBLIC_TENSOR_BUFFERS
     HOST_LIBRARIES
       transformer_host
       transformer_user_host

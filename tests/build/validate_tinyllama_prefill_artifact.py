@@ -44,17 +44,21 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
             for kind in ("key", "value"):
                 outputs.append(tensor(len(outputs), f"present.{layer}.{kind}",
                                       "float32", [1, 4, 4, 64], 4096, 4096))
-        buffers = [
-            {"public_access": "input", "name": item["name"]}
-            for item in inputs
-        ] + [
-            {"public_access": "output", "name": item["name"]}
-            for item in outputs
-        ] + [{"name": "private_93"}]
+        def public(item, access):
+            name = item["name"].replace(".", "_")
+            return {"public_access": access, "name": name,
+                    "logical_bytes": item["logical_bytes"],
+                    "source": {"kind": "host_variable", "symbol": name,
+                               "onnx_tensor": item["name"]}}
+
+        # The empty past K/V inputs share one private buffer.
+        buffers = [public(item, "input") for item in inputs[:3]] + [
+            public(item, "output") for item in outputs
+        ] + [{"name": "private_49"}]
         manifest = {
             "onnx_binding": {"inputs": inputs, "outputs": outputs},
             "device": {"buffers": buffers,
-                       "mutable_handle_capacity": len(buffers)},
+                       "mutable_handle_capacity": len(buffers) + 92},
             "static_tensors": [{"name": "weight",
                                 "byte_length": 900_000_001}],
             "program": {"name": "tinyllama_real_prefill",
@@ -92,6 +96,17 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
             manifest["onnx_binding"]["inputs"].pop()
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "expected 47 inputs"):
+                VALIDATOR.validate_artifact(artifact)
+
+    def test_rejects_public_buffer_not_bound_to_its_tensor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["device"]["buffers"][4]["source"]["onnx_tensor"] = (
+                "present.1.key")
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not the Host variable"):
                 VALIDATOR.validate_artifact(artifact)
 
     def test_rejects_unexpected_binding_class(self):

@@ -55,16 +55,13 @@ namespace Lemolatoon.Udoncl.Generated
                 completed = true;
                 return;
             }
-            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
-            if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
-                completed = true;
+            // Initialize enqueues no Device work, so it completes at once.
+            InitializeBinding();
         }
 
-        public void OnInitializeComplete()
+        private void InitializeBinding()
         {
-            status = binding.GetInitializeStatus();
-            if (status == UdonclTinyLlamaStepBinding.StatusSuccess)
-                status = binding.TryGetInitializeResult(out libraryStatus);
+            status = binding.TryInitialize(out libraryStatus);
             if (!Succeeded())
                 return;
             phase = PhaseWriteInputs;

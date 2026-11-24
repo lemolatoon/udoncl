@@ -48,17 +48,14 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
             turn = 0;
-            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                completed = true;
+            // Initialize enqueues no Device work, so it completes at once.
+            InitializeBinding();
         }
 
-        public void OnInitializeComplete()
+        private void InitializeBinding()
         {
             phase = 2;
-            status = binding.GetInitializeStatus();
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                status = binding.TryGetInitializeResult(out libraryStatus);
+            status = binding.TryInitialize(out libraryStatus);
             if (
                 status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
                 || libraryStatus != 0

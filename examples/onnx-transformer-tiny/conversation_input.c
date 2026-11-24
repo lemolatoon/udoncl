@@ -1,30 +1,24 @@
 #define CL_TARGET_OPENCL_VERSION 120
 #include "conversation_input.h"
 
-#include <udoncl/onnx_generated_binding.h>
-
-static udononnxStatus_t upload_input(cl_command_queue queue,
-                                     uint32_t input_index,
+/* Writes the TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT values of one int64 graph
+ * input into the Device buffer the Host bound to it. */
+static udononnxStatus_t upload_input(cl_command_queue queue, cl_mem memory,
                                      const int64_t *values) {
-  cl_mem memory = 0;
-  size_t byte_offset = 0;
-  size_t byte_length = 0;
-  udononnxStatus_t status = udon_onnx_binding_resolve_input(
-      input_index, &memory, &byte_offset, &byte_length);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  if (!memory ||
-      byte_length != TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT * sizeof(int64_t))
-    return UDONONNX_STATUS_TYPE_MISMATCH;
-  return clEnqueueWriteBuffer(queue, memory, CL_FALSE, byte_offset, byte_length,
+  if (!memory)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  return clEnqueueWriteBuffer(queue, memory, CL_FALSE, 0,
+                              TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT *
+                                  sizeof(int64_t),
                               values, 0, 0, 0) == CL_SUCCESS
              ? UDONONNX_STATUS_SUCCESS
              : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
-udononnxStatus_t
-tinyllamaPrepareFixedPrefillInputs(const udontokenizers_model_t *tokenizer,
-                                   udon_string_t text, cl_command_queue queue) {
+udononnxStatus_t tinyllamaPrepareFixedPrefillInputs(
+    const udontokenizers_model_t *tokenizer, udon_string_t text,
+    cl_command_queue queue, cl_mem input_ids_memory,
+    cl_mem attention_mask_memory, cl_mem position_ids_memory) {
   int32_t token_ids[TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT];
   int32_t workspace[UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(
       TINYLLAMA_FIXED_PREFILL_SYMBOL_CAPACITY)];
@@ -52,11 +46,11 @@ tinyllamaPrepareFixedPrefillInputs(const udontokenizers_model_t *tokenizer,
     attention_mask[index] = 1;
     position_ids[index] = index;
   }
-  status = upload_input(queue, 0, input_ids);
+  status = upload_input(queue, input_ids_memory, input_ids);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  status = upload_input(queue, 1, attention_mask);
+  status = upload_input(queue, attention_mask_memory, attention_mask);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  return upload_input(queue, 2, position_ids);
+  return upload_input(queue, position_ids_memory, position_ids);
 }

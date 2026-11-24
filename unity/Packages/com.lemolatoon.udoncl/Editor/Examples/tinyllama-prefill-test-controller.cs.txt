@@ -52,17 +52,14 @@ namespace Lemolatoon.Udoncl.Generated
                 completed = true;
                 return;
             }
-            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
-            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
-                completed = true;
+            // Initialize enqueues no Device work, so it completes at once.
+            InitializeBinding();
         }
 
-        public void OnInitializeComplete()
+        private void InitializeBinding()
         {
             phase = 2;
-            status = binding.GetInitializeStatus();
-            if (status == UdonclTinyLlamaPrefillBinding.StatusSuccess)
-                status = binding.TryGetInitializeResult(out libraryStatus);
+            status = binding.TryInitialize(out libraryStatus);
             if (
                 status == UdonclTinyLlamaPrefillBinding.StatusSuccess
                 && libraryStatus == 0

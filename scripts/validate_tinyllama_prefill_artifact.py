@@ -86,9 +86,32 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     buffers = manifest.get("device", {}).get("buffers")
     capacity = manifest.get("device", {}).get("mutable_handle_capacity")
     require(isinstance(buffers, list), "artifact has no Device buffers")
-    require(capacity == len(buffers), "mutable handle capacity does not match buffers")
-    public = [item for item in buffers if item.get("public_access")]
-    require(len(public) == 92, "expected one public buffer per model input/output")
+    # The handle capacity also counts the graph tensors the ONNX plan
+    # reserves; the Host binds its own buffers to them.
+    require(isinstance(capacity, int) and capacity >= len(buffers),
+            "mutable handle capacity is below the Device buffers")
+    public = {item["name"]: item for item in buffers if item.get("public_access")}
+    # The Host declares one UDONCL_PUBLIC buffer per model input and output
+    # with an element, named after the tensor; the 44 empty past K/V inputs
+    # share one private buffer.
+    require(len(public) == 48,
+            "expected one public buffer per non-empty model input and output")
+    for tensor, access in ([(item, "input") for item in inputs[:3]] +
+                           [(item, "output") for item in outputs]):
+        name = tensor["name"].replace(".", "_")
+        buffer = public.get(name)
+        require(buffer is not None, f"{tensor['name']}: no public buffer {name}")
+        require(buffer.get("public_access") == access,
+                f"{name}: public access is not {access}")
+        require(buffer.get("logical_bytes") == tensor["logical_bytes"],
+                f"{name}: logical size differs from the tensor")
+        require(buffer.get("source") == {"kind": "host_variable",
+                                         "symbol": name,
+                                         "onnx_tensor": tensor["name"]},
+                f"{name}: buffer is not the Host variable bound to the tensor")
+    require(not any(item["name"].startswith("past_key_values")
+                    for item in public.values()),
+            "an empty past K/V input has a public buffer")
 
     static_tensors = manifest.get("static_tensors")
     require(isinstance(static_tensors, list) and static_tensors,

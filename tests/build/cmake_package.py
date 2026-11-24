@@ -1188,9 +1188,9 @@ def main():
     onnx_transformer_source = (
         args.source.resolve().parents[1] / 'examples/onnx-transformer-tiny'
     )
-    # The synthetic transformer Host names its program, and the CMake project
-    # exposes the ONNX graph inputs and outputs with the transitional
-    # ONNX_PUBLIC_TENSOR_BUFFERS argument instead of a config.
+    # The synthetic transformer Host names its program and declares one
+    # UDONCL_PUBLIC variable per ONNX graph input and output, which it binds
+    # by name.
     assert not (onnx_transformer_source / 'unity-library.json').exists()
     run([
         args.cmake,
@@ -1231,13 +1231,17 @@ def main():
     transformer_recovered = (
         transformer_artifact / 'frontend.recovered.mlir'
     ).read_text(encoding='utf-8')
-    # The only raw transfers in the linked Transformer Host belong to library
-    # helpers that export configuration erases as unreachable. Transfer
-    # bindings are recomputed after that pruning, so no summary survives.
-    assert 'vrc.static_transfer_bindings' not in transformer_recovered
+    # The only raw transfers left in the linked Transformer Host are the two
+    # clEnqueueCopyBuffer calls of commit_kv; each resolves to the buffers of
+    # its Host variables and is specialized to their Textures.
     assert 'call @clEnqueueWriteBuffer' not in transformer_recovered
     assert 'call @clEnqueueReadBuffer' not in transformer_recovered
-    assert 'vrc.static_transfer_binding_snapshot' not in transformer_recovered
+    transformer_transfers = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_transfer_bindings'
+    )
+    assert 'candidate_count = 2 : i32' in transformer_transfers
+    assert 'resolved_count = 2 : i32' in transformer_transfers
+    assert 'unresolved_count = 0 : i32' in transformer_transfers
     transformer_inventory = mlir_module_attribute(
         transformer_recovered, 'vrc.static_device_resource_inventory'
     )
@@ -1282,32 +1286,35 @@ def main():
     assert 'singleton_site_count = 10 : i32' in transformer_context_plan
     assert 'shared_site_count = 0 : i32' in transformer_context_plan
     assert 'required_clone_count = 0 : i32' in transformer_context_plan
+    # host.c creates each buffer at a call site of its own.
     assert (
-        'cloned_function_count = 5 : i32'
+        'cloned_function_count = 0 : i32'
         in transformer_context_specialization
     )
-    assert 'rewritten_call_count = 5 : i32' in transformer_context_specialization
+    assert 'rewritten_call_count = 0 : i32' in transformer_context_specialization
     assert (
-        'specialized_context_count = 5 : i32'
+        'specialized_context_count = 0 : i32'
         in transformer_context_specialization
     )
     assert transformer_inventory.count('public = false') == 4
     assert transformer_inventory.count('public = true') == 6
     assert transformer_assignments.count('texture_id = ') == 10
     assert 'resolved_count = 6 : i32' in transformer_public_aliases
-    assert 'configured_count = 10 : i32' in transformer_reconciliation
-    assert 'resolved_alias_count = 6 : i32' in transformer_reconciliation
+    assert 'configured_count = 16 : i32' in transformer_reconciliation
+    assert 'declared_alias_count = 6 : i32' in transformer_reconciliation
+    assert 'resolved_alias_count = 0 : i32' in transformer_reconciliation
     assert 'unresolved_public_count = 0 : i32' in transformer_reconciliation
-    assert 'unresolved_private_count = 4 : i32' in transformer_reconciliation
+    assert 'unresolved_private_count = 16 : i32' in transformer_reconciliation
     assert 'planned_count = 10 : i32' in transformer_layout
-    assert 'legacy_configured_count = 10 : i32' in transformer_layout
+    assert 'legacy_configured_count = 16 : i32' in transformer_layout
+    assert 'removable_legacy_count = 6 : i32' in transformer_layout
     assert 'blocker_count = 0 : i32' in transformer_layout
     assert 'unresolved_public_count = 0 : i32' in transformer_layout
     assert 'ready = true' in transformer_layout
-    assert 'candidate_count = 9 : i32' in transformer_logical_materialization
-    assert 'materialized_count = 8 : i32' in transformer_logical_materialization
+    assert 'candidate_count = 1 : i32' in transformer_logical_materialization
+    assert 'materialized_count = 0 : i32' in transformer_logical_materialization
     assert 'unresolved_count = 1 : i32' in transformer_logical_materialization
-    assert 'typed_copy_count = 4 : i32' in transformer_lowering_readiness
+    assert 'typed_copy_count = 2 : i32' in transformer_lowering_readiness
     assert (
         'unresolved_typed_transfer_operand_count = 0 : i32'
         in transformer_lowering_readiness
@@ -1324,7 +1331,7 @@ def main():
     assert 'vrc.buffer_release' not in transformer_recovered
     assert 'udonhl.checked_assigned_buffer_resolve' not in transformer_recovered
     assert 'materialized_count = 9 : i32' in transformer_physical_resolves
-    assert 'checked_count = 3 : i32' in transformer_physical_resolves
+    assert 'checked_count = 9 : i32' in transformer_physical_resolves
     assert 'unresolved_count = 0 : i32' in transformer_physical_resolves
     for name in [
         'input_ids', 'past_key', 'past_value', 'logits',
@@ -1399,7 +1406,7 @@ def main():
     assert [
         item['id'] for item in transformer_manifest['device']['buffers']
     ] == list(range(1, 11))
-    assert transformer_manifest['device']['mutable_handle_capacity'] == 10
+    assert transformer_manifest['device']['mutable_handle_capacity'] == 16
     assert {
         item['c_symbol']: item['public_name']
         for item in transformer_manifest['exports']
@@ -1418,7 +1425,7 @@ def main():
         ('input_ids', 32, 32, 'int64', 'input'),
         ('past_key', 128, 128, 'float32', 'input'),
         ('past_value', 128, 128, 'float32', 'input'),
-        ('logits', 128, 524288, 'float32', 'output'),
+        ('logits', 128, 128, 'float32', 'output'),
         ('present_key', 128, 128, 'float32', 'output'),
         ('present_value', 128, 128, 'float32', 'output'),
     ]
@@ -1440,7 +1447,8 @@ def main():
         'public sealed class UdonclGenericOnnxTransformerTinyBinding'
         in transformer_binding
     )
-    assert 'public int StartInitialize(' in transformer_binding
+    # initialize enqueues no Device work: it is a synchronous export.
+    assert 'public int TryInitialize(out int result)' in transformer_binding
     assert 'public int TryWriteInputIds(long[] source)' in transformer_binding
     assert 'return TryWriteLongBuffer(1, source);' in transformer_binding
     assert 'pixels[element * 2] = PackWord((int)value);' in transformer_binding
@@ -1476,9 +1484,7 @@ def main():
     for source_contract in [
         'class UdonclTinyLlamaPrefillTestController',
         'UdonclTinyLlamaPrefillBinding binding',
-        'binding.StartInitialize(',
-        'binding.GetInitializeStatus()',
-        'binding.TryGetInitializeResult(',
+        'binding.TryInitialize(',
         'binding.TryWriteInputIds(',
         'binding.TryWriteAttentionMask(',
         'binding.TryWritePositionIds(',
@@ -1623,10 +1629,10 @@ def main():
     assert transformer_udon_async.count(
         'vrc.unity_static_tensor_ids = '
     ) == 7
+    # commit_kv copies present_key into past_key and present_value into
+    # past_value.
     expected_transformer_copy_slots = [
         ('__udoncl_buffer_5', '__udoncl_buffer_2'),
-        ('__udoncl_buffer_5', '__udoncl_buffer_3'),
-        ('__udoncl_buffer_6', '__udoncl_buffer_2'),
         ('__udoncl_buffer_6', '__udoncl_buffer_3'),
     ]
     transformer_copy_lines = [
@@ -1653,14 +1659,14 @@ def main():
     # as an input and as a target.
     assert transformer_assembly.count(
         'PUSH, __udoncl_buffer_pool'
-    ) == 26
+    ) == 22
     assert transformer_assembly.count(
         'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D'
     ) == 5
     assert transformer_assembly.count(
         'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
         'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid'
-    ) == 11
+    ) == 9
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
