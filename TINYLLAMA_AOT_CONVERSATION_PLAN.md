@@ -2,6 +2,8 @@
 
 > **Superseded by stage 2 (2026-11):** ONNX Hosts bind model tensors through the UdonONNX session API (`udononnxCreateSession`, `udononnxBindInput`/`udononnxBindOutput`, `udononnxRun`, `udononnxReleaseSession`; see docs/architecture/operator-ownership.md), U# transfers buffers only through the named methods of the compiler-written binding, and the generated `udon_onnx_binding_*` functions survive only as the private transitional binding of the TinyLlama Conversation and Chat Hosts; the binding text below is history.
 
+> **Superseded by stage 3 (bounded dimensions and in-place Concat, 2026-11):** the Conversation and Chat model libraries bound `past_sequence_length` (`DIMENSION_BOUNDS`) and their Hosts bind each layer's past and present K/V in one buffer through the UdonONNX session API, one position per run, so a run writes only the new row (see docs/architecture/operator-ownership.md, "Bounded dimensions" and "In-place Concat"); the transitional binding, the sequence-state identification, the banks, the zero rows (`k_begin`), `udononnxEnqueueRun` with its resolved-token cache and `UDONCL_TINYLLAMA_SEQUENCE_ROWS` are removed, and the text about them below is history.
+
 ## 1. Purpose and completion boundary
 
 This file is the source of truth for running the pinned real TinyLlama 1.1B Q4
@@ -374,6 +376,8 @@ result through the generated U# binding. Hash failure, view validation,
 reimport, console checks, and cleanup are part of this gate.
 
 ## 4. Device-resident execution and memory planning
+
+> **Superseded by stage 3 (bounded dimensions and in-place Concat):** past and present K/V now share one buffer per layer, bound with a run-time extent; no sequence-state analysis, Slice materialization or advance remains.
 
 - Activations, intermediates, K/V, logits, and workspaces remain Device
   resident between operators. Host readback is limited to public outputs,
@@ -864,6 +868,8 @@ has not been tried in the Udon VM.
 
 ### 6.11 Multi-turn chat
 
+> **Superseded by stage 3 (bounded dimensions and in-place Concat):** the conversation lives in the 44 K/V buffers the Host binds; a later turn binds a longer past, and Reset binds position 0 again without clearing anything.
+
 The Chat Artifact keeps one conversation in the sequence state across turns.
 The conversation state is example Host C (`conversation_host.c`,
 `conversation_text.c`); the only library addition is the model-independent
@@ -1204,6 +1210,8 @@ The remaining 460 are 89 Q4, 90 RMSNorm passes, 45 SGEMM, 45 OpTensor
 copies (double-buffered state would remove them, but changes the binding of
 past/present tensors) and the second RMSNorm pass.
 
+> **Superseded by stage 3 (bounded dimensions and in-place Concat):** the advance Slices, the banked sequence state below and the zero rows of the 4096-token section are removed; each run binds its past and present in one buffer and writes only the new row.
+
 Banked sequence state (M8; a conversation longer than the capacity is still
 later work) removes the advance copies without changing the ONNX semantics
 or the binding protocol. Every past input buffer is allocated with the size
@@ -1246,6 +1254,8 @@ operand, and the scores of 32 x capacity words the 16,384 of the Softmax
 kernel.
 
 #### 4096-token artifacts
+
+> **Superseded by stage 3 (bounded dimensions and in-place Concat):** the counts and costs below are for the banked transitional binding; attention now runs over the run-time extent of the past (its draws still cover the capacity), and each of the 44 K/V buffers holds 1,048,576 words once.
 
 Three generic changes lift that bound; nothing in them names a model or a
 capacity, and the capacity-512 artifacts keep their kernels and dispatches:

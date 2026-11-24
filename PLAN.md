@@ -13,6 +13,8 @@ the longer-term architecture and historical checkpoints.
 
 > **Superseded by stage 2 (2026-11):** ONNX Hosts bind model tensors through the UdonONNX session API (`udononnxCreateSession`, `udononnxBindInput`/`udononnxBindOutput`, `udononnxRun`, `udononnxReleaseSession`; see docs/architecture/operator-ownership.md), U# transfers buffers only through the named methods of the compiler-written binding, and the generated `udon_onnx_binding_*` functions survive only as the private transitional binding of the TinyLlama Conversation and Chat Hosts; the binding text below is history.
 
+> **Superseded by stage 3 (bounded dimensions and in-place Concat, 2026-11):** the private transitional binding of the TinyLlama Conversation and Chat Hosts is removed as well; they bind their key/value cache through the UdonONNX session API with a bounded past and one buffer per layer's past and present (see docs/architecture/operator-ownership.md).
+
 > **Removed since (2026-11):** the Unity library config file
 > (`unity-library.json`, its `device_kernels` and `buffers` entries and
 > schema-v2 overrides). The Host source declares the program, exports and

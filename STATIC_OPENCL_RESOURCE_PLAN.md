@@ -27,6 +27,8 @@ of runtime handle resolution.
 
 ## 2. Existing facts
 
+> **Superseded in part by stage 3 (bounded dimensions and in-place Concat, 2026-11):** the ONNX Host plan no longer reserves a mutable handle for each graph input and output, so `udoncl.mutable_buffer_bytes` covers only the buffers a session owns (its graph tensors are bound to buffers the Host allocates), and the TinyLlama Conversation and Chat programs no longer keep a run-time buffer pool for a transitional sequence-state binding.
+
 - ONNX finalization already determines mutable buffer capacities and emits
   `udoncl.mutable_buffer_bytes` and `udoncl.mutable_handle_capacity`.
 - CMake already creates a Host module before `OpenCLAOT.c` and
