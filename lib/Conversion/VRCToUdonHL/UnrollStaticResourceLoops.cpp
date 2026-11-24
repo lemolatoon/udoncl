@@ -10,6 +10,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSet.h"
@@ -53,6 +54,10 @@ struct Loop {
   bool continueOnTrue = true;
   unsigned induction = 0;
   SmallVector<APInt> values;
+  APInt step;
+  /// The loop blocks in dominator tree preorder: a value is cloned before
+  /// its uses, whatever the order of the blocks in the region.
+  SmallVector<Block *> order;
   /// The one block every exit edge leaves to when values of the loop are
   /// used after it, and those values.
   Block *exit = nullptr;
@@ -284,6 +289,13 @@ std::optional<Loop> matchLoop(Block *header, DominanceInfo &dominance,
       continue;
     loop.induction = index;
     loop.values = std::move(values);
+    loop.step = *step;
+    for (DominanceInfoNode *node :
+         llvm::depth_first(dominance.getNode(loop.header)))
+      if (loop.blocks.contains(node->getBlock()))
+        loop.order.push_back(node->getBlock());
+    if (loop.order.size() != loop.blocks.size())
+      return std::nullopt;
     return loop;
   }
   return std::nullopt;
@@ -320,7 +332,9 @@ void unroll(Loop &loop) {
     headers.push_back(mapping.lookup(loop.header));
   }
   for (auto [iteration, mapping] : llvm::enumerate(copies)) {
-    for (Block *block : loop.blocks) {
+    // A block of the body may use a value of any block that dominates it,
+    // which can come later in the region: clone in dominance order.
+    for (Block *block : loop.order) {
       Block *copy = mapping.lookup(block);
       builder.setInsertionPointToEnd(copy);
       for (Operation &operation : *block)
@@ -348,7 +362,26 @@ void unroll(Loop &loop) {
                                       : branch.getTrueDestOperands());
       branch.erase();
     } else {
-      branch->setSuccessor(headers[iteration + 1], backOnTrue ? 0 : 1);
+      // An iteration whose induction variable alone decides to continue
+      // keeps no exit edge from its latch, so a loop that follows is
+      // entered from the last copy only.
+      Evaluator evaluator{
+          loop.header->getArgument(loop.induction),
+          (loop.continueOnTrue
+               ? loop.branch.getTrueDestOperands()
+               : loop.branch.getFalseDestOperands())[loop.induction],
+          loop.values[iteration], loop.values[iteration] + loop.step};
+      std::optional<bool> taken = evaluator.boolean(loop.branch.getCondition());
+      if (taken && *taken == backOnTrue) {
+        SmallVector<Value> operands(backOnTrue ? branch.getTrueDestOperands()
+                                               : branch.getFalseDestOperands());
+        builder.setInsertionPoint(branch);
+        cf::BranchOp::create(builder, branch.getLoc(), headers[iteration + 1],
+                             operands);
+        branch.erase();
+      } else {
+        branch->setSuccessor(headers[iteration + 1], backOnTrue ? 0 : 1);
+      }
     }
     // Every edge of the copy that leaves to the exit block passes the
     // values of the copy.
