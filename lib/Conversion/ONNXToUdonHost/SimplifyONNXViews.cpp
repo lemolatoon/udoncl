@@ -7,6 +7,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/Dialect/ONNX/ElementsAttr/DisposableElementsAttr.hpp"
 
+#include <limits>
+#include <optional>
+
 using namespace mlir;
 
 namespace vrc {
@@ -37,6 +40,26 @@ DenseElementsAttr constantElements(Value value) {
 }
 
 bool isAbsentOperand(Value value) { return isa<NoneType>(value.getType()); }
+
+/// A ranked non-empty type with at most one dynamic axis, the extent of a
+/// bounded dimension.
+RankedTensorType boundedNonEmptyType(Value value) {
+  auto type = dyn_cast<RankedTensorType>(value.getType());
+  if (!type || llvm::count_if(type.getShape(), ShapedType::isDynamic) > 1 ||
+      llvm::is_contained(type.getShape(), 0))
+    return {};
+  return type;
+}
+
+std::optional<SmallVector<int64_t>> constantIntegers(Value value) {
+  DenseElementsAttr elements = constantElements(value);
+  if (!elements || !isa<IntegerType>(elements.getElementType()))
+    return std::nullopt;
+  SmallVector<int64_t> values;
+  for (const APInt &element : elements.getValues<APInt>())
+    values.push_back(element.getSExtValue());
+  return values;
+}
 
 /// Shares one shape constant per function and shape. The greedy driver may
 /// erase a constant whose Reshape became dead, so erased operations leave the
@@ -86,8 +109,8 @@ struct TransposeOfUnitDimensionsToReshape : RewritePattern {
                                 PatternRewriter &rewriter) const override {
     if (transpose->getNumOperands() != 1 || transpose->getNumResults() != 1)
       return rewriter.notifyMatchFailure(transpose, "unexpected signature");
-    RankedTensorType input = staticNonEmptyType(transpose->getOperand(0));
-    RankedTensorType output = staticNonEmptyType(transpose->getResult(0));
+    RankedTensorType input = boundedNonEmptyType(transpose->getOperand(0));
+    RankedTensorType output = boundedNonEmptyType(transpose->getResult(0));
     if (!input || !output || input.getRank() != output.getRank() ||
         input.getElementType() != output.getElementType())
       return rewriter.notifyMatchFailure(transpose, "shapes are not static");
@@ -122,7 +145,12 @@ struct TransposeOfUnitDimensionsToReshape : RewritePattern {
                                            "reorders non-unit dimensions");
       previousNonUnitAxis = inputAxis;
     }
-    Value shape = shapes.get(rewriter, transpose, output.getShape());
+    // The one dynamic extent, if any, is the inferred one.
+    SmallVector<int64_t> extents(output.getShape());
+    for (int64_t &extent : extents)
+      if (ShapedType::isDynamic(extent))
+        extent = -1;
+    Value shape = shapes.get(rewriter, transpose, extents);
     OperationState state(transpose->getLoc(), "onnx.Reshape");
     state.addOperands({transpose->getOperand(0), shape});
     state.addTypes(output);
@@ -146,9 +174,43 @@ struct RemoveIdentitySlice : RewritePattern {
                                 PatternRewriter &rewriter) const override {
     if (slice->getNumOperands() < 3 || slice->getNumResults() != 1)
       return rewriter.notifyMatchFailure(slice, "unexpected signature");
-    RankedTensorType input = staticNonEmptyType(slice->getOperand(0));
+    RankedTensorType input = boundedNonEmptyType(slice->getOperand(0));
     if (!input || slice->getResult(0).getType() != input)
       return rewriter.notifyMatchFailure(slice, "result differs from input");
+    // A dynamic extent is kept whole only by a slice from 0 to INT64_MAX:
+    // equal types say nothing about which elements a dynamic slice keeps.
+    if (!input.hasStaticShape()) {
+      std::optional<SmallVector<int64_t>> starts =
+          constantIntegers(slice->getOperand(1));
+      std::optional<SmallVector<int64_t>> ends =
+          constantIntegers(slice->getOperand(2));
+      SmallVector<int64_t> axes;
+      if (slice->getNumOperands() >= 4 &&
+          !isAbsentOperand(slice->getOperand(3))) {
+        std::optional<SmallVector<int64_t>> values =
+            constantIntegers(slice->getOperand(3));
+        if (!values)
+          return rewriter.notifyMatchFailure(slice, "axes are not constant");
+        axes = *values;
+      } else if (starts) {
+        for (size_t index = 0; index < starts->size(); ++index)
+          axes.push_back(index);
+      }
+      if (!starts || !ends || starts->size() != ends->size() ||
+          axes.size() != starts->size())
+        return rewriter.notifyMatchFailure(slice, "bounds are not constant");
+      for (auto [index, axis] : llvm::enumerate(axes)) {
+        if (axis < 0)
+          axis += input.getRank();
+        if (axis < 0 || axis >= input.getRank())
+          return rewriter.notifyMatchFailure(slice, "axis out of range");
+        if (input.isDynamicDim(axis) &&
+            ((*starts)[index] != 0 ||
+             (*ends)[index] != std::numeric_limits<int64_t>::max()))
+          return rewriter.notifyMatchFailure(slice,
+                                             "dynamic extent is not whole");
+      }
+    }
     if (slice->getNumOperands() >= 5 &&
         !isAbsentOperand(slice->getOperand(4))) {
       DenseElementsAttr steps = constantElements(slice->getOperand(4));
@@ -172,9 +234,21 @@ struct RemoveIdentityExpand : RewritePattern {
                                 PatternRewriter &rewriter) const override {
     if (expand->getNumOperands() != 2 || expand->getNumResults() != 1)
       return rewriter.notifyMatchFailure(expand, "unexpected signature");
-    RankedTensorType input = staticNonEmptyType(expand->getOperand(0));
+    RankedTensorType input = boundedNonEmptyType(expand->getOperand(0));
     if (!input || expand->getResult(0).getType() != input)
       return rewriter.notifyMatchFailure(expand, "result differs from input");
+    // A dynamic extent is kept only by a shape operand of 1 at its axis.
+    if (!input.hasStaticShape()) {
+      std::optional<SmallVector<int64_t>> shape =
+          constantIntegers(expand->getOperand(1));
+      if (!shape || shape->size() > static_cast<size_t>(input.getRank()))
+        return rewriter.notifyMatchFailure(expand, "shape is not constant");
+      int64_t offset = input.getRank() - shape->size();
+      for (int64_t axis = 0; axis < input.getRank(); ++axis)
+        if (input.isDynamicDim(axis) && axis >= offset &&
+            (*shape)[axis - offset] != 1)
+          return rewriter.notifyMatchFailure(expand, "dynamic extent grows");
+    }
     rewriter.replaceOp(expand, expand->getOperand(0));
     return success();
   }

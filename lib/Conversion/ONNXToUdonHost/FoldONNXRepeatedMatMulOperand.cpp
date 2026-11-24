@@ -29,11 +29,27 @@ namespace vrc {
 #include "VRC/Conversion/Passes.h.inc"
 
 namespace {
+/// A ranked tensor type whose extents are static, or that has one dynamic
+/// axis of a bounded dimension. Shapes are compared extent by extent: a
+/// dynamic extent only equals the dynamic extent at the same axis of an
+/// operand it is tied to by the matched operators, which the element counts
+/// of the Reshape and Expand in between force to be the same extent.
 RankedTensorType staticType(Value value) {
   auto type = dyn_cast<RankedTensorType>(value.getType());
-  if (!type || !type.hasStaticShape() || type.getNumElements() == 0)
+  if (!type || llvm::count_if(type.getShape(), ShapedType::isDynamic) > 1 ||
+      llvm::is_contained(type.getShape(), 0))
     return {};
   return type;
+}
+
+/// A shape operand for `shape`: a dynamic extent is -1 for a Reshape (the
+/// one inferred extent) and 1 for an Expand (keep the input extent).
+SmallVector<int64_t> shapeOperand(ArrayRef<int64_t> shape, int64_t dynamic) {
+  SmallVector<int64_t> values(shape);
+  for (int64_t &extent : values)
+    if (ShapedType::isDynamic(extent))
+      extent = dynamic;
+  return values;
 }
 
 Operation *producer(Value value, StringRef name) {
@@ -42,6 +58,35 @@ Operation *producer(Value value, StringRef name) {
       operation->getNumResults() != 1)
     return nullptr;
   return operation;
+}
+
+/// Whether an Expand keeps the extent of every dynamic axis of its input: its
+/// constant shape operand is 1 there. Equal dynamic result and input types
+/// do not say that on their own.
+bool keepsDynamicExtents(Operation *expand) {
+  auto input = dyn_cast<RankedTensorType>(expand->getOperand(0).getType());
+  if (!input)
+    return false;
+  if (input.hasStaticShape())
+    return true;
+  Operation *shape = expand->getOperand(1).getDefiningOp();
+  if (!shape)
+    return false;
+  DenseElementsAttr elements = shape->getAttrOfType<DenseElementsAttr>("value");
+  if (auto disposable = shape->getAttrOfType<DisposableElementsAttr>("value"))
+    elements = disposable.toDenseElementsAttr();
+  if (!elements || !isa<IntegerType>(elements.getElementType()))
+    return false;
+  SmallVector<int64_t> values;
+  for (const APInt &value : elements.getValues<APInt>())
+    values.push_back(value.getSExtValue());
+  int64_t offset = static_cast<int64_t>(values.size()) - input.getRank();
+  if (offset < 0)
+    return false;
+  for (int64_t axis = 0; axis < input.getRank(); ++axis)
+    if (input.isDynamicDim(axis) && values[axis + offset] != 1)
+      return false;
+  return true;
 }
 
 /// Shares one shape constant per function and shape. The greedy driver may
@@ -116,6 +161,10 @@ struct FoldRepeatedRightOperand : RewritePattern {
     int64_t groups = eShape[batch];
     int64_t repeats = eShape[batch + 1];
     int64_t m = a.getShape()[rank - 2];
+    if (ShapedType::isDynamic(groups) || ShapedType::isDynamic(repeats) ||
+        ShapedType::isDynamic(m) || ShapedType::isDynamic(bShape[batch]) ||
+        llvm::any_of(bShape.take_front(batch), ShapedType::isDynamic))
+      return rewriter.notifyMatchFailure(matmul, "batch is dynamic");
     if (repeats < 2 || xShape[batch + 1] != 1 ||
         groups * repeats != bShape[batch] ||
         eShape.take_front(batch) != bShape.take_front(batch) ||
@@ -124,6 +173,8 @@ struct FoldRepeatedRightOperand : RewritePattern {
     for (int64_t axis = 0; axis < x.getRank(); ++axis)
       if (axis != batch + 1 && xShape[axis] != eShape[axis])
         return rewriter.notifyMatchFailure(matmul, "source broadcasts more");
+    if (!keepsDynamicExtents(expand))
+      return rewriter.notifyMatchFailure(matmul, "dynamic extent broadcasts");
     // The left operand has the full batch, so its matrices regroup as rows.
     if (a.getShape().drop_back(2) != bShape.drop_back(2) ||
         a.getShape().back() != bShape[rank - 2] ||
@@ -136,7 +187,8 @@ struct FoldRepeatedRightOperand : RewritePattern {
       auto type = RankedTensorType::get(
           shape, cast<RankedTensorType>(value.getType()).getElementType());
       OperationState state(location, "onnx.Reshape");
-      state.addOperands({value, shapes.get(rewriter, matmul, shape)});
+      state.addOperands(
+          {value, shapes.get(rewriter, matmul, shapeOperand(shape, -1))});
       state.addTypes(type);
       return rewriter.create(state)->getResult(0);
     };
@@ -260,6 +312,11 @@ struct SinkRepeatBelowTransposeAndScale : RewritePattern {
     ArrayRef<int64_t> eShape = expanded.getShape();
     ArrayRef<int64_t> xShape = x.getShape();
     ArrayRef<int64_t> mShape = merged.getShape();
+    if (ShapedType::isDynamic(eShape[batch]) ||
+        ShapedType::isDynamic(eShape[batch + 1]) ||
+        ShapedType::isDynamic(mShape[batch]) ||
+        llvm::any_of(mShape.take_front(batch), ShapedType::isDynamic))
+      return rewriter.notifyMatchFailure(matmul, "batch is dynamic");
     if (xShape[batch + 1] != 1 || eShape[batch + 1] < 2 ||
         eShape[batch] * eShape[batch + 1] != mShape[batch] ||
         eShape.take_front(batch) != mShape.take_front(batch) ||
@@ -268,6 +325,8 @@ struct SinkRepeatBelowTransposeAndScale : RewritePattern {
     for (int64_t axis = 0; axis < x.getRank(); ++axis)
       if (axis != batch + 1 && xShape[axis] != eShape[axis])
         return rewriter.notifyMatchFailure(matmul, "source broadcasts more");
+    if (!keepsDynamicExtents(expand))
+      return rewriter.notifyMatchFailure(matmul, "dynamic extent broadcasts");
 
     Location location = matmul->getLoc();
     Type element = x.getElementType();
@@ -293,12 +352,13 @@ struct SinkRepeatBelowTransposeAndScale : RewritePattern {
     std::swap(repeatedShape[xRank - 1], repeatedShape[xRank - 2]);
     OperationState expandState(location, "onnx.Expand");
     expandState.addOperands(
-        {turned, shapes.get(rewriter, matmul, repeatedShape)});
+        {turned, shapes.get(rewriter, matmul, shapeOperand(repeatedShape, 1))});
     expandState.addTypes(RankedTensorType::get(repeatedShape, element));
     Value repeated = rewriter.create(expandState)->getResult(0);
     OperationState mergeState(location, "onnx.Reshape");
     mergeState.addOperands(
-        {repeated, shapes.get(rewriter, matmul, b.getShape())});
+        {repeated,
+         shapes.get(rewriter, matmul, shapeOperand(b.getShape(), -1))});
     mergeState.addTypes(b);
     Value operand = rewriter.create(mergeState)->getResult(0);
     rewriter.modifyOpInPlace(matmul, [&] { matmul->setOperand(1, operand); });
