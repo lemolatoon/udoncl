@@ -1,4 +1,6 @@
 #include "ONNXToUdonHost.h"
+#include "ONNXDimensionExprs.h"
+#include "ONNXHostGraph.h"
 #include "ONNXHostMaterialization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -18,6 +20,9 @@ StringRef providerFor(StringRef operation, StringRef domain,
       return "udononnxMatMulNBits";
     if (domain == "com.lemolatoon.udoncl" && functionName == "RmsNorm")
       return "udonatenRmsNorm";
+    if (domain == "com.lemolatoon.udoncl" &&
+        functionName == "UdonclBoundedPrefix")
+      return "udononnxBoundedPrefix";
     return {};
   }
   if (!domain.empty())
@@ -68,7 +73,83 @@ std::string concreteProvider(StringRef family, StringRef operation) {
 }
 } // namespace
 
+/// Checks that every graph output has the extent its model declares for a
+/// bounded dimension (for example present = past_sequence_length + 1), and
+/// records the extent expression of every provider result that has one.
+static LogicalResult
+describeBoundedExtents(ModuleOp module,
+                       llvm::DenseMap<Operation *, DictionaryAttr> &results) {
+  if (!module->hasAttr(onnxDimensionBoundsAttr))
+    return success();
+  for (auto function : module.getOps<func::FuncOp>()) {
+    if (function.isDeclaration())
+      continue;
+    ONNXDimensionExprs analysis(function);
+    for (const auto &[op, message] : analysis.getErrors())
+      return op->emitError("ONNX operation ") << message;
+    function.walk([&](Operation *op) {
+      if (!op->getName().getStringRef().starts_with("onnx.") ||
+          op->getNumResults() != 1)
+        return;
+      const DimShape *shape = analysis.getShape(op->getResult(0));
+      if (!shape)
+        return;
+      for (auto [axis, extent] : llvm::enumerate(*shape))
+        if (extent.isSymbolic())
+          results[op] = makeONNXDimensionExprAttr(module.getContext(), axis,
+                                                  extent.symbol.getValue(),
+                                                  extent.offset);
+    });
+    Operation *terminator = function.getBody().back().getTerminator();
+    for (auto [index, value] : llvm::enumerate(terminator->getOperands())) {
+      const DimShape *shape = analysis.getShape(value);
+      auto parameters =
+          function.getResultAttrOfType<StringAttr>(index, "onnx.dim_params");
+      auto name = function.getResultAttrOfType<StringAttr>(index, "onnx.name");
+      std::string output = name ? name.str() : ("output " + Twine(index)).str();
+      SmallVector<DimExpr> declared(shape ? shape->size() : 0,
+                                    DimExpr::unknown());
+      if (parameters) {
+        SmallVector<StringRef> entries;
+        parameters.getValue().split(entries, ',');
+        for (StringRef entry : entries) {
+          auto [axisText, expression] = entry.split(':');
+          unsigned axis = 0;
+          if (axisText.getAsInteger(10, axis) || axis >= declared.size())
+            continue;
+          auto [symbol, offsetText] = expression.split('+');
+          symbol = symbol.trim();
+          int64_t offset = 0;
+          if (expression.contains('+') &&
+              offsetText.trim().getAsInteger(10, offset))
+            continue;
+          if (!analysis.getBound(StringAttr::get(module.getContext(), symbol)))
+            continue;
+          declared[axis] =
+              DimExpr::of(StringAttr::get(module.getContext(), symbol), offset);
+        }
+      }
+      if (!shape)
+        continue;
+      for (auto [axis, extent] : llvm::enumerate(*shape)) {
+        if (!extent.isSymbolic() && !declared[axis].known)
+          continue;
+        if (extent != declared[axis])
+          return function.emitError("ONNX graph output '")
+                 << output << "' axis " << axis << " has extent "
+                 << extent.str() << " but the model declares "
+                 << (declared[axis].known ? declared[axis].str()
+                                          : std::string("a static extent"));
+      }
+    }
+  }
+  return success();
+}
+
 LogicalResult lowerONNXToUdonHost(ModuleOp module) {
+  llvm::DenseMap<Operation *, DictionaryAttr> boundedResults;
+  if (failed(describeBoundedExtents(module, boundedResults)))
+    return failure();
   unsigned thunkIndex = 0;
   SmallVector<Operation *> erase;
   SmallVector<Operation *> operations;
@@ -145,6 +226,8 @@ LogicalResult lowerONNXToUdonHost(ModuleOp module) {
     StringRef semanticOperation = operation == "Custom" && !functionName.empty()
                                       ? functionName
                                       : operation;
+    if (semanticOperation == "UdonclBoundedPrefix")
+      semanticOperation = "BoundedPrefix";
     std::string provider = concreteProvider(family, semanticOperation);
     std::string symbol = "__udon_onnx_" + semanticOperation.lower() + "_" +
                          std::to_string(thunkIndex++);
@@ -170,6 +253,8 @@ LogicalResult lowerONNXToUdonHost(ModuleOp module) {
         attributes.append(attribute);
     call->setAttr("udon.onnx.attributes",
                   attributes.getDictionary(op->getContext()));
+    if (DictionaryAttr dimension = boundedResults.lookup(op))
+      call->setAttr(onnxHostResultDimensionAttr, dimension);
     op->replaceAllUsesWith(call.getResults());
     erase.push_back(op);
   }

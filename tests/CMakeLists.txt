@@ -815,6 +815,8 @@ add_test(NAME onnx-cpp-lowering
     "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_cpp_lowering.py"
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/onnx_to_udon_host.mlir"
+    $<TARGET_FILE:udoncl-onnx-frontend>
+    "${PROJECT_BINARY_DIR}/tests/onnx-cpp-lowering"
 )
 add_test(NAME tinyllama-real-onnx-frontend
   COMMAND Python3::Interpreter

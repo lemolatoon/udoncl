@@ -378,6 +378,24 @@ std::optional<DimShape> ONNXDimensionExprs::inferIntegers(Operation *op) {
   StringRef name = op->getName().getStringRef();
   Value result = op->getResult(0);
   auto resultType = dyn_cast<RankedTensorType>(result.getType());
+  if (auto call = dyn_cast<func::CallOp>(op)) {
+    // An externalized constant keeps its value in its static tensor record.
+    auto module = op->getParentOfType<ModuleOp>();
+    auto callee = module ? module.lookupSymbol<func::FuncOp>(call.getCallee())
+                         : func::FuncOp();
+    auto record =
+        callee ? callee->getAttrOfType<DictionaryAttr>("udoncl.static_tensor")
+               : DictionaryAttr();
+    auto data =
+        record ? record.getAs<DenseElementsAttr>("data") : DenseElementsAttr();
+    if (!data || !isa<IntegerType>(data.getElementType()) ||
+        data.getNumElements() > static_cast<int64_t>(maximumIntegerElements))
+      return std::nullopt;
+    DimShape result;
+    for (APInt value : data.getValues<APInt>())
+      result.push_back(DimExpr::constant(value.getSExtValue()));
+    return result;
+  }
   if (name == "onnx.Constant" || name == "arith.constant") {
     std::optional<SmallVector<int64_t>> values = readDense(op);
     if (!values && reader)
@@ -656,6 +674,19 @@ std::optional<DimShape> ONNXDimensionExprs::inferShape(Operation *op) {
     }
     if (function.getValue() == "RmsNorm")
       return input;
+    if (function.getValue() == "UdonclBoundedPrefix") {
+      // The leading block of a constant at the bound: its extent on `axis`
+      // is `symbol + offset`.
+      auto axis = op->getAttrOfType<IntegerAttr>("axis");
+      auto symbol = op->getAttrOfType<StringAttr>("symbol");
+      auto offset = op->getAttrOfType<IntegerAttr>("offset");
+      if (!axis || !symbol || !offset || axis.getInt() < 0 ||
+          axis.getInt() >= static_cast<int64_t>(input->size()) ||
+          !getBound(symbol))
+        return std::nullopt;
+      (*input)[axis.getInt()] = DimExpr::of(symbol, offset.getInt());
+      return input;
+    }
     return std::nullopt;
   }
   if (llvm::StringSwitch<bool>(operation)

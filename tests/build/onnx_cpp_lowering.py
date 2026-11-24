@@ -8,7 +8,10 @@ import sys
 
 host_opt = Path(sys.argv[1])
 source = Path(sys.argv[2])
+onnx_frontend = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+output = Path(sys.argv[4]) if len(sys.argv) > 4 else None
 onnx_opt = [host_opt]
+root = Path(__file__).resolve().parents[2]
 
 # A fixture whose nodes form a fusion group checks the library lowering of
 # each operator with fusion off, and the synthesized kernel with it on.
@@ -1572,4 +1575,39 @@ result = subprocess.run(
 )
 assert result.returncode != 0, result.stdout
 assert "unsupported ONNX operator Log" in result.stderr, result.stderr
+# The bounded decoder fixture compiles through the ONNX passes with a bounded
+# past; the Host graph then names the first operator that does not support
+# a dynamic extent yet.
+if onnx_frontend is not None:
+    output.mkdir(parents=True, exist_ok=True)
+    model = output / "bounded_kv.onnx"
+    subprocess.run(
+        [sys.executable, root / "tests/boundary/onnx_bounded_kv_fixture.py", "-o", model],
+        check=True,
+    )
+    bounded = subprocess.run(
+        [
+            sys.executable,
+            root / "scripts/compile_onnx_mlir.py",
+            model,
+            "-o",
+            output / "bounded_kv_host.mlir",
+            "--frontend",
+            onnx_frontend,
+            "--dimension",
+            "batch=1",
+            "--dimension",
+            "sequence=1",
+            "--dimension-bound",
+            "past=8",
+            "--lower-to-host",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert bounded.returncode != 0, bounded.stdout
+    assert (
+        "ONNX operator Concat does not support a dynamic extent on axis 2 "
+        "(dimension past)" in bounded.stderr
+    ), bounded.stderr
 print("onnx_cpp_lowering=passed")

@@ -9,6 +9,7 @@
 #include "mlir/Support/LLVM.h"
 
 #include <optional>
+#include <string>
 
 namespace vrc {
 struct ONNXHostPlan {
@@ -89,6 +90,10 @@ llvm::SmallVector<int64_t>
 integerArrayAttribute(const NodeRecord &node, llvm::StringRef name,
                       llvm::ArrayRef<int64_t> fallback);
 bool isMetadataOnlyAlias(const NodeRecord &node);
+/// Why `node` cannot run with the dynamic extents of its tensors (axes of a
+/// bounded dimension), or nothing when it has none or supports them.
+std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
+                                                    const NodeRecord &node);
 bool isDeviceAlias(const GraphRecord &graph, const NodeRecord &node);
 std::optional<float> scalarF32(const TensorRecord &tensor);
 std::optional<llvm::SmallVector<int64_t>>

@@ -1,4 +1,5 @@
 #include "ONNXHostGraph.h"
+#include "ONNXHostPlan.h"
 #include "VRC/Conversion/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -20,10 +21,20 @@ struct ValidateONNXHostGraphPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    if (failed(readONNXHostGraph(module))) {
+    FailureOr<GraphRecord> graph = readONNXHostGraph(module);
+    if (failed(graph)) {
       signalPassFailure();
       return;
     }
+    // Every node that reads or writes a tensor with an axis of a bounded
+    // dimension must support its run-time extent.
+    for (const NodeRecord &node : graph->nodes)
+      if (std::optional<std::string> reason =
+              unsupportedDynamicExtent(*graph, node)) {
+        emitError(node.location.value_or(module.getLoc())) << *reason;
+        signalPassFailure();
+        return;
+      }
     module->setAttr(hostGraphValidatedAttr, UnitAttr::get(module.getContext()));
   }
 };

@@ -7,16 +7,30 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include <optional>
 #include <string>
 
 namespace vrc {
+/// The one axis of a tensor whose extent depends on a bounded dimension: at
+/// run time it is `symbol + offset`, at most `bound + offset`.
+struct ONNXHostDynamicAxis {
+  int64_t axis;
+  std::string symbol;
+  int64_t offset;
+};
+
 struct ONNXHostTensor {
+  /// The tensor type; a dynamic axis has its largest extent (the bound of
+  /// its dimension plus the offset), so every size planned from it holds the
+  /// tensor at every extent.
   mlir::RankedTensorType type;
   mlir::DenseElementsAttr initialValue;
   std::string symbol;
   std::string name;
   int64_t staticResourceId = -1;
   int64_t staticByteLength = 0;
+  /// Set for a tensor with an axis of a bounded dimension.
+  std::optional<ONNXHostDynamicAxis> dynamic;
 };
 
 struct ONNXHostNode {
@@ -25,6 +39,8 @@ struct ONNXHostNode {
   llvm::SmallVector<int64_t> inputs;
   unsigned output;
   mlir::DictionaryAttr attributes;
+  /// Where the provider call is, for diagnostics.
+  std::optional<mlir::Location> location;
 };
 
 struct ONNXHostSequenceState {
@@ -36,6 +52,8 @@ struct ONNXHostSequenceState {
 };
 
 struct ONNXHostGraph {
+  /// Every bounded dimension and its inclusive bound, in name order.
+  llvm::SmallVector<std::pair<std::string, int64_t>> dimensionBounds;
   llvm::SmallVector<ONNXHostTensor> tensors;
   llvm::SmallVector<unsigned> inputs;
   llvm::SmallVector<unsigned> outputs;
@@ -43,6 +61,7 @@ struct ONNXHostGraph {
   llvm::SmallVector<ONNXHostSequenceState> sequenceStates;
 };
 
+using DynamicAxisRecord = ONNXHostDynamicAxis;
 using TensorRecord = ONNXHostTensor;
 using NodeRecord = ONNXHostNode;
 using SequenceStateRecord = ONNXHostSequenceState;
@@ -53,7 +72,16 @@ inline constexpr llvm::StringLiteral onnxHostGraphValidatedAttr =
 inline constexpr llvm::StringLiteral hostGraphValidatedAttr =
     onnxHostGraphValidatedAttr;
 
+/// Call attribute of an ONNX Host provider call whose result has an axis of a
+/// bounded dimension: {axis, symbol, offset}.
+inline constexpr llvm::StringLiteral onnxHostResultDimensionAttr =
+    "udon.onnx.result_dim_expr";
+
 mlir::FailureOr<ONNXHostGraph> readONNXHostGraph(mlir::ModuleOp module);
+
+/// The inclusive bound of `symbol` in `graph`.
+std::optional<int64_t> dimensionBound(const ONNXHostGraph &graph,
+                                      llvm::StringRef symbol);
 } // namespace vrc
 
 #endif

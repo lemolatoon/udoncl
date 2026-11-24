@@ -1,5 +1,7 @@
 #include "ONNXHostGraph.h"
 
+#include "ONNXDimensionExprs.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -22,6 +24,14 @@ unsigned graphElementByteSize(Type type) {
 }
 } // namespace
 
+std::optional<int64_t> dimensionBound(const GraphRecord &graph,
+                                      StringRef symbol) {
+  for (const auto &[name, bound] : graph.dimensionBounds)
+    if (name == symbol)
+      return bound;
+  return std::nullopt;
+}
+
 FailureOr<GraphRecord> readONNXHostGraph(ModuleOp module) {
   auto graph = module.lookupSymbol<func::FuncOp>("main_graph");
   if (!graph || graph.isExternal() || !llvm::hasSingleElement(graph.getBody()))
@@ -29,12 +39,51 @@ FailureOr<GraphRecord> readONNXHostGraph(ModuleOp module) {
         "ONNX Host finalization requires one defined single-block main_graph");
 
   GraphRecord result;
+  if (auto bounds =
+          module->getAttrOfType<DictionaryAttr>(onnxDimensionBoundsAttr))
+    for (NamedAttribute entry : bounds) {
+      auto bound = dyn_cast<IntegerAttr>(entry.getValue());
+      if (!bound || bound.getInt() <= 0)
+        return module.emitError("ONNX dimension bounds are malformed");
+      result.dimensionBounds.push_back({entry.getName().str(), bound.getInt()});
+    }
   llvm::DenseMap<Value, unsigned> values;
-  auto addTensor = [&](Value value, StringRef stem,
-                       DenseElementsAttr initial = {},
-                       int64_t staticResourceId = -1,
-                       int64_t staticByteLength = 0) -> FailureOr<unsigned> {
+  // A bounded dimension expression {axis, symbol, offset} of `value`.
+  auto readDynamic =
+      [&](Value value,
+          DictionaryAttr entry) -> FailureOr<std::optional<DynamicAxisRecord>> {
+    if (!entry)
+      return std::optional<DynamicAxisRecord>();
+    auto axis = entry.getAs<IntegerAttr>("axis");
+    auto offset = entry.getAs<IntegerAttr>("offset");
+    auto symbol = entry.getAs<StringAttr>("symbol");
     auto type = dyn_cast<RankedTensorType>(value.getType());
+    if (!axis || !offset || !symbol || !type || axis.getInt() < 0 ||
+        axis.getInt() >= type.getRank() ||
+        !dimensionBound(result, symbol.getValue()) ||
+        *dimensionBound(result, symbol.getValue()) + offset.getInt() <= 0)
+      return emitError(value.getLoc())
+             << "ONNX Host tensor has a malformed bounded dimension";
+    return std::optional<DynamicAxisRecord>(
+        DynamicAxisRecord{axis.getInt(), symbol.str(), offset.getInt()});
+  };
+  auto addTensor =
+      [&](Value value, StringRef stem, DenseElementsAttr initial = {},
+          int64_t staticResourceId = -1, int64_t staticByteLength = 0,
+          std::optional<DynamicAxisRecord> dynamic =
+              std::nullopt) -> FailureOr<unsigned> {
+    auto type = dyn_cast<RankedTensorType>(value.getType());
+    // An axis of a bounded dimension is planned at its largest extent.
+    if (type && dynamic && type.isDynamicDim(dynamic->axis)) {
+      SmallVector<int64_t> shape(type.getShape());
+      shape[dynamic->axis] =
+          *dimensionBound(result, dynamic->symbol) + dynamic->offset;
+      type = RankedTensorType::get(shape, type.getElementType());
+    } else if (dynamic) {
+      return emitError(value.getLoc())
+             << "ONNX Host tensor " << value.getType()
+             << " names a bounded dimension on a static axis";
+    }
     if (!type || !type.hasStaticShape() || type.getNumElements() < 0)
       return emitError(value.getLoc())
              << "ONNX Host tensor requires a nonnegative static ranked shape, "
@@ -51,13 +100,25 @@ FailureOr<GraphRecord> readONNXHostGraph(ModuleOp module) {
                               ("__udon_onnx_" + stem + "_" + Twine(id)).str(),
                               {},
                               staticResourceId,
-                              staticByteLength});
+                              staticByteLength,
+                              std::move(dynamic)});
     values.try_emplace(value, id);
     return id;
   };
 
   for (auto [index, argument] : llvm::enumerate(graph.getArguments())) {
-    auto id = addTensor(argument, "input");
+    DictionaryAttr expression;
+    if (auto expressions =
+            graph.getArgAttrOfType<ArrayAttr>(index, onnxDimensionExprsAttr)) {
+      if (expressions.size() != 1)
+        return graph.emitError("ONNX Host input ")
+               << index << " needs exactly one bounded dimension expression";
+      expression = dyn_cast<DictionaryAttr>(expressions[0]);
+    }
+    auto dynamic = readDynamic(argument, expression);
+    if (failed(dynamic))
+      return failure();
+    auto id = addTensor(argument, "input", {}, -1, 0, *dynamic);
     if (failed(id))
       return failure();
     auto name =
@@ -141,10 +202,16 @@ FailureOr<GraphRecord> readONNXHostGraph(ModuleOp module) {
         }
         node.inputs.push_back(found->second);
       }
-      auto id = addTensor(call.getResult(0), "value");
+      auto dynamic = readDynamic(
+          call.getResult(0),
+          call->getAttrOfType<DictionaryAttr>(onnxHostResultDimensionAttr));
+      if (failed(dynamic))
+        return failure();
+      auto id = addTensor(call.getResult(0), "value", {}, -1, 0, *dynamic);
       if (failed(id))
         return failure();
       node.output = *id;
+      node.location = call.getLoc();
       result.nodes.push_back(std::move(node));
       continue;
     }

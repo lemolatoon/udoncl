@@ -85,7 +85,57 @@ SmallVector<int64_t> integerArrayAttribute(const NodeRecord &node,
 bool isMetadataOnlyAlias(const NodeRecord &node) {
   return node.operation == "Flatten" || node.operation == "Reshape" ||
          node.operation == "Identity" || node.operation == "Squeeze" ||
-         node.operation == "Unsqueeze";
+         node.operation == "Unsqueeze" || node.operation == "BoundedPrefix";
+}
+
+/// Elements of `shape` after (inner) and before (outer) `axis`.
+static std::pair<int64_t, int64_t> aroundAxis(ArrayRef<int64_t> shape,
+                                              int64_t axis) {
+  int64_t outer = 1, inner = 1;
+  for (auto [index, extent] : llvm::enumerate(shape)) {
+    if (static_cast<int64_t>(index) < axis)
+      outer *= extent;
+    else if (static_cast<int64_t>(index) > axis)
+      inner *= extent;
+  }
+  return {outer, inner};
+}
+
+std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
+                                                    const NodeRecord &node) {
+  const TensorRecord &output = graph.tensors[node.output];
+  const TensorRecord *dynamic = output.dynamic ? &output : nullptr;
+  for (int64_t input : node.inputs)
+    if (input >= 0 && !dynamic && graph.tensors[input].dynamic)
+      dynamic = &graph.tensors[input];
+  if (!dynamic)
+    return std::nullopt;
+  auto diagnostic = [&](const TensorRecord &tensor) {
+    return ("ONNX operator " + node.operation +
+            " does not support a dynamic extent on axis " +
+            Twine(tensor.dynamic->axis) + " (dimension " +
+            tensor.dynamic->symbol + ")")
+        .str();
+  };
+  // A view keeps the run-time layout when the dynamic extent stays the same
+  // and keeps the elements on either side of it: it then reads the same
+  // words at every extent. A bounded prefix is the leading block of its
+  // constant at the bound.
+  if (isMetadataOnlyAlias(node) && !node.inputs.empty() &&
+      node.inputs[0] >= 0) {
+    const TensorRecord &input = graph.tensors[node.inputs[0]];
+    if (node.operation == "BoundedPrefix")
+      return input.dynamic || !output.dynamic
+                 ? std::optional(diagnostic(*dynamic))
+                 : std::nullopt;
+    if (input.dynamic && output.dynamic &&
+        input.dynamic->symbol == output.dynamic->symbol &&
+        input.dynamic->offset == output.dynamic->offset &&
+        aroundAxis(input.type.getShape(), input.dynamic->axis) ==
+            aroundAxis(output.type.getShape(), output.dynamic->axis))
+      return std::nullopt;
+  }
+  return diagnostic(*dynamic);
 }
 
 bool isDeviceAlias(const GraphRecord &graph, const NodeRecord &node) {
