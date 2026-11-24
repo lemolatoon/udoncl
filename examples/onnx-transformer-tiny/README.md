@@ -35,6 +35,19 @@ graph is specialized to `past_sequence_length = capacity - 1` with a
 capacity-long attention mask, and the Host and text layer are compiled with
 the same bound.
 
+These Conversation and Chat model libraries are the only ones built with
+`TRANSITIONAL_SEQUENCE_STATE`: `conversation_host.c` drives the model through
+the private binding of `transitional_sequence_state.h`
+(`__udononnx_transitional_*`), which keeps the key/value cache inside the
+binding and advances it between runs. That binding is not public API and is
+removed in stage 3, when these Hosts bind the key/value tensors as ordinary
+graph inputs and outputs through the UdonONNX session API, as `host.c` does.
+The real TinyLlama prefill and M=1 step validation artifacts
+(`prefill_host.c`, `step_host.c`) already do: they are `host.c` over the
+tensor lists of their graphs, and U# writes and reads each tensor through the
+method named after its Host variable (`TryWriteInputIds`,
+`StartReadPresent0Key`, ...).
+
 The 4096-token variants `onnx-transformer-tiny-conversation-4k` and
 `onnx-transformer-tiny-chat-4k` are configured next to them
 (`UDONCL_TINYLLAMA_CONTEXT_4K`, default `ON`). Their Host file is

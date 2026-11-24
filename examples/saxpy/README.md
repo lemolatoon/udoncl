@@ -36,7 +36,8 @@ Import this directory with **Tools -> udoncl -> Import Artifacts...**:
 build/saxpy-cmake/udoncl/saxpy-unity-library/artifact
 ```
 
-The Importer generates a typed U# binding with an asynchronous
+The artifact carries the typed U# binding `udonclc` generates
+(`binding.cs`), which the Importer installs, with an asynchronous
 `StartRunSaxpy(int n, float alpha, receiver, completionEvent)`, three 128-byte
 linear RGBA8 RenderTextures, and the kernel material. U# writes the 32-word
 inputs with `TryWriteX(float[])` and `TryWriteY(float[])`, starts

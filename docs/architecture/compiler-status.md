@@ -47,10 +47,13 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   and `udoncl_add_unity_library` arguments set the binding names, texel
   format and Device work budget. Every Device buffer resolves at compile time
   to one compiler-assigned Unity Texture; for an ONNX Host udonclc derives the
-  buffers from the ONNX execution plan and binding. The stage-1 exception is
-  the ONNX bindings that bank sequence state (the real TinyLlama
-  Conversation, Chat and M1 step programs), which keep the run-time buffer
-  pool until the sequence-state banking is replaced.
+  buffers from the ONNX execution plan and binding. The one exception is the
+  four programs whose model library is built with
+  `TRANSITIONAL_SEQUENCE_STATE` (`tinyllama_real_conversation`,
+  `tinyllama_real_chat` and their `_4k` variants): their private transitional
+  binding banks the key/value cache and keeps the run-time buffer pool until
+  stage 3 binds that cache through the session API (in-place Concat and
+  bounded dynamic dimensions).
 - ONNX models compile through the C++ ONNX-dialect path.
   `udoncl_add_onnx_host_library` runs `scripts/compile_onnx_mlir.py` with the
   repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model

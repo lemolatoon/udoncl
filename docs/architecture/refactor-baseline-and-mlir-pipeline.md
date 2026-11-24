@@ -443,8 +443,12 @@ banked state is bounded by its view kernel (a gather surface per present),
 not by the 16384 words of the Slice that a copying advance still uses.
 
 Only a model library built with `TRANSITIONAL_SEQUENCE_STATE` (the
-identification ran) gets this private binding; every other Host binds its
-buffers through the UdonONNX session API. Representative output:
+identification ran) gets this private binding and its state globals
+(`__udon_onnx_binding_*`, `__udon_onnx_io_handles`); every other Host binds
+its buffers through the UdonONNX session API. The binding, the option and the
+sequence-state identification are transitional and are removed in stage 3,
+when the TinyLlama Conversation and Chat Hosts bind their key/value tensors
+through the session API. Representative output:
 
 ```mlir
 func.func @__udononnx_transitional_create(...)
@@ -462,7 +466,6 @@ udoncl.onnx_operator_counts
 udoncl.mutable_handle_capacity
 udoncl.mutable_buffer_bytes
 udoncl.onnx_lowering = "library-calls-v2"
-vrc.static_public_resource_binding
 vrc.async_effect = "may_suspend"
 udoncl.export
 ```

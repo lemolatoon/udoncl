@@ -62,9 +62,11 @@ other examples.
   launches GPU work runs asynchronously and reports completion through a U#
   event.
 - **ONNX:** standard ONNX models compile through the ONNX dialect into a Host
-  library that your own Host C drives through `UdonONNXRuntime`, from the
-  MNIST CNN up to the real TinyLlama-1.1B model with 512- and 4096-token chat
-  artifacts. The model runs as compiled Udon Assembly and fragment shaders,
+  library that your own Host C drives through the `UdonONNXRuntime` session
+  API (`udononnxCreateSession`, `udononnxBindInput`/`udononnxBindOutput`,
+  `udononnxRun`, `udononnxReleaseSession`, after ONNX Runtime's C API), from
+  the MNIST CNN up to the real TinyLlama-1.1B model with 512- and 4096-token
+  chat artifacts. The model runs as compiled Udon Assembly and fragment shaders,
   not through an execution-plan interpreter.
 - **Libraries:** CUDA-compatible subsets of UdonBLAS (cuBLAS) and UdonDNN
   (cuDNN), plus UdonTokenizers for Hugging Face tokenizers.
@@ -953,12 +955,15 @@ CMake derive the chat configuration:
 ([`conversation_host.c`](examples/onnx-transformer-tiny/conversation_host.c),
 with [`conversation_host.h`](examples/onnx-transformer-tiny/conversation_host.h)).
 It owns the OpenCL context and queue, drives the model through a private,
-transitional binding the compiler generates for this example's model libraries
+transitional binding the compiler generates for this example's Conversation
+and Chat model libraries
 ([`transitional_sequence_state.h`](examples/onnx-transformer-tiny/transitional_sequence_state.h),
-`__udononnx_transitional_*`, built with `TRANSITIONAL_SEQUENCE_STATE`; it is
-not public API and will be replaced by the UdonONNX session API),
+`__udononnx_transitional_*`, built with `TRANSITIONAL_SEQUENCE_STATE`),
 keeps the key/value cache on the GPU between positions, and selects each next
-token with an argmax on the GPU (greedy decoding). Its exports are
+token with an argmax on the GPU (greedy decoding). The transitional binding is
+not public API: it keeps the key/value cache inside the binding until these
+Hosts bind it as ordinary graph inputs and outputs through the UdonONNX
+session API of the MNIST tutorial, and it is removed then. Its exports are
 `initialize`, `reset`, `set_prompt_tokens`,
 `generate`, `generated_token_count`,
 `read_generated_tokens`, and `shutdown`:
@@ -1050,9 +1055,11 @@ helper functions build the 512-token and 4096-token variants from the same
 files. For `onnx-transformer-tiny-chat-4k` they amount to:
 
 ```cmake
-# The model, specialized to one position per run on a past of 4095 positions.
+# The model, specialized to one position per run on a past of 4095 positions,
+# with the transitional binding that keeps its key/value cache.
 udoncl_add_onnx_host_library(transformer_conversation_model_host_4k
   MODEL "${UDONCL_TINYLLAMA_ONNX_MODEL}"
+  TRANSITIONAL_SEQUENCE_STATE
   DIMENSION_BOUNDS
     batch_size=1
     sequence_length=1
@@ -1451,7 +1458,8 @@ reference.
 - [docs/architecture/refactor-baseline-and-mlir-pipeline.md](docs/architecture/refactor-baseline-and-mlir-pipeline.md):
   codebase structure and the actual MLIR transformation paths.
 - [docs/architecture/operator-ownership.md](docs/architecture/operator-ownership.md):
-  which public library owns each ONNX/PyTorch operator.
+  which public library owns each ONNX/PyTorch operator, and what the UdonONNX
+  session API mirrors from ONNX Runtime and where it deviates.
 - [docs/architecture/udon-vrchat-shader-constraints.md](docs/architecture/udon-vrchat-shader-constraints.md):
   confirmed U#, Udon, and VRChat shader platform constraints.
 - [docs/decisions.md](docs/decisions.md): summary of design decisions.

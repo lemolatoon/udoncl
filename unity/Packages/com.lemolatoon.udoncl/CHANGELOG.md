@@ -27,7 +27,20 @@ All notable changes to this package are recorded here.
 - Generated U# library-instance lifecycle checks for initialization,
   reentrant-call rejection, and explicit disposal.
 
+### Changed
+
+- The packaged ONNX MNIST example binds its `image` and `logits` buffers
+  through the UdonONNX session API (`udononnxCreateSession`,
+  `udononnxBindInput`, `udononnxBindOutput`, `udononnxRun`,
+  `udononnxReleaseSession`), which mirrors the ONNX Runtime C API.
+
 ### Removed
+
+- The id-based buffer transfers of generated bindings:
+  `TryWrite{Float,Int,Long}Buffer`, `StartRead{Float,Int,Long}Buffer` and the
+  `deviceBufferIds` table the binding prefab carried. Each named method
+  (`TryWrite<Name>`, `StartRead<Name>`) addresses its buffer directly, and the
+  old names stay reserved.
 
 - The ONNX Arena Add, ONNX Tiny Llama and ONNX Llama 3.1 8B Host Package
   Samples and the packaged ONNX Arena Add and Tiny Llama example imports,
