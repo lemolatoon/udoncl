@@ -45,20 +45,11 @@ command = gates.example_configure_command(
 assert "-DUDONCL_TINYLLAMA_CONTEXT_CAPACITY=64" in command, command
 assert "-DUDONCL_TINYLLAMA_ONNX_MODEL=m.onnx" in command, command
 assert "-DUDONCL_TINYLLAMA_CONTEXT_4K=OFF" in command, command
-assert "-DUDONCL_TINYLLAMA_SEQUENCE_ROWS=1" in command, command
+assert not any("SEQUENCE_ROWS" in item for item in command), command
 command = gates.example_configure_command(
     Path("s"), Path("e"), Path("k"), Path("l"), "ninja", Path("m.onnx"), Path("t"), 512, True
 )
 assert "-DUDONCL_TINYLLAMA_CONTEXT_4K=ON" in command, command
-# Chunked prompts: the Conversation/Chat graphs run several positions per run.
-command = gates.example_configure_command(
-    Path("s"), Path("e"), Path("k"), Path("l"), "ninja", Path("m.onnx"), Path("t"), 512,
-    False, 4,
-)
-assert "-DUDONCL_TINYLLAMA_SEQUENCE_ROWS=4" in command, command
-gates.validate_build(["conversation", "chat"], 64, 4)
-assert "sequence-rows" in refused(gates.validate_build, ["chat"], 64, 0)
-assert "sequence-rows" in refused(gates.validate_build, ["chat"], 64, 65)
 assert not gates.example_context_4k(Path("no-such-build"))
 
 # The 4096-token targets: not built by default, fixed capacity, own oracles.

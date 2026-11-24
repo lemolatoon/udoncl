@@ -3,9 +3,9 @@
 #include <stdint.h>
 #include <udoncl/array.h>
 #include <udoncl/export.h>
+#include <udononnxruntime.h>
 
 #include "conversation_host.h"
-#include "transitional_sequence_state.h"
 
 /* The program of the Conversation Artifact. A wrapper that includes this
  * file for another artifact (conversation_host_4k.c, chat_host.c) defines
@@ -19,6 +19,11 @@ UDONCL_PROGRAM(TINYLLAMA_PROGRAM);
 #define TINYLLAMA_ARGMAX_PARTIAL_WORDS 512u
 #define TINYLLAMA_ARGMAX_FAILURE 0xffffffffu
 #define TINYLLAMA_EOS_TOKEN 2u
+#define TINYLLAMA_LAYERS 22
+/* One layer's K or V over the whole Context Capacity: [1, 4, capacity, 64]
+ * floats. */
+#define TINYLLAMA_CACHE_BYTES                                                  \
+  ((size_t)TINYLLAMA_CONTEXT_CAPACITY * 4u * 64u * sizeof(float))
 
 /* Private backend entry points. The public ATen ArgMax contract also needs
  * dim/keepdim and an int64 result, so this uint32 reduction stays private. */
@@ -31,52 +36,88 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
     cl_command_queue, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int, cl_uint,
     const cl_event *, cl_event *);
 
-#define TINYLLAMA_INPUT_IDS 0u
-#define TINYLLAMA_ATTENTION_MASK 1u
-#define TINYLLAMA_POSITION_IDS 2u
-#define TINYLLAMA_LOGITS 0u
-/* One model run covers TINYLLAMA_SEQUENCE_ROWS positions (k): the graph is
- * specialized to a sequence of k rows on top of a past of capacity - 1 rows,
- * so its attention window, the attention mask and every present hold
- * capacity + k - 1 rows. A prompt runs in chunks of k positions; a run that
- * fills only its first r rows (the last chunk of a prompt, and every decode
- * step) pads the rest and commits just those r rows with the binding's
- * partial advance, so the padded rows are never carried. With k = 1 every run
- * is one position and the plain advance commits it. */
-#define TINYLLAMA_WINDOW                                                       \
-  (TINYLLAMA_CONTEXT_CAPACITY + TINYLLAMA_SEQUENCE_ROWS - 1u)
-#define TINYLLAMA_ROW_BYTES (TINYLLAMA_SEQUENCE_ROWS * sizeof(int64_t))
-#define TINYLLAMA_ATTENTION_MASK_BYTES (TINYLLAMA_WINDOW * sizeof(int64_t))
+/* The model library is the M=1 graph with a bounded past
+ * (DIMENSION_BOUNDS past_sequence_length = capacity - 1): one run is one
+ * position on a past of `position` rows, and it costs as many rows as the
+ * conversation holds.
+ *
+ * The Host owns every graph input and output and binds them through the
+ * UdonONNX session API. Each layer keeps its K and V in one buffer of the
+ * Context Capacity, bound as the past (the first `position` rows) and as the
+ * present (the first position + 1 rows) of every run: the past is the
+ * leading block of the present, so a run writes only its own row (in-place
+ * Concat). Nothing is ever cleared; a reset only starts again at position 0,
+ * and a later turn continues at the position the conversation reached. The
+ * attention mask holds ones over the whole capacity, so its leading block is
+ * right for every position. */
+#define TINYLLAMA_LAYER_NAMES(prefix, suffix)                                  \
+  {prefix "0" suffix,  prefix "1" suffix,  prefix "2" suffix,                  \
+   prefix "3" suffix,  prefix "4" suffix,  prefix "5" suffix,                  \
+   prefix "6" suffix,  prefix "7" suffix,  prefix "8" suffix,                  \
+   prefix "9" suffix,  prefix "10" suffix, prefix "11" suffix,                 \
+   prefix "12" suffix, prefix "13" suffix, prefix "14" suffix,                 \
+   prefix "15" suffix, prefix "16" suffix, prefix "17" suffix,                 \
+   prefix "18" suffix, prefix "19" suffix, prefix "20" suffix,                 \
+   prefix "21" suffix}
+static const char *const past_key_names[TINYLLAMA_LAYERS] =
+    TINYLLAMA_LAYER_NAMES("past_key_values.", ".key");
+static const char *const past_value_names[TINYLLAMA_LAYERS] =
+    TINYLLAMA_LAYER_NAMES("past_key_values.", ".value");
+static const char *const present_key_names[TINYLLAMA_LAYERS] =
+    TINYLLAMA_LAYER_NAMES("present.", ".key");
+static const char *const present_value_names[TINYLLAMA_LAYERS] =
+    TINYLLAMA_LAYER_NAMES("present.", ".value");
+static const int64_t token_dims[2] = {1, 1};
+static const int64_t logits_dims[3] = {1, 1, TINYLLAMA_LOGIT_WORDS};
+static const int64_t mask_buffer_dims[2] = {1, TINYLLAMA_CONTEXT_CAPACITY};
+static const int64_t cache_buffer_dims[4] = {1, 4, TINYLLAMA_CONTEXT_CAPACITY,
+                                             64};
+static const int64_t mask_one = 1;
 
 static cl_context context;
 static cl_command_queue queue;
+static udononnxSession_t *session;
+static cl_mem input_ids, attention_mask, position_ids, logits;
+/* One variable per layer's K and V buffer, reached through constant tables
+ * of their addresses: udonclc unrolls the loops over the layers and folds
+ * every table entry to its variable. */
+#define TINYLLAMA_LAYER_VARIABLES(prefix)                                      \
+  prefix##0, prefix##1, prefix##2, prefix##3, prefix##4, prefix##5, prefix##6, \
+      prefix##7, prefix##8, prefix##9, prefix##10, prefix##11, prefix##12,     \
+      prefix##13, prefix##14, prefix##15, prefix##16, prefix##17, prefix##18,  \
+      prefix##19, prefix##20, prefix##21
+#define TINYLLAMA_LAYER_ADDRESSES(prefix)                                      \
+  {                                                                            \
+      &prefix##0,  &prefix##1,  &prefix##2,  &prefix##3,  &prefix##4,          \
+      &prefix##5,  &prefix##6,  &prefix##7,  &prefix##8,  &prefix##9,          \
+      &prefix##10, &prefix##11, &prefix##12, &prefix##13, &prefix##14,         \
+      &prefix##15, &prefix##16, &prefix##17, &prefix##18, &prefix##19,         \
+      &prefix##20, &prefix##21}
+static cl_mem TINYLLAMA_LAYER_VARIABLES(key_cache_);
+static cl_mem TINYLLAMA_LAYER_VARIABLES(value_cache_);
+static cl_mem *const keys[TINYLLAMA_LAYERS] =
+    TINYLLAMA_LAYER_ADDRESSES(key_cache_);
+static cl_mem *const values[TINYLLAMA_LAYERS] =
+    TINYLLAMA_LAYER_ADDRESSES(value_cache_);
 static cl_mem partials, result;
 static int32_t prompt[TINYLLAMA_CONTEXT_CAPACITY];
 static int32_t generated[TINYLLAMA_GENERATED_CAPACITY];
-/* Host sources of the non-blocking row uploads, indexed by position: a run
- * at position p uploads rows [p, p + k), so an upload's source stays intact
- * until the queue has consumed it. The rows a later run overwrites are only
- * the padding of an earlier one. */
-static int64_t staged_tokens[TINYLLAMA_WINDOW];
-static int64_t staged_positions[TINYLLAMA_WINDOW];
-static int64_t ones[TINYLLAMA_SEQUENCE_ROWS];
-static const uint32_t zero_word;
-/* The trailing attention-mask slots that hold 1 since the mask was cleared. */
-static uint32_t mask_rows;
-/* The rows of the pending run, the one the next run advances past. */
-static uint32_t pending_rows;
+/* Host sources of the non-blocking uploads, indexed by position, so an
+ * upload's source stays intact until the queue has consumed it. */
+static int64_t staged_tokens[TINYLLAMA_CONTEXT_CAPACITY];
+static int64_t staged_positions[TINYLLAMA_CONTEXT_CAPACITY];
 /* Destination and event of the one outstanding selected-token read. */
 static uint32_t selected_token;
 static cl_event selected_event;
 static uint32_t prompt_count, generated_count, generation_serial;
 static int initialized, disposed, busy, completed, failed;
-/* Multi-turn state. The sequence state holds the K/V of positions
- * [0, context_count). After a completed generation the last generated token
- * was never run when the generation reached its limit (last_unrun); a reply
- * that ended with EOS before the limit had its EOS run speculatively. A turn
- * prepared after a completed generation fills prompt[] with the tokens that
- * close the previous reply (closing_count of them) followed by the next turn;
- * once committed (continuing) the next generation feeds them from
+/* Multi-turn state. The KV cache holds the positions [0, context_count).
+ * After a completed generation the last generated token was never run when
+ * the generation reached its limit (last_unrun); a reply that ended with EOS
+ * before the limit had its EOS run speculatively. A turn prepared after a
+ * completed generation fills prompt[] with the tokens that close the
+ * previous reply (closing_count of them) followed by the next turn; once
+ * committed (continuing) the next generation feeds them from
  * context_count. */
 static uint32_t context_count, closing_count;
 static int last_unrun, turn_prepared, continuing;
@@ -86,95 +127,113 @@ static void clear_conversation(void) {
   completed = failed = last_unrun = turn_prepared = continuing = 0;
 }
 
+#define TINYLLAMA_RELEASE(memory)                                              \
+  do {                                                                         \
+    if ((memory) && clReleaseMemObject(memory) != CL_SUCCESS)                  \
+      failed_release = 1;                                                      \
+    (memory) = 0;                                                              \
+  } while (0)
+
 static udononnxStatus_t release_opencl(void) {
-  int failed = 0;
+  int failed_release = 0, layer;
   if (selected_event && clReleaseEvent(selected_event) != CL_SUCCESS)
-    failed = 1;
+    failed_release = 1;
   selected_event = 0;
-  if (result && clReleaseMemObject(result) != CL_SUCCESS)
-    failed = 1;
-  result = 0;
-  if (partials && clReleaseMemObject(partials) != CL_SUCCESS)
-    failed = 1;
-  partials = 0;
+  TINYLLAMA_RELEASE(result);
+  TINYLLAMA_RELEASE(partials);
+  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
+    TINYLLAMA_RELEASE(*keys[layer]);
+    TINYLLAMA_RELEASE(*values[layer]);
+  }
+  TINYLLAMA_RELEASE(logits);
+  TINYLLAMA_RELEASE(position_ids);
+  TINYLLAMA_RELEASE(attention_mask);
+  TINYLLAMA_RELEASE(input_ids);
   if (queue && clReleaseCommandQueue(queue) != CL_SUCCESS)
-    failed = 1;
+    failed_release = 1;
   queue = 0;
   if (context && clReleaseContext(context) != CL_SUCCESS)
-    failed = 1;
+    failed_release = 1;
   context = 0;
-  return failed ? UDONONNX_STATUS_OPENCL_ERROR : UDONONNX_STATUS_SUCCESS;
+  return failed_release ? UDONONNX_STATUS_OPENCL_ERROR
+                        : UDONONNX_STATUS_SUCCESS;
 }
 
-static udononnxStatus_t cleanup(udononnxStatus_t status) {
-  udononnxStatus_t binding = __udononnx_transitional_dispose();
-  udononnxStatus_t opencl = release_opencl();
-  initialized = 0;
-  if (binding != UDONONNX_STATUS_SUCCESS &&
-      binding != UDONONNX_STATUS_NOT_INITIALIZED)
-    return binding;
-  return opencl == UDONONNX_STATUS_SUCCESS ? status : opencl;
-}
-
-/* The generated binding owns every model buffer. Resolve a buffer at each
- * use with a constant binding index instead of caching cl_mem values, so the
- * Host never retains a stale view of binding-owned storage. */
-static udononnxStatus_t resolve_input(uint32_t index, size_t expected_length,
-                                      cl_mem *memory, size_t *offset) {
-  size_t length = 0;
-  udononnxStatus_t status =
-      __udononnx_transitional_resolve_input(index, memory, offset, &length);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  return *memory && length == expected_length ? UDONONNX_STATUS_SUCCESS
-                                              : UDONONNX_STATUS_TYPE_MISMATCH;
-}
-
-static udononnxStatus_t resolve_logits(cl_mem *memory, size_t *offset) {
-  size_t length = 0;
-  udononnxStatus_t status = __udononnx_transitional_resolve_output(
-      TINYLLAMA_LOGITS, memory, offset, &length);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  return *memory &&
-                 length == TINYLLAMA_SEQUENCE_ROWS * TINYLLAMA_LOGIT_WORDS *
-                               sizeof(float) &&
-                 *offset % sizeof(float) == 0
-             ? UDONONNX_STATUS_SUCCESS
-             : UDONONNX_STATUS_TYPE_MISMATCH;
-}
-
-static udononnxStatus_t resolve_buffers(void) {
-  cl_mem memory = 0;
-  size_t offset = 0;
-  udononnxStatus_t status =
-      resolve_input(TINYLLAMA_INPUT_IDS, TINYLLAMA_ROW_BYTES, &memory, &offset);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_ATTENTION_MASK,
-                           TINYLLAMA_ATTENTION_MASK_BYTES, &memory, &offset);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_POSITION_IDS, TINYLLAMA_ROW_BYTES, &memory,
-                           &offset);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_logits(&memory, &offset);
+static udononnxStatus_t release_session(void) {
+  udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
+  if (session)
+    status = udononnxReleaseSession(session);
+  session = 0;
   return status;
 }
 
-static udononnxStatus_t enqueue_clear_sequence_state(void) {
-  cl_mem mask = 0;
-  size_t mask_offset = 0;
-  udononnxStatus_t status = __udononnx_transitional_reset_sequence_state();
+static udononnxStatus_t cleanup(udononnxStatus_t status) {
+  udononnxStatus_t released = release_session();
+  udononnxStatus_t opencl = release_opencl();
+  initialized = 0;
+  if (released != UDONONNX_STATUS_SUCCESS)
+    return released;
+  return opencl == UDONONNX_STATUS_SUCCESS ? status : opencl;
+}
+
+static cl_mem create_buffer(size_t bytes, cl_int *error) {
+  return clCreateBuffer(context, CL_MEM_READ_WRITE, bytes, 0, error);
+}
+
+/* Binds the inputs and outputs whose shape does not change: the token and
+ * its position, and the logits of the one position a run computes. */
+static udononnxStatus_t bind_fixed(void) {
+  udononnxStatus_t status =
+      udononnxBindInput(session, "input_ids", input_ids, 2, token_dims, 0);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_ATTENTION_MASK,
-                           TINYLLAMA_ATTENTION_MASK_BYTES, &mask, &mask_offset);
+    status = udononnxBindInput(session, "position_ids", position_ids, 2,
+                               token_dims, 0);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = udononnxBindOutput(session, "logits", logits, 3, logits_dims, 0);
+  return status;
+}
+
+/* Binds the tensors of a run at `position`: the attention mask of
+ * position + 1 ones, and each layer's past of `position` rows and present
+ * of position + 1 rows, both the leading block of the layer's cache. Bind
+ * copies the dimensions, so every run binds them again. */
+static udononnxStatus_t bind_position(uint32_t position) {
+  int64_t mask_dims[2] = {1, (int64_t)position + 1};
+  int64_t past_dims[4] = {1, 4, (int64_t)position, 64};
+  int64_t present_dims[4] = {1, 4, (int64_t)position + 1, 64};
+  udononnxStatus_t status;
+  int layer;
+  status = udononnxBindInput(session, "attention_mask", attention_mask, 2,
+                             mask_dims, mask_buffer_dims);
+  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status = udononnxBindInput(session, past_key_names[layer], *keys[layer],
+                                 4, past_dims, cache_buffer_dims);
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status =
+          udononnxBindInput(session, past_value_names[layer], *values[layer], 4,
+                            past_dims, cache_buffer_dims);
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status =
+          udononnxBindOutput(session, present_key_names[layer], *keys[layer], 4,
+                             present_dims, cache_buffer_dims);
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status = udononnxBindOutput(session, present_value_names[layer],
+                                  *values[layer], 4, present_dims,
+                                  cache_buffer_dims);
+  }
+  return status;
+}
+
+/* Enqueues the run of the token already in input_ids at `position`. */
+static udononnxStatus_t enqueue_run(uint32_t position) {
+  udononnxStatus_t status;
+  if (position >= TINYLLAMA_CONTEXT_CAPACITY)
+    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  status = bind_position(position);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  if (clEnqueueFillBuffer(queue, mask, &zero_word, sizeof(zero_word),
-                          mask_offset, TINYLLAMA_ATTENTION_MASK_BYTES, 0, 0,
-                          0) != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  mask_rows = pending_rows = 0;
-  return UDONONNX_STATUS_SUCCESS;
+  return udononnxRun(session);
 }
 
 UDONCL_EXPORT udononnxStatus_t initialize(void) {
@@ -182,13 +241,11 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
   cl_device_id device = 0;
   cl_int error = CL_SUCCESS;
   udononnxStatus_t status;
-  uint32_t row;
+  int layer;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
   if (initialized)
     return UDONONNX_STATUS_INVALID_STATE;
-  for (row = 0; row < TINYLLAMA_SEQUENCE_ROWS; ++row)
-    ones[row] = 1;
   if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
       clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
@@ -200,25 +257,43 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
     release_opencl();
     return UDONONNX_STATUS_OPENCL_ERROR;
   }
-  status = __udononnx_transitional_create(context, queue);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = __udononnx_transitional_bind_all();
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_buffers();
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return cleanup(status);
-  partials = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                            TINYLLAMA_ARGMAX_PARTIAL_WORDS * sizeof(uint32_t),
-                            0, &error);
+  input_ids = create_buffer(sizeof(int64_t), &error);
+  if (!input_ids || error != CL_SUCCESS)
+    return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+  attention_mask =
+      create_buffer(TINYLLAMA_CONTEXT_CAPACITY * sizeof(int64_t), &error);
+  if (!attention_mask || error != CL_SUCCESS)
+    return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+  position_ids = create_buffer(sizeof(int64_t), &error);
+  if (!position_ids || error != CL_SUCCESS)
+    return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+  logits = create_buffer(TINYLLAMA_LOGIT_WORDS * sizeof(float), &error);
+  if (!logits || error != CL_SUCCESS)
+    return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
+    *keys[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
+    *values[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
+  }
+  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer)
+    if (!*keys[layer] || !*values[layer])
+      return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+  partials =
+      create_buffer(TINYLLAMA_ARGMAX_PARTIAL_WORDS * sizeof(uint32_t), &error);
   if (!partials || error != CL_SUCCESS)
     return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
-  result =
-      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(uint32_t), 0, &error);
+  result = create_buffer(sizeof(uint32_t), &error);
   if (!result || error != CL_SUCCESS)
     return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
-  status = enqueue_clear_sequence_state();
+  status = udononnxCreateSession(context, queue, &session);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = bind_fixed();
   if (status != UDONONNX_STATUS_SUCCESS)
     return cleanup(status);
+  /* Every leading block of the mask is all ones. */
+  if (clEnqueueFillBuffer(queue, attention_mask, &mask_one, sizeof(mask_one), 0,
+                          TINYLLAMA_CONTEXT_CAPACITY * sizeof(int64_t), 0, 0,
+                          0) != CL_SUCCESS)
+    return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
   clear_conversation();
   ++generation_serial;
   initialized = 1;
@@ -229,8 +304,9 @@ UDONCL_EXPORT udononnxStatus_t reset(void) {
   return tinyllamaConversationReset();
 }
 
+/* A new conversation starts at position 0 again; the rows the cache holds
+ * past it are never read before a run overwrites them. */
 udononnxStatus_t tinyllamaConversationReset(void) {
-  udononnxStatus_t status;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
   if (!initialized)
@@ -241,14 +317,9 @@ udononnxStatus_t tinyllamaConversationReset(void) {
     failed = 1;
     return UDONONNX_STATUS_OPENCL_ERROR;
   }
-  status = enqueue_clear_sequence_state();
   ++generation_serial;
-  if (status == UDONONNX_STATUS_SUCCESS) {
-    clear_conversation();
-  } else {
-    failed = 1;
-  }
-  return status;
+  clear_conversation();
+  return UDONONNX_STATUS_SUCCESS;
 }
 
 static udononnxStatus_t prompt_replacement_state(void) {
@@ -420,150 +491,52 @@ tinyllamaConversationGenerationProgress(const int32_t **tokens,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-/* The attention mask of a run at `position`: its window ends with the k rows
- * of the run, and the past before them holds the `position` rows already in
- * the conversation, so the last position + k slots hold 1. The mask only
- * grows during a conversation, so a run writes just the slots no earlier run
- * set. The padded rows of a run are marked as well: the causal mask keeps
- * every real row from attending to the rows after it, and the partial advance
- * never carries a padded row. */
-static udononnxStatus_t enqueue_mask(uint32_t position) {
-  cl_mem attention;
-  size_t attention_offset = 0;
-  uint32_t target, count;
-  udononnxStatus_t status;
-  /* generate() never gets here with a position past the Context Capacity,
-   * and this keeps it that way. */
-  if (position >= TINYLLAMA_CONTEXT_CAPACITY)
-    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
-  target = position + TINYLLAMA_SEQUENCE_ROWS;
-  if (target <= mask_rows)
-    return UDONONNX_STATUS_SUCCESS;
-  status =
-      resolve_input(TINYLLAMA_ATTENTION_MASK, TINYLLAMA_ATTENTION_MASK_BYTES,
-                    &attention, &attention_offset);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  while (mask_rows < target) {
-    count = target - mask_rows;
-    if (count > TINYLLAMA_SEQUENCE_ROWS)
-      count = TINYLLAMA_SEQUENCE_ROWS;
-    if (clEnqueueWriteBuffer(
-            queue, attention, CL_FALSE,
-            attention_offset +
-                (TINYLLAMA_WINDOW - mask_rows - count) * sizeof(int64_t),
-            count * sizeof(int64_t), ones, 0, 0, 0) != CL_SUCCESS)
-      return UDONONNX_STATUS_OPENCL_ERROR;
-    mask_rows += count;
-  }
-  return UDONONNX_STATUS_SUCCESS;
-}
-
-/* The attention mask and the position of a decode step depend only on the
- * step index, so the Host patches them on the Device before the token is
- * known. A decode step fills the first row of a run; its other rows keep the
- * padding an earlier upload left, which no real row reads. */
-static udononnxStatus_t enqueue_step_position(uint32_t position) {
-  cl_mem positions;
-  size_t positions_offset = 0;
-  udononnxStatus_t status = enqueue_mask(position);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_POSITION_IDS, TINYLLAMA_ROW_BYTES,
-                           &positions, &positions_offset);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
+/* The position of a run, uploaded without waiting. */
+static udononnxStatus_t enqueue_position(uint32_t position) {
   staged_positions[position] = position;
-  if (clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
-                           sizeof(staged_positions[position]),
-                           &staged_positions[position], 0, 0, 0) != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  return UDONONNX_STATUS_SUCCESS;
+  return clEnqueueWriteBuffer(queue, position_ids, CL_FALSE, 0,
+                              sizeof(staged_positions[position]),
+                              &staged_positions[position], 0, 0,
+                              0) == CL_SUCCESS
+             ? UDONONNX_STATUS_SUCCESS
+             : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
-/* A prompt chunk uploads the tokens of positions [position, position + rows)
- * into the first `rows` rows of a run and runs it. The other rows repeat the
- * last token at its position: padding whose results no real row reads and
- * whose sequence-state rows the next advance does not commit. */
-static udononnxStatus_t enqueue_chunk(const int32_t *tokens, uint32_t rows,
-                                      uint32_t position) {
-  cl_mem ids, positions;
-  size_t ids_offset = 0, positions_offset = 0;
-  uint32_t row, source;
-  udononnxStatus_t status = resolve_input(
-      TINYLLAMA_INPUT_IDS, TINYLLAMA_ROW_BYTES, &ids, &ids_offset);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_POSITION_IDS, TINYLLAMA_ROW_BYTES,
-                           &positions, &positions_offset);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  if (!rows || rows > TINYLLAMA_SEQUENCE_ROWS ||
-      position >= TINYLLAMA_CONTEXT_CAPACITY)
+/* A prompt token runs at its own position. */
+static udononnxStatus_t enqueue_prompt_token(int32_t token, uint32_t position) {
+  udononnxStatus_t status;
+  if (position >= TINYLLAMA_CONTEXT_CAPACITY)
     return UDONONNX_STATUS_INVALID_VALUE;
-  for (row = 0; row < TINYLLAMA_SEQUENCE_ROWS; ++row) {
-    source = row < rows ? row : rows - 1u;
-    staged_tokens[position + row] = tokens[source];
-    staged_positions[position + row] = position + source;
-  }
-  if (clEnqueueWriteBuffer(queue, ids, CL_FALSE, ids_offset,
-                           TINYLLAMA_ROW_BYTES, &staged_tokens[position], 0, 0,
-                           0) != CL_SUCCESS)
+  staged_tokens[position] = token;
+  if (clEnqueueWriteBuffer(queue, input_ids, CL_FALSE, 0,
+                           sizeof(staged_tokens[position]),
+                           &staged_tokens[position], 0, 0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
-  status = enqueue_mask(position);
+  status = enqueue_position(position);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  if (clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
-                           TINYLLAMA_ROW_BYTES, &staged_positions[position], 0,
-                           0, 0) != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  return __udononnx_transitional_enqueue_run();
+  return enqueue_run(position);
 }
 
-/* Advances the sequence state past the pending run, committing only its real
- * rows: a run that filled fewer than k rows leaves its padded rows behind. */
-static udononnxStatus_t enqueue_advance(void) {
-  if (pending_rows == TINYLLAMA_SEQUENCE_ROWS)
-    return __udononnx_transitional_advance_sequence_state();
-#if TINYLLAMA_SEQUENCE_ROWS > 1u
-  return __udononnx_transitional_advance_sequence_state_rows(pending_rows);
-#else
-  return UDONONNX_STATUS_INVALID_STATE;
-#endif
-}
-
-/* Greedy ArgMax of the logits of the last real row of the pending run into
- * the Device result word. */
+/* Greedy ArgMax of the logits of the last run into the Device result
+ * word. */
 static udononnxStatus_t enqueue_select_token(void) {
-  cl_mem logits;
-  size_t logits_offset = 0;
-  cl_int offset;
-  udononnxStatus_t status = resolve_logits(&logits, &logits_offset);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  if (!pending_rows || pending_rows > TINYLLAMA_SEQUENCE_ROWS)
-    return UDONONNX_STATUS_INVALID_STATE;
-  offset = (cl_int)(logits_offset / sizeof(float) +
-                    (pending_rows - 1u) * TINYLLAMA_LOGIT_WORDS);
-  if (__vrc_enqueue_udonaten_argmax_reduce_device_args(
-          queue, logits, partials, offset, TINYLLAMA_LOGIT_WORDS, 0, 0, 0) !=
-          CL_SUCCESS ||
+  if (__vrc_enqueue_udonaten_argmax_reduce_device_args(queue, logits, partials,
+                                                       0, TINYLLAMA_LOGIT_WORDS,
+                                                       0, 0, 0) != CL_SUCCESS ||
       __vrc_enqueue_udonaten_argmax_finalize_device_args(
-          queue, logits, partials, result, offset, TINYLLAMA_LOGIT_WORDS, 1, 0,
-          0, 0) != CL_SUCCESS)
+          queue, logits, partials, result, 0, TINYLLAMA_LOGIT_WORDS, 1, 0, 0,
+          0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
   return UDONONNX_STATUS_SUCCESS;
 }
+
 /* The selected token feeds the next step on the Device: the result word is
- * copied into the low word of the first input_ids row, whose high word every
- * prompt upload left zero. No Host round trip separates two decode steps. */
+ * copied into the low word of input_ids, whose high word every prompt
+ * upload left zero. No Host round trip separates two decode steps. */
 static udononnxStatus_t enqueue_feed_selected_token(void) {
-  cl_mem ids;
-  size_t ids_offset = 0;
-  udononnxStatus_t status = resolve_input(
-      TINYLLAMA_INPUT_IDS, TINYLLAMA_ROW_BYTES, &ids, &ids_offset);
-  if (status != UDONONNX_STATUS_SUCCESS)
-    return status;
-  return clEnqueueCopyBuffer(queue, result, ids, 0, ids_offset,
-                             sizeof(uint32_t), 0, 0, 0) == CL_SUCCESS
+  return clEnqueueCopyBuffer(queue, result, input_ids, 0, 0, sizeof(uint32_t),
+                             0, 0, 0) == CL_SUCCESS
              ? UDONONNX_STATUS_SUCCESS
              : UDONONNX_STATUS_OPENCL_ERROR;
 }
@@ -591,37 +564,33 @@ static udononnxStatus_t wait_selected_token(uint32_t *token) {
 }
 
 /* One decode step. Unless this is the last requested token, the next model
- * step is enqueued from the Device-resident token before the Host reads it.
- * When the token turns out to be EOS that speculative step already ran the
- * EOS that ends the reply; its logits are unused, and a next turn continues
- * after it. A decode step is a run of one real row. */
+ * step is enqueued at `position` from the Device-resident token before the
+ * Host reads it. When the token turns out to be EOS that speculative step
+ * already ran the EOS that ends the reply; its logits are unused, and a next
+ * turn continues after it. */
 static udononnxStatus_t decode_token(uint32_t position, int last,
                                      uint32_t *token) {
   udononnxStatus_t status = enqueue_select_token(), waited;
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   if (!last) {
-    status = enqueue_advance();
+    status = enqueue_feed_selected_token();
     if (status == UDONONNX_STATUS_SUCCESS)
-      status = enqueue_feed_selected_token();
-    if (status == UDONONNX_STATUS_SUCCESS)
-      status = enqueue_step_position(position);
+      status = enqueue_position(position);
     if (status != UDONONNX_STATUS_SUCCESS)
       return status;
   }
   status = enqueue_read_selected_token();
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  if (!last) {
-    status = __udononnx_transitional_enqueue_run();
-    pending_rows = 1u;
-  }
+  if (!last)
+    status = enqueue_run(position);
   waited = wait_selected_token(token);
   return status == UDONONNX_STATUS_SUCCESS ? waited : status;
 }
 
 UDONCL_EXPORT udononnxStatus_t generate(uint32_t max_new_tokens) {
-  uint32_t index, output_index, token = 0, prompt_tokens, base, rows = 1u;
+  uint32_t index, output_index, token = 0, prompt_tokens, base;
   udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
@@ -649,22 +618,10 @@ UDONCL_EXPORT udononnxStatus_t generate(uint32_t max_new_tokens) {
   continuing = turn_prepared = 0;
   generated_count = 0;
   ++generation_serial;
-  /* Each run leaves one pending sequence-state entry that the next run
-   * advances first; only the first run of a conversation has none. The
-   * prompt runs in chunks of up to k positions. */
-  for (index = 0; index < prompt_tokens; index += rows) {
-    rows = prompt_tokens - index;
-    if (rows > TINYLLAMA_SEQUENCE_ROWS)
-      rows = TINYLLAMA_SEQUENCE_ROWS;
-    if (pending_rows) {
-      status = enqueue_advance();
-      if (status != UDONONNX_STATUS_SUCCESS)
-        break;
-    }
-    status = enqueue_chunk(prompt + index, rows, base + index);
+  for (index = 0; index < prompt_tokens; ++index) {
+    status = enqueue_prompt_token(prompt[index], base + index);
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
-    pending_rows = rows;
   }
   for (output_index = 0; output_index < max_new_tokens; ++output_index) {
     if (status != UDONONNX_STATUS_SUCCESS)
@@ -727,7 +684,7 @@ UDONCL_EXPORT udononnxStatus_t shutdown(void) {
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (busy)
     return UDONONNX_STATUS_BUSY;
-  status = __udononnx_transitional_dispose();
+  status = release_session();
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   opencl = release_opencl();

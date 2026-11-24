@@ -22,12 +22,32 @@ SPEC.loader.exec_module(VALIDATOR)
 CAPACITY = 512
 
 
-def tensor(index, name, data_type, dimensions, logical_bytes, capacity_bytes=None):
-    return {
+def tensor(index, name, data_type, dimensions, logical_bytes, capacity_bytes=None,
+           bounds=None):
+    entry = {
         "index": index, "name": name, "data_type": data_type,
         "dimensions": dimensions, "logical_bytes": logical_bytes,
         "capacity_bytes": logical_bytes if capacity_bytes is None else capacity_bytes,
     }
+    # A -1 axis is the bounded past_sequence_length.
+    if bounds is not None:
+        entry["dimension_bounds"] = bounds
+        entry["dimension_names"] = [
+            "past_sequence_length" if bound else "" for bound in bounds
+        ]
+    return entry
+
+
+def bounded_tensors(inputs, outputs, capacity):
+    """The bounded mask, past and present tensors at `capacity`."""
+    inputs[1].update(tensor(1, "attention_mask", "int64", [1, -1], 8 * capacity,
+                            bounds=[0, capacity]))
+    for item in inputs[3:]:
+        item.update(tensor(item["index"], item["name"], "float32", [1, 4, -1, 64],
+                           16 * (capacity - 1) * 64, bounds=[0, 0, capacity - 1, 0]))
+    for item in outputs[1:]:
+        item.update(tensor(item["index"], item["name"], "float32", [1, 4, -1, 64],
+                           16 * capacity * 64, bounds=[0, 0, capacity, 0]))
 
 
 def export(public_name, symbol, parameter_kinds=(), is_async=False):
@@ -211,22 +231,21 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
     def make_artifact(self, root: Path) -> Path:
         inputs = [
             tensor(0, "input_ids", "int64", [1, 1], 8),
-            tensor(1, "attention_mask", "int64", [1, CAPACITY], 8 * CAPACITY),
+            tensor(1, "attention_mask", "int64", [1, -1], 8 * CAPACITY),
             tensor(2, "position_ids", "int64", [1, 1], 8),
         ]
         for layer in range(22):
             for kind in ("key", "value"):
                 inputs.append(tensor(len(inputs),
                                      f"past_key_values.{layer}.{kind}",
-                                     "float32", [1, 4, CAPACITY - 1, 64],
-                                     16 * (CAPACITY - 1) * 64))
+                                     "float32", [1, 4, -1, 64], 0))
         outputs = [tensor(0, "logits", "float32", [1, 1, 32000],
                           128000, 131072)]
         for layer in range(22):
             for kind in ("key", "value"):
                 outputs.append(tensor(len(outputs), f"present.{layer}.{kind}",
-                                      "float32", [1, 4, CAPACITY, 64],
-                                      16 * CAPACITY * 64))
+                                      "float32", [1, 4, -1, 64], 0))
+        bounded_tensors(inputs, outputs, CAPACITY)
         manifest = {
             "exports": [
                 export("Initialize", "initialize", is_async=True),
@@ -243,20 +262,17 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "onnx_binding": {
                 "inputs": inputs,
                 "outputs": outputs,
-                "transitional_sequence_state": {
-                    "advance_sequence_state_symbol":
-                        "__udononnx_transitional_advance_sequence_state",
-                    "reset_sequence_state_symbol":
-                        "__udononnx_transitional_reset_sequence_state",
-                },
+                "in_place_concats": [
+                    {"input": 3 + offset, "output": 1 + offset, "axis": 2}
+                    for offset in range(44)
+                ],
             },
             "device": {
                 "buffers": [
                     {"id": index, "name": f"private_{index}"}
-                    for index in range(1, 127)
+                    for index in range(1, 63)
                 ],
                 "kernels": [{"id": 247}, {"id": 248}],
-                "mutable_handle_capacity": 126,
             },
             "program": {
                 "name": "tinyllama_real_conversation",
@@ -306,26 +322,37 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must remain private"):
                 VALIDATOR.validate_artifact(artifact)
 
-    def test_rejects_missing_sequence_advance_helper(self):
+    def test_rejects_fixed_past(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self.make_artifact(Path(directory))
             manifest_path = artifact / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            del manifest["onnx_binding"]["transitional_sequence_state"][
-                "advance_sequence_state_symbol"]
+            past = manifest["onnx_binding"]["inputs"][3]
+            past["dimensions"] = [1, 4, CAPACITY - 1, 64]
+            del past["dimension_bounds"], past["dimension_names"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "sequence-state advance helper"):
+            with self.assertRaisesRegex(ValueError,
+                                        "past_key_values.0.key: invalid dimensions"):
                 VALIDATOR.validate_artifact(artifact)
 
-    def test_rejects_missing_sequence_reset_helper(self):
+    def test_rejects_missing_in_place_concat(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self.make_artifact(Path(directory))
             manifest_path = artifact / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            del manifest["onnx_binding"]["transitional_sequence_state"][
-                "reset_sequence_state_symbol"]
+            del manifest["onnx_binding"]["in_place_concats"][5]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "sequence-state reset helper"):
+            with self.assertRaisesRegex(ValueError, "in-place Concat"):
+                VALIDATOR.validate_artifact(artifact)
+
+    def test_rejects_transitional_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["onnx_binding"]["transitional_sequence_state"] = {}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "transitional"):
                 VALIDATOR.validate_artifact(artifact)
 
     def test_rejects_old_three_export_surface(self):
@@ -363,18 +390,8 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             manifest["exports"].append(export(symbol, export_symbol, kinds, is_async))
             if symbol in VALIDATOR.POLLED_WHILE_GENERATING:
                 manifest["exports"][-1]["allowed_while_busy"] = True
-        inputs = manifest["onnx_binding"]["inputs"]
-        outputs = manifest["onnx_binding"]["outputs"]
-        inputs[1].update(dimensions=[1, capacity], logical_bytes=8 * capacity,
-                         capacity_bytes=8 * capacity)
-        for item in inputs[3:]:
-            size = 4 * 4 * (capacity - 1) * 64
-            item.update(dimensions=[1, 4, capacity - 1, 64], logical_bytes=size,
-                        capacity_bytes=size)
-        for item in outputs[1:]:
-            size = 4 * 4 * capacity * 64
-            item.update(dimensions=[1, 4, capacity, 64], logical_bytes=size,
-                        capacity_bytes=size)
+        bounded_tensors(manifest["onnx_binding"]["inputs"],
+                        manifest["onnx_binding"]["outputs"], capacity)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         binding = artifact / "binding.cs"
         binding.write_text(binding.read_text(encoding="utf-8") + "\n".join((
@@ -406,34 +423,6 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 VALIDATOR.validate_artifact(artifact, "chat", 64)
             with self.assertRaisesRegex(ValueError, "program identity"):
                 VALIDATOR.validate_artifact(artifact, "conversation", 128)
-
-    def test_accepts_chat_profile_of_several_rows_per_run(self):
-        # UDONCL_TINYLLAMA_SEQUENCE_ROWS = 4: four input, position and
-        # logits rows and an attention window of capacity + 3 on the same
-        # past of capacity - 1 rows.
-        with tempfile.TemporaryDirectory() as directory:
-            artifact = self.make_chat_artifact(Path(directory), 128)
-            manifest_path = artifact / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            inputs = manifest["onnx_binding"]["inputs"]
-            outputs = manifest["onnx_binding"]["outputs"]
-            for item in (inputs[0], inputs[2]):
-                item.update(dimensions=[1, 4], logical_bytes=32, capacity_bytes=32)
-            inputs[1].update(dimensions=[1, 131], logical_bytes=8 * 131,
-                             capacity_bytes=8 * 131)
-            outputs[0].update(dimensions=[1, 4, 32000], logical_bytes=512000,
-                              capacity_bytes=512000)
-            for item in outputs[1:]:
-                size = 4 * 4 * 131 * 64
-                item.update(dimensions=[1, 4, 131, 64], logical_bytes=size,
-                            capacity_bytes=size)
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            summary = VALIDATOR.validate_artifact(artifact, "chat", 128, 4)
-            self.assertEqual(summary["outputs"], 45)
-            with self.assertRaisesRegex(ValueError, "input_ids"):
-                VALIDATOR.validate_artifact(artifact, "chat", 128)
-            with self.assertRaisesRegex(ValueError, "attention_mask"):
-                VALIDATOR.validate_artifact(artifact, "chat", 127, 4)
 
     def test_chat_profile_requires_the_multi_turn_api(self):
         with tempfile.TemporaryDirectory() as directory:

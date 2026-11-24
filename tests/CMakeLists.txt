@@ -189,6 +189,8 @@ if(TARGET VRCOpenCLRuntime)
   add_test(NAME tinyllama-conversation-input
     COMMAND tinyllama-conversation-input)
 
+  # The Conversation Host against a fake UdonONNX session that checks the
+  # tensors every run binds.
   add_executable(tinyllama-conversation-host
     runtime/tinyllama_conversation_host.c
     "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny/conversation_host.c")
@@ -196,27 +198,12 @@ if(TARGET VRCOpenCLRuntime)
   target_include_directories(tinyllama-conversation-host PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
     "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
     "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny")
   target_compile_definitions(tinyllama-conversation-host PRIVATE
     CL_TARGET_OPENCL_VERSION=120)
   target_link_libraries(tinyllama-conversation-host PRIVATE VRCOpenCLRuntime)
   add_test(NAME tinyllama-conversation-host COMMAND tinyllama-conversation-host)
-  # The same Host on a graph of four rows per run: chunked prompts and the
-  # partial sequence-state advance.
-  add_executable(tinyllama-conversation-host-chunked
-    runtime/tinyllama_conversation_host.c
-    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny/conversation_host.c")
-  target_compile_features(tinyllama-conversation-host-chunked PRIVATE c_std_11)
-  target_include_directories(tinyllama-conversation-host-chunked PRIVATE
-    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
-    "${PROJECT_SOURCE_DIR}/include"
-    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny")
-  target_compile_definitions(tinyllama-conversation-host-chunked PRIVATE
-    CL_TARGET_OPENCL_VERSION=120 TINYLLAMA_SEQUENCE_ROWS=4u)
-  target_link_libraries(tinyllama-conversation-host-chunked PRIVATE
-    VRCOpenCLRuntime)
-  add_test(NAME tinyllama-conversation-host-chunked
-    COMMAND tinyllama-conversation-host-chunked)
 endif()
 add_executable(udononnx-matmul-nbits-kernel
   boundary/udononnx_matmul_nbits.cpp)

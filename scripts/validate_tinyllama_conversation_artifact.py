@@ -3,10 +3,11 @@
 The Conversation Artifact exports only the token-array lifecycle. The Chat
 Artifact is the same Host plus the optional text layer, including multi-turn
 chat (BeginChatTurn/ContinueChatTurn append a user message after a reply,
-ResetChat starts a new conversation). Both are specialized to a build-time
-Context Capacity (default 512). With ``--sequence-rows k`` (the example's
-UDONCL_TINYLLAMA_SEQUENCE_ROWS) one run covers k positions: k input, position
-and logits rows, and an attention window of capacity + k - 1 on the same past.
+ResetChat starts a new conversation). Both run one position per model run
+on a past that is a bounded dynamic dimension of at most capacity - 1 rows
+(the build-time Context Capacity, default 512): the past and present K/V and
+the attention mask are -1 on that axis, and every present is an in-place
+Concat of its past. The Host keeps every graph tensor in a private buffer.
 """
 
 from __future__ import annotations
@@ -29,11 +30,20 @@ def validate_tensor(
     data_type: str,
     dimensions: list[int],
     logical_bytes: int,
+    bounds: list[int] | None = None,
 ) -> None:
     require(tensor.get("index") == index, f"{name}: invalid index")
     require(tensor.get("name") == name, f"input/output {index}: expected {name}")
     require(tensor.get("data_type") == data_type, f"{name}: invalid data type")
     require(tensor.get("dimensions") == dimensions, f"{name}: invalid dimensions")
+    # A -1 axis is the bounded past_sequence_length, with its largest extent.
+    if bounds is None:
+        require("dimension_bounds" not in tensor, f"{name}: unexpected bounds")
+    else:
+        require(tensor.get("dimension_bounds") == bounds, f"{name}: invalid bounds")
+        require(tensor.get("dimension_names") == [
+            "past_sequence_length" if bound else "" for bound in bounds
+        ], f"{name}: invalid dimension names")
     require(tensor.get("logical_bytes") == logical_bytes, f"{name}: invalid logical bytes")
     capacity = tensor.get("capacity_bytes")
     require(isinstance(capacity, int), f"{name}: missing capacity")
@@ -108,12 +118,9 @@ def validate_exports(manifest: dict, profile: str = "conversation") -> None:
 
 def validate_artifact(
     artifact: Path, profile: str = "conversation", capacity: int = 512,
-    rows: int = 1,
 ) -> dict[str, int]:
     require(profile in PROFILES, f"unknown artifact profile: {profile}")
     require(capacity >= 2, "Context Capacity must be at least 2")
-    require(1 <= rows <= capacity, "sequence rows must be within the capacity")
-    window = capacity + rows - 1
     program_name, binding_class = PROFILES[profile]
     manifest_path = artifact / "manifest.json"
     require(manifest_path.is_file(), f"artifact has no manifest: {manifest_path}")
@@ -134,45 +141,45 @@ def validate_artifact(
     require(isinstance(outputs, list) and len(outputs) == 45, "expected 45 outputs")
 
     validate_tensor(inputs[0], index=0, name="input_ids", data_type="int64",
-                    dimensions=[1, rows], logical_bytes=8 * rows)
+                    dimensions=[1, 1], logical_bytes=8)
     validate_tensor(inputs[1], index=1, name="attention_mask", data_type="int64",
-                    dimensions=[1, window], logical_bytes=8 * window)
+                    dimensions=[1, -1], logical_bytes=8 * capacity,
+                    bounds=[0, capacity])
     validate_tensor(inputs[2], index=2, name="position_ids", data_type="int64",
-                    dimensions=[1, rows], logical_bytes=8 * rows)
+                    dimensions=[1, 1], logical_bytes=8)
     for layer in range(22):
         for kind_offset, kind in enumerate(("key", "value")):
             index = 3 + layer * 2 + kind_offset
             validate_tensor(
                 inputs[index], index=index,
                 name=f"past_key_values.{layer}.{kind}", data_type="float32",
-                dimensions=[1, 4, capacity - 1, 64],
+                dimensions=[1, 4, -1, 64],
                 logical_bytes=4 * 4 * (capacity - 1) * 64,
+                bounds=[0, 0, capacity - 1, 0],
             )
 
     validate_tensor(outputs[0], index=0, name="logits", data_type="float32",
-                    dimensions=[1, rows, 32000], logical_bytes=128000 * rows)
+                    dimensions=[1, 1, 32000], logical_bytes=128000)
     for layer in range(22):
         for kind_offset, kind in enumerate(("key", "value")):
             index = 1 + layer * 2 + kind_offset
             validate_tensor(
                 outputs[index], index=index, name=f"present.{layer}.{kind}",
-                data_type="float32", dimensions=[1, 4, window, 64],
-                logical_bytes=4 * 4 * window * 64,
+                data_type="float32", dimensions=[1, 4, -1, 64],
+                logical_bytes=4 * 4 * capacity * 64,
+                bounds=[0, 0, capacity, 0],
             )
 
-    # Transitional (removed in stage 3): the private sequence-state binding.
-    transitional = binding.get("transitional_sequence_state", {})
-    require(transitional.get("advance_sequence_state_symbol") ==
-            "__udononnx_transitional_advance_sequence_state",
-            "artifact has no generated sequence-state advance helper")
-    require(transitional.get("reset_sequence_state_symbol") ==
-            "__udononnx_transitional_reset_sequence_state",
-            "artifact has no generated sequence-state reset helper")
+    # Every present is Concat(its past, the new row): the Host binds both to
+    # one buffer and a run writes only its own row.
+    require(binding.get("in_place_concats") == [
+        {"input": 3 + offset, "output": 1 + offset, "axis": 2}
+        for offset in range(44)
+    ], "the presents are not in-place Concat pairs of their pasts")
+    require("transitional_sequence_state" not in binding,
+            "artifact still has the transitional sequence-state binding")
     buffers = manifest.get("device", {}).get("buffers")
-    mutable_capacity = manifest.get("device", {}).get("mutable_handle_capacity")
     require(isinstance(buffers, list), "artifact has no Device buffers")
-    require(mutable_capacity == len(buffers),
-            "conversation Device buffer pool does not match compiler metadata")
     require(not any(item.get("public_access") for item in buffers),
             "conversation tensors must remain private")
 
@@ -232,13 +239,10 @@ def main() -> None:
     parser.add_argument("artifact", type=Path)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="conversation")
     parser.add_argument("--capacity", type=int, default=512)
-    parser.add_argument("--sequence-rows", type=int, default=1)
     args = parser.parse_args()
-    summary = validate_artifact(
-        args.artifact.resolve(), args.profile, args.capacity, args.sequence_rows
-    )
+    summary = validate_artifact(args.artifact.resolve(), args.profile, args.capacity)
     print(f"tinyllama_m1_{args.profile}_profile=passed capacity={args.capacity} "
-          f"sequence_rows={args.sequence_rows} " + " ".join(
+          + " ".join(
         f"{name}={value}" for name, value in summary.items()
     ))
 

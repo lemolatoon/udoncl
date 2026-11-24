@@ -87,7 +87,7 @@ reference_past = [empty for _ in range(44)]
 step_argmax: list[int] = []
 step_logit_error: list[float] = []
 step_kv_error: list[float] = []
-# The M=1 logits of every prompt position, for the chunked profile below.
+# The M=1 logits of every prompt position, for the variable profile below.
 step_results_by_position: dict[int, np.ndarray] = {}
 
 
@@ -168,58 +168,17 @@ while len(generated_tokens) < 4 and generated_tokens[-1] != 2:
 assert generated_tokens == [1701, 29916, 432, 17204], generated_tokens
 
 
-# The profile of a Conversation Artifact of `rows` positions per run
-# (UDONCL_TINYLLAMA_SEQUENCE_ROWS): the same past of capacity - 1 rows, a
-# window of capacity + rows - 1, the prompt in chunks of `rows` and every
-# decode step a run of one real row. A run of fewer real rows repeats its
-# last token at its position in the rest, and only the real rows are carried
-# (__udononnx_transitional_advance_sequence_state_rows). Greedy tokens must
-# equal the M=1 ones.
-def chunked_generation(rows: int) -> tuple[list[int], float]:
-    window = capacity + rows - 1
-    past = [np.zeros((1, 4, capacity - 1, 64), dtype=np.float32) for _ in range(44)]
-
-    def run(chunk: list[int], position: int) -> np.ndarray:
-        nonlocal past
-        real = len(chunk)
-        mask = np.zeros((1, window), dtype=np.int64)
-        mask[:, window - position - rows :] = 1
-        positions = [position + index for index in range(real)]
-        chunk_feed = {
-            "input_ids": np.array([chunk + [chunk[-1]] * (rows - real)], dtype=np.int64),
-            "attention_mask": mask,
-            "position_ids": np.array(
-                [positions + [positions[-1]] * (rows - real)], dtype=np.int64
-            ),
-        }
-        for item, value in zip(session.get_inputs()[3:], past):
-            chunk_feed[item.name] = value
-        chunk_results = session.run(None, chunk_feed)
-        assert chunk_results[0].shape == (1, rows, 32000)
-        past = [
-            value[:, :, real : real + capacity - 1, :].copy()
-            for value in chunk_results[1:]
-        ]
-        return chunk_results[0][0, real - 1]
-
-    prompt = tokens[0].tolist()
-    for start in range(0, len(prompt), rows):
-        logits = run(prompt[start : start + rows], start)
-    error = float(np.max(np.abs(logits - step_results_by_position[len(prompt) - 1])))
-    chunked = [int(np.argmax(logits))]
-    position = len(prompt)
-    while len(chunked) < 4 and chunked[-1] != 2:
-        logits = run([chunked[-1]], position)
-        chunked.append(int(np.argmax(logits)))
-        position += 1
-    return chunked, error
-
-
-chunked_errors = {}
-for rows in (3, 4):
-    chunked_tokens, chunked_errors[rows] = chunked_generation(rows)
-    assert chunked_tokens == generated_tokens, (rows, chunked_tokens)
-    assert chunked_errors[rows] < 1.0e-3, (rows, chunked_errors[rows])
+# The profile of the Conversation Artifact: one position per run on a past of
+# exactly the positions before it (a model library with a bounded past). It
+# must generate the same tokens as the fixed-capacity profile above.
+variable_tokens = [int(np.argmax(step_results_by_position[len(tokens[0]) - 1]))]
+position = int(tokens.shape[1])
+while len(variable_tokens) < 4 and variable_tokens[-1] != 2:
+    reference_results = run_variable_m1(variable_tokens[-1], position)
+    variable_tokens.append(int(np.argmax(reference_results[0][0, 0])))
+    reference_past = reference_results[1:]
+    position += 1
+assert variable_tokens == generated_tokens, variable_tokens
 
 named_results = [
     (item.name, value) for item, value in zip(session.get_outputs(), results)
@@ -277,6 +236,6 @@ for position, (step_feed, step_results) in step_sidecars.items():
 print(
     f"tinyllama_oracle_logits={logits.size} kv_outputs=44 "
     f"argmax={argmax[0]} m1_generated={generated_tokens} "
-    f"chunked_logit_error={max(chunked_errors.values()):.2e} "
+    f"variable_generated={variable_tokens} "
     f"seconds={elapsed:.6f}"
 )

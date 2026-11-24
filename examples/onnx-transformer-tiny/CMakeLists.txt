@@ -63,20 +63,6 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       "UDONCL_TINYLLAMA_MAX_NEW_TOKENS must be a positive integer no larger "
       "than the Context Capacity")
   endif()
-  # Positions one model run of the Conversation and Chat Artifacts covers.
-  # The graph is specialized to sequence_length = rows on top of the same
-  # past, so a prompt runs in chunks of this many positions; a run that fills
-  # fewer rows (the last chunk, and every decode step) pads the rest and
-  # commits only its real rows (__udononnx_transitional_advance_sequence_state_rows).
-  # 1 runs every position on its own.
-  set(UDONCL_TINYLLAMA_SEQUENCE_ROWS 1 CACHE STRING
-    "Positions one TinyLlama Conversation/Chat model run covers")
-  if(NOT UDONCL_TINYLLAMA_SEQUENCE_ROWS MATCHES "^[1-9][0-9]*$" OR
-     UDONCL_TINYLLAMA_SEQUENCE_ROWS GREATER UDONCL_TINYLLAMA_CONTEXT_CAPACITY)
-    message(FATAL_ERROR
-      "UDONCL_TINYLLAMA_SEQUENCE_ROWS must be a positive integer no larger "
-      "than the Context Capacity")
-  endif()
   # Chat Artifact: the same token-array Conversation Host plus the optional
   # text layer (chat template, special tokens and UTF-16 decoding). The
   # Conversation Artifact stays free of tokenizer code. A prompt can be
@@ -86,11 +72,11 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # reply, BeginChatTurn/ContinueChatTurn append the next user message to the
   # same conversation and ResetChat starts a new one.
   #
-  # The acceptance-only M=1 step validation artifact has the same capacity
-  # graph as the Conversation Artifact, but public input/output buffers and
-  # the plain initialize/run Host (step_host.c), so a Unity test can feed one
-  # ORT step (including its rolling past K/V) and compare every logit and
-  # present K/V output.
+  # The acceptance-only M=1 step validation artifact has the M=1 graph of the
+  # same capacity with its past fixed at capacity - 1 rows, public
+  # input/output buffers and the plain initialize/run Host (step_host.c), so
+  # a Unity test can feed one ORT step (including its rolling past K/V) and
+  # compare every logit and present K/V output.
 else()
   set(model "${CMAKE_CURRENT_BINARY_DIR}/transformer.onnx")
   execute_process(
@@ -121,23 +107,30 @@ else()
 endif()
 target_include_directories(transformer_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
-# The graph of `rows` positions per run on a past of capacity - 1 rows
-# (past_sequence_length = capacity - 1, an attention mask of
-# capacity + rows - 1), as the ONNX Host library `target`.
-# ARGN: TRANSITIONAL_SEQUENCE_STATE for the Conversation and Chat libraries,
-# whose generated binding still banks and advances the KV cache.
-function(tinyllama_add_model_library target capacity rows)
+# The M=1 graph of one position per run as the ONNX Host library `target`.
+# With BOUNDED the past is a bounded dynamic dimension of at most
+# capacity - 1 rows, which every run binds at its own extent (the
+# Conversation and Chat libraries); otherwise it is fixed at capacity - 1
+# rows with an attention mask of capacity (the M=1 step validation library).
+function(tinyllama_add_model_library target capacity)
+  cmake_parse_arguments(PARSE_ARGV 2 model "BOUNDED" "" "")
   math(EXPR past_length "${capacity} - 1")
-  math(EXPR window "${capacity} + ${rows} - 1")
+  if(model_BOUNDED)
+    set(shape_arguments
+      DIMENSIONS batch_size=1 sequence_length=1
+      DIMENSION_BOUNDS past_sequence_length=${past_length})
+  else()
+    set(shape_arguments
+      DIMENSIONS
+        batch_size=1
+        sequence_length=1
+        past_sequence_length=${past_length}
+      INPUT_SHAPES
+        attention_mask=1,${capacity})
+  endif()
   udoncl_add_onnx_host_library(${target}
     MODEL "${model}"
-    ${ARGN}
-    DIMENSIONS
-      batch_size=1
-      sequence_length=${rows}
-      past_sequence_length=${past_length}
-    INPUT_SHAPES
-      attention_mask=1,${window})
+    ${shape_arguments})
   target_include_directories(${target}
     INTERFACE
       "${UdonBLAS_INCLUDE_DIRS}"
@@ -146,19 +139,16 @@ function(tinyllama_add_model_library target capacity rows)
 endfunction()
 
 # The Conversation Host libraries of one Context Capacity, named with
-# `suffix`: the graph of UDONCL_TINYLLAMA_SEQUENCE_ROWS positions per run
-# (the M=1 graph by default) specialized to past_sequence_length =
-# capacity - 1, the token-array C Host `host` and, with a tokenizer, the same
-# Host under the Chat program (`chat_host`) and the chat text layer, all
-# compiled with the same capacity and rows.
+# `suffix`: the M=1 graph with a past bounded by capacity - 1, the
+# token-array C Host `host` and, with a tokenizer, the same Host under the
+# Chat program (`chat_host`) and the chat text layer, all compiled with the
+# same capacity.
 function(tinyllama_add_conversation_libraries suffix capacity host chat_host)
-  set(rows ${UDONCL_TINYLLAMA_SEQUENCE_ROWS})
   tinyllama_add_model_library(transformer_conversation_model_host${suffix}
-    ${capacity} ${rows} TRANSITIONAL_SEQUENCE_STATE)
+    ${capacity} BOUNDED)
   set(definitions
     TINYLLAMA_CONTEXT_CAPACITY=${capacity}u
-    TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u
-    TINYLLAMA_SEQUENCE_ROWS=${rows}u)
+    TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u)
   udoncl_add_host_library(transformer_conversation_user_host${suffix} ${host})
   target_include_directories(transformer_conversation_user_host${suffix}
     INTERFACE "${UdonONNXRuntime_INCLUDE_DIRS}")
@@ -266,12 +256,12 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   if(UDONCL_TINYLLAMA_CONTEXT_4K)
     tinyllama_add_conversation_artifacts(_4k -4k)
   endif()
-  # The M=1 step validation artifact keeps the M=1 graph of the Context
-  # Capacity whatever rows the Conversation Artifacts run, as a plain graph:
-  # its past and present KV tensors are ordinary inputs and outputs.
+  # The M=1 step validation artifact keeps the fixed M=1 graph of the
+  # Context Capacity: its past and present KV tensors are ordinary inputs
+  # and outputs of capacity - 1 and capacity rows.
   set(step_model_host transformer_step_model_host)
   tinyllama_add_model_library(${step_model_host}
-    ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} 1)
+    ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY})
   udoncl_add_host_library(transformer_step_user_host step_host.c)
   target_include_directories(transformer_step_user_host INTERFACE
     "${UdonONNXRuntime_INCLUDE_DIRS}")
