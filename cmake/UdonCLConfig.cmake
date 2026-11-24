@@ -275,7 +275,7 @@ function(udoncl_add_onnx_host_library target)
   string(JSON _mutable_handle_capacity GET "${_generated_host_metadata_json}"
          mutable_handle_capacity)
   if(NOT _metadata_schema EQUAL 1 OR
-     NOT _mutable_handle_capacity MATCHES "^[1-9][0-9]*$")
+     NOT _mutable_handle_capacity MATCHES "^(0|[1-9][0-9]*)$")
     message(FATAL_ERROR "ONNX Host compiler emitted invalid metadata")
   endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -668,8 +668,8 @@ function(udoncl_add_unity_library target)
   foreach(_library IN LISTS ARG_HOST_LIBRARIES)
     get_target_property(_library_capacity "${_library}"
                         UDONCL_MUTABLE_HANDLE_CAPACITY)
-    if(_library_capacity)
-      if(_mutable_handle_capacity AND
+    if(_library_capacity MATCHES "^[0-9]+$")
+      if(NOT "${_mutable_handle_capacity}" STREQUAL "" AND
          NOT _mutable_handle_capacity EQUAL _library_capacity)
         message(FATAL_ERROR
           "UdonCL Unity library contains incompatible mutable handle capacities")
@@ -762,7 +762,7 @@ function(udoncl_add_unity_library target)
     list(REMOVE_DUPLICATES _runtime_sources)
     list(REMOVE_DUPLICATES _runtime_dependencies)
     list(REMOVE_DUPLICATES _runtime_flags)
-    if(_mutable_handle_capacity AND _host_modules)
+    if(NOT "${_mutable_handle_capacity}" STREQUAL "" AND _host_modules)
       _udoncl_link_module_set("${target}-buffer-plan" HOST "${_host_modules}"
                               _host_plan_module)
       set(_host_buffer_plan
@@ -783,7 +783,7 @@ function(udoncl_add_unity_library target)
         VERBATIM)
       list(APPEND _runtime_dependencies "${_capacity_header}")
       list(APPEND _runtime_flags -include "${_capacity_header}")
-    elseif(_mutable_handle_capacity)
+    elseif(_mutable_handle_capacity GREATER 0)
       list(APPEND _runtime_flags
         "-DUDONCL_AOT_BUFFER_CAPACITY=${_mutable_handle_capacity}"
         "-DUDONCL_DEVICE_BUFFER_CAPACITY=${_mutable_handle_capacity}")

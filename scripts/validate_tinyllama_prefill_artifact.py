@@ -86,8 +86,8 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     buffers = manifest.get("device", {}).get("buffers")
     capacity = manifest.get("device", {}).get("mutable_handle_capacity")
     require(isinstance(buffers, list), "artifact has no Device buffers")
-    # The handle capacity also counts the graph tensors the ONNX plan
-    # reserves; the Host binds its own buffers to them.
+    # The handle capacity counts the buffers the session owns and the ones
+    # the Host allocates, among them the buffers it binds to the graph.
     require(isinstance(capacity, int) and capacity >= len(buffers),
             "mutable handle capacity is below the Device buffers")
     public = {item["name"]: item for item in buffers if item.get("public_access")}

@@ -16,13 +16,15 @@ func.func @main_graph(
   return %sum : tensor<1x4xf32>
 }
 
+// The Add reads the inputs and writes the output, buffers the caller binds,
+// so the session allocates no Device buffer of its own.
 // CHECK: udoncl.onnx_host_graph_validated
 // CHECK: udoncl.onnx_host_plan = {
 // CHECK-SAME: device_fusion_roots = array<i64: 0>
 // CHECK-SAME: device_graph = true
 // CHECK-SAME: device_storage = array<i64:
-// CHECK-SAME: mutable_buffer_bytes = array<i64:
-// CHECK-SAME: mutable_handle_capacity =
+// CHECK-SAME: mutable_buffer_bytes = array<i64>
+// CHECK-SAME: mutable_handle_capacity = 0 : i64
 // CHECK-SAME: operator_scratch_bytes = 0 : i64
 // CHECK-SAME: owned_device_buffers = array<i64
 // CHECK: func.func @main_graph

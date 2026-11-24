@@ -293,6 +293,9 @@ ownedDeviceBuffers(const GraphRecord &graph, bool deviceGraph,
 /// bound outputs, and the Device buffers the session owns.
 llvm::SmallVector<unsigned> resolvedRunTensors(const GraphRecord &graph,
                                                const HostPlanRecord &plan);
+/// Bytes of every Device buffer the session itself allocates: the ones it
+/// owns (ownedDeviceBuffers) and the operator scratch. The buffers bound to
+/// the graph inputs and outputs belong to the caller.
 llvm::SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
                                               bool deviceGraph,
                                               llvm::ArrayRef<unsigned> storage);

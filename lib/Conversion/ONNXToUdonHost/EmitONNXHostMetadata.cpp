@@ -27,7 +27,7 @@ struct EmitONNXHostMetadataPass
       signalPassFailure();
       return;
     }
-    if (!capacity || capacity.getInt() <= 0) {
+    if (!capacity || capacity.getInt() < 0) {
       module.emitError("ONNX Host mutable handle capacity is missing");
       signalPassFailure();
       return;

@@ -18,8 +18,8 @@ func.func @main_graph(
 }
 
 // CHECK: module attributes {
-// CHECK-SAME: udoncl.mutable_buffer_bytes = array<i64: 16, 16, 16>
-// CHECK-SAME: udoncl.mutable_handle_capacity
+// CHECK-SAME: udoncl.mutable_buffer_bytes = array<i64>
+// CHECK-SAME: udoncl.mutable_handle_capacity = 0 : i64
 // CHECK-SAME: udoncl.onnx_binding = {abi = "udononnx-runtime-v3"
 // CHECK-SAME: inputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = array<i64: 1, 4>, index = 0 : i32, logical_bytes = 16 : i64, name = "left", rank = 2 : i32}
 // CHECK-SAME: outputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = array<i64: 1, 4>, index = 0 : i32, logical_bytes = 16 : i64, name = "sum", rank = 2 : i32}]}

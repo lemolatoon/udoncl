@@ -1345,12 +1345,9 @@ int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex) {
 SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
                                         bool deviceGraph,
                                         ArrayRef<unsigned> storage) {
+  // The buffers of the graph inputs and outputs are the caller's: a session
+  // binds buffers its Host allocated (and plans) itself.
   SmallVector<int64_t> bytes;
-  bytes.reserve(graph.inputs.size() + graph.outputs.size());
-  for (unsigned tensorIndex : graph.inputs)
-    bytes.push_back(bindingCapacityBytes(graph, tensorIndex));
-  for (unsigned tensorIndex : graph.outputs)
-    bytes.push_back(bindingCapacityBytes(graph, tensorIndex));
   if (!deviceGraph)
     return bytes;
 
@@ -1415,7 +1412,7 @@ FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
       !bufferBytes || !handleCapacity ||
       storage.size() != graph.tensors.size() ||
       fusionRoots.size() != graph.nodes.size() || scratch.getInt() < 0 ||
-      handleCapacity.getInt() <= 0 ||
+      handleCapacity.getInt() < 0 ||
       static_cast<int64_t>(bufferBytes.size()) != handleCapacity.getInt())
     return module.emitError("ONNX Host graph plan is malformed");
   HostPlanRecord result{

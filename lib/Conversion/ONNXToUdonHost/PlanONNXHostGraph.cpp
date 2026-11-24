@@ -97,7 +97,7 @@ struct PlanONNXHostGraphPass
         mutableBufferBytes(*graph, deviceGraph, storage);
     int64_t handleCapacity = bufferBytes.size();
     constexpr int64_t maximumMutableHandleCapacity = 512;
-    if (handleCapacity <= 0 || handleCapacity > maximumMutableHandleCapacity) {
+    if (handleCapacity > maximumMutableHandleCapacity) {
       module.emitError()
           << "ONNX graph requires " << handleCapacity
           << " simultaneously live mutable handles; backend limit is "

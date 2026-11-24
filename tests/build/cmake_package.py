@@ -671,14 +671,16 @@ def main():
     assert mnist_assignments.count('texture_id = ') == 5
     assert 'resolved_count = 2 : i32' in mnist_public_aliases
     assert mnist_public_aliases.count('resource_kind = "allocation"') == 2
-    assert 'configured_count = 7 : i32' in mnist_reconciliation
+    # The session plans only the three buffers it owns; host.c plans the two
+    # it binds to the graph.
+    assert 'configured_count = 5 : i32' in mnist_reconciliation
     assert 'declared_alias_count = 2 : i32' in mnist_reconciliation
     assert 'resolved_alias_count = 0 : i32' in mnist_reconciliation
     assert 'unresolved_public_count = 0 : i32' in mnist_reconciliation
-    assert 'unresolved_private_count = 7 : i32' in mnist_reconciliation
+    assert 'unresolved_private_count = 5 : i32' in mnist_reconciliation
     assert 'planned_count = 5 : i32' in mnist_layout
-    assert 'legacy_configured_count = 7 : i32' in mnist_layout
-    assert 'removable_legacy_count = 2 : i32' in mnist_layout
+    assert 'legacy_configured_count = 5 : i32' in mnist_layout
+    assert 'removable_legacy_count = 0 : i32' in mnist_layout
     assert 'blocker_count = 0 : i32' in mnist_layout
     assert 'ready = true' in mnist_layout
     assert mnist_layout.count('resource_kind = "allocation"') == 5
@@ -1136,7 +1138,7 @@ def main():
     assert [
         item['id'] for item in onnx_mnist_manifest['device']['buffers']
     ] == list(range(1, 6))
-    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 7
+    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 5
     # 4096 is the synthesized kernel of the fused bias Add and Relu: 9216
     # elements, which the 8192x2 buffer textures of this bundle hold.
     for kernel_id in [221, 231, 232, 234, 4096]:
@@ -1282,14 +1284,14 @@ def main():
     assert transformer_inventory.count('public = true') == 6
     assert transformer_assignments.count('texture_id = ') == 10
     assert 'resolved_count = 6 : i32' in transformer_public_aliases
-    assert 'configured_count = 16 : i32' in transformer_reconciliation
+    assert 'configured_count = 10 : i32' in transformer_reconciliation
     assert 'declared_alias_count = 6 : i32' in transformer_reconciliation
     assert 'resolved_alias_count = 0 : i32' in transformer_reconciliation
     assert 'unresolved_public_count = 0 : i32' in transformer_reconciliation
-    assert 'unresolved_private_count = 16 : i32' in transformer_reconciliation
+    assert 'unresolved_private_count = 10 : i32' in transformer_reconciliation
     assert 'planned_count = 10 : i32' in transformer_layout
-    assert 'legacy_configured_count = 16 : i32' in transformer_layout
-    assert 'removable_legacy_count = 6 : i32' in transformer_layout
+    assert 'legacy_configured_count = 10 : i32' in transformer_layout
+    assert 'removable_legacy_count = 0 : i32' in transformer_layout
     assert 'blocker_count = 0 : i32' in transformer_layout
     assert 'unresolved_public_count = 0 : i32' in transformer_layout
     assert 'ready = true' in transformer_layout
@@ -1375,7 +1377,7 @@ def main():
     assert [
         item['id'] for item in transformer_manifest['device']['buffers']
     ] == list(range(1, 11))
-    assert transformer_manifest['device']['mutable_handle_capacity'] == 16
+    assert transformer_manifest['device']['mutable_handle_capacity'] == 10
     assert {
         item['c_symbol']: item['public_name']
         for item in transformer_manifest['exports']

@@ -31,3 +31,17 @@ module attributes {
 // CHECK-NOT: vrc.onnx_unity_buffers
 module {
 }
+
+// -----
+
+// A session that owns no Device buffer plans none: its Host binds only
+// buffers of its own.
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.onnx_unity_buffers = []
+module attributes {
+  udoncl.mutable_buffer_bytes = array<i64>,
+  udoncl.mutable_handle_capacity = 0 : i64,
+  udoncl.onnx_binding = {}
+} {
+}
