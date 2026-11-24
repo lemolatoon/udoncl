@@ -420,6 +420,23 @@ def DescribeCanonicalUnityBuffersPass : Pass<"vrc-describe-canonical-unity-buffe
     description from an earlier run is replaced.
   }];
 }
+def DescribeONNXBindingManifestPass : Pass<"vrc-describe-onnx-binding-manifest", "mlir::ModuleOp"> {
+  let summary = "Describe the ONNX binding entry of a Unity library manifest";
+  let description = [{
+    Checks the ONNX Host metadata `udoncl.onnx_binding` and records the
+    `onnx_binding` entry of the Unity library manifest in
+    `vrc.onnx_binding_manifest`: the `abi`, `model_index` and `model_name`,
+    the graph `inputs` and `outputs` (each with its `index`, `name`,
+    `data_type`, `rank`, `dimensions`, `logical_bytes` and
+    `capacity_bytes`), and the `physical` symbols of the generated binding.
+    The sequence-state symbols are recorded only when the graph has
+    sequence state (their metadata is not empty).
+
+    A module without ONNX binding metadata gets no description; metadata
+    without one of these fields is an error. A description from an earlier
+    run is replaced.
+  }];
+}
 def RequireStaticUnityResourceLoweringPass : Pass<"vrc-require-static-unity-resource-lowering", "mlir::ModuleOp"> {
   let summary = "Require every Unity Device buffer to resolve to one assigned buffer";
   let description = [{
