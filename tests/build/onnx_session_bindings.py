@@ -56,8 +56,8 @@ def main():
     manifest = json.loads(
         (artifact / 'manifest.json').read_text(encoding='utf-8'))
 
-    # The UDONCL_PUBLIC variables are the public buffers, bound to the
-    # graph tensors of their names.
+    # The UDONCL_PUBLIC variables are the public buffers; each holds the
+    # graph tensor its name was bound to, which the manifest states.
     buffers = manifest['device']['buffers']
     public = {
         buffer['name']: buffer for buffer in buffers
@@ -71,7 +71,11 @@ def main():
         assert buffer['element_type'] == 'float32', buffer
         assert buffer['logical_bytes'] == 32 * 256 * 4, buffer
         assert buffer['source'] == {
-            'kind': 'host_variable', 'symbol': name}, buffer
+            'kind': 'host_variable', 'symbol': name, 'onnx_tensor': name,
+        }, buffer
+    binding = (artifact / 'binding.cs').read_text(encoding='utf-8')
+    assert ('Device buffer of the Host variable <c>a</c> (UDONCL_PUBLIC), '
+            'bound to the ONNX tensor <c>a</c>') in binding, binding
 
     # The loop over the constant name table is unrolled and every name is
     # folded into its graph input: nothing looks a tensor up by name, and

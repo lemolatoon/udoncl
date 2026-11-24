@@ -338,10 +338,15 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
         auto kind = source ? source->getString("kind") : std::nullopt;
         auto symbol = source ? source->getString("symbol") : std::nullopt;
         auto tensor = source ? source->getString("tensor") : std::nullopt;
-        if (kind && *kind == "host_variable" && symbol)
+        auto boundTensor =
+            source ? source->getString("onnx_tensor") : std::nullopt;
+        if (kind && *kind == "host_variable" && symbol) {
           origin = "the Host variable <c>" + xmlDocumentationText(*symbol) +
                    "</c> (UDONCL_PUBLIC)";
-        else if (kind && *kind == "onnx_tensor" && tensor)
+          if (boundTensor)
+            origin += ", bound to the ONNX tensor <c>" +
+                      xmlDocumentationText(*boundTensor) + "</c>";
+        } else if (kind && *kind == "onnx_tensor" && tensor)
           origin =
               "the ONNX tensor <c>" + xmlDocumentationText(*tensor) + "</c>";
         else

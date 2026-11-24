@@ -42,12 +42,30 @@ struct DescribeCanonicalUnityBuffersPass
     if (auto declared = module->getAttrOfType<DictionaryAttr>(
             "vrc.static_declared_public_resources"))
       if (auto ids = declared.getAs<DenseI32ArrayAttr>("resource_ids"))
-        if (llvm::is_contained(ids.asArrayRef(), resourceId.getInt()))
-          return builder.getDictionaryAttr({
+        if (llvm::is_contained(ids.asArrayRef(), resourceId.getInt())) {
+          SmallVector<NamedAttribute> fields{
               builder.getNamedAttr("kind",
                                    builder.getStringAttr("host_variable")),
               builder.getNamedAttr("symbol", name),
-          });
+          };
+          // The graph tensor a UdonONNX session binds the variable's buffer
+          // to (vrc-verify-onnx-session-bindings).
+          if (auto bound =
+                  module->getAttrOfType<ArrayAttr>("vrc.onnx_session_bindings"))
+            for (Attribute attribute : bound) {
+              auto record = dyn_cast<DictionaryAttr>(attribute);
+              auto resource =
+                  record ? record.getAs<IntegerAttr>("resource_id") : nullptr;
+              auto tensor =
+                  record ? record.getAs<StringAttr>("tensor") : nullptr;
+              if (resource && tensor &&
+                  resource.getInt() == resourceId.getInt()) {
+                fields.push_back(builder.getNamedAttr("onnx_tensor", tensor));
+                break;
+              }
+            }
+          return builder.getDictionaryAttr(fields);
+        }
     // An ONNX graph tensor is an input or an output, never both.
     auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
     auto tensors =
