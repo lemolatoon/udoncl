@@ -117,6 +117,16 @@ public:
   dispatch(unsigned rootNode, const DeviceFusionLeafView &view,
            const DeviceConstantPrefix *prefix = nullptr);
 
+  /// The dispatch of the Concat `rootNode` of an in-place Concat pair
+  /// (InPlaceConcat in ONNXHostPlan.h) when its first operand is the leading
+  /// block of the result's buffer. The kernel neither takes nor reads that
+  /// operand: it writes the elements of the second operand, after the first
+  /// operand's run-time extent along the axis, and every other fragment
+  /// keeps its word (a partial-output kernel whose vrc.output_granule is
+  /// whole rows). The other leaves, the result and the scalars are as for
+  /// dispatch().
+  mlir::FailureOr<DeviceFusionDispatch> dispatchInPlace(unsigned rootNode);
+
 private:
   enum class FusedKernelRole {
     /// The root's value at every element.
@@ -129,7 +139,7 @@ private:
   mlir::FailureOr<DeviceFusionDispatch>
   synthesize(unsigned rootNode, const DeviceFusionLeafView *view,
              const DeviceRowReduction *schedule, FusedKernelRole role,
-             const DeviceConstantPrefix *prefix);
+             const DeviceConstantPrefix *prefix, bool inPlace = false);
 
   mlir::ModuleOp module;
   const DeviceFusion &fusion;

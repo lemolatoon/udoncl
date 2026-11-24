@@ -90,8 +90,30 @@ module attributes {udoncl.dimension_bounds = {past = 8 : i64}, udoncl.static_ten
 }
 
 
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%{{.*}}, %{{.*}}, %{{.*}}, %[[PAST:.*]], %{{.*}}, %{{.*}})
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%{{.*}}, %{{.*}}, %{{.*}}, %[[PAST]], %{{.*}}, %{{.*}})
+// past_key and present_key, past_value and present_value are in-place
+// Concat pairs. The session run rejects one buffer bound with two pitches.
+// CHECK-LABEL: func.func @udononnxGeneratedRun(
+// CHECK: udonhl.address_of @__udon_onnx_dimension_0
+// CHECK-NEXT: "udonhl.store"
+// CHECK-NEXT: %[[SHARED:.*]] = arith.cmpi eq, %{{[0-9]+}}, %{{[0-9]+}} : i32
+// CHECK: udonhl.address_of @__udon_onnx_bound_output_pitch_1
+// CHECK: udonhl.address_of @__udon_onnx_bound_input_pitch_4
+// CHECK: %[[DIFFER:.*]] = arith.cmpi ne
+// CHECK: %[[INVALID:.*]] = arith.andi %[[SHARED]], %[[DIFFER]] : i1
+// CHECK: cf.cond_br %[[INVALID]], ^[[REJECT:.*]], ^
+// CHECK: ^[[REJECT]]:
+// CHECK-NEXT: return %c1_i32
+
+// A run writes only the new rows (fused_1, which takes neither the past nor
+// its pitch) when the session bound the past and the present to one buffer,
+// and the whole present (fused_0) otherwise.
+// CHECK-LABEL: func.func private @__udononnx_enqueue_resolved_run(
+// CHECK: %[[SAME:.*]] = arith.cmpi eq, %[[PAST:[0-9]+]], %[[PRESENT:[0-9]+]] : i32
+// CHECK: cf.cond_br %[[SAME]]
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%{{.*}}, %[[PRESENT]], %{{.*}}, %{{.*}}) : (i32, i32, i32, i32)
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[PAST]], %{{.*}}, %[[PRESENT]], %{{.*}}, %{{.*}}, %{{.*}})
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(
 
 // The present: past (pitch %arg4), new, present (pitch %arg5).
 // CHECK-LABEL: gpu.func @udononnx_fused_0(%arg0: memref<144xf32>, %arg1: memref<16xf32>, %arg2: memref<8192xf32>, %arg3: i32, %arg4: i32, %arg5: i32)
@@ -107,10 +129,25 @@ module attributes {udoncl.dimension_bounds = {past = 8 : i64}, udoncl.static_ten
 // CHECK: } else {
 // CHECK: memref.load %arg1
 
+// The in-place present: new, present (pitch %arg3). Only the elements at
+// or after the past's extent on the axis store, a row (8 words) at a time.
+// CHECK-LABEL: gpu.func @udononnx_fused_1(%arg0: memref<16xf32>, %arg1: memref<8192xf32>, %arg2: i32, %arg3: i32)
+// CHECK-SAME: vrc.output_granule = 8 : i64
+// CHECK: %[[PAST_VALUE:.*]] = arith.minui %arg2, %c8_i32
+// CHECK: %[[ROW:.*]] = arith.remui %{{[0-9]+}}, %{{[0-9]+}} : i32
+// CHECK: %[[AFTER:.*]] = arith.cmpi uge, %{{.*}}, %[[PAST_VALUE]] : i32
+// CHECK: %[[KEEP:.*]] = arith.andi %{{.*}}, %[[AFTER]] : i1
+// CHECK: scf.if %[[KEEP]] {
+// CHECK: memref.load %arg0
+// CHECK-NOT: memref.load
+// CHECK: memref.store %{{.*}}, %arg1
+// CHECK-NEXT: }
+// CHECK-NEXT: gpu.return
+
 // The Softmax loops over past + 1 elements.
-// CHECK-LABEL: gpu.func @udononnx_fused_3(
+// CHECK-LABEL: gpu.func @udononnx_fused_4(
 // CHECK: %[[LIMIT:.*]] = arith.addi %{{.*}}, %c1_i32
 // CHECK: scf.while
 // CHECK: arith.cmpi ult, %{{.*}}, %[[LIMIT]]
 
-// PROVEN-COUNT-4: vrc.gather_proven
+// PROVEN-COUNT-5: vrc.gather_proven

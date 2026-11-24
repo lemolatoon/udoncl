@@ -261,11 +261,14 @@ int main(int argc, char **argv) {
         std::vector<uint32_t> scalars(arguments.begin() + kernel.inputs + 1,
                                       arguments.end());
         Words result(kernel.words);
+        // The draw starts from the target's words, which a partial-output
+        // kernel keeps where it writes nothing.
         if (!session.drawGather(
                 kernel.id, inputs.data(), inputs.size(), kernel.words * 4,
                 reinterpret_cast<const unsigned char *>(scalars.data()),
                 scalars.size() * 4,
-                reinterpret_cast<unsigned char *>(result.data())))
+                reinterpret_cast<unsigned char *>(result.data()),
+                reinterpret_cast<const unsigned char *>(output.data())))
           throw std::runtime_error("draw failed for " + kernel.name);
         ++draws;
         std::copy(result.begin(),

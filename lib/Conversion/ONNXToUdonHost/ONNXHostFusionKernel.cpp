@@ -16,6 +16,7 @@
 #include <deque>
 #include <limits>
 #include <map>
+#include <numeric>
 
 using namespace mlir;
 
@@ -225,6 +226,21 @@ public:
                               valueOf(outerLinear), i32Constant(outer));
     return {coordinates,
             arith::AndIOp::create(builder, location, inside, inOuter)};
+  }
+
+  /// The element at `rootCoordinates` of the in-place Concat root
+  /// `rootNode`, an element after its first operand's block: the second
+  /// operand's element at the coordinate less the first operand's run-time
+  /// extent along the axis.
+  Emitted emitConcatTail(unsigned rootNode, ArrayRef<Bounded> rootCoordinates) {
+    const NodeRecord &node = graph.nodes[rootNode];
+    int64_t axis = concatAxis(graph, node);
+    int64_t right = shapeOf(graph, node.inputs[1])[axis];
+    const DynamicTensor *leftAxis =
+        dynamicOf(static_cast<unsigned>(node.inputs[0]));
+    return emitConcatSide(
+        rootNode, 1, axis, rootCoordinates,
+        bound(subtract(rootCoordinates[axis], leftAxis->extent), right - 1));
   }
 
   Emitted emitRoot(unsigned rootNode, Value linear,
@@ -1008,16 +1024,59 @@ DeviceFusionKernels::dispatch(unsigned rootNode,
   return synthesize(rootNode, &view, nullptr, FusedKernelRole::Whole, prefix);
 }
 
+FailureOr<DeviceFusionDispatch>
+DeviceFusionKernels::dispatchInPlace(unsigned rootNode) {
+  const GraphRecord &graph = fusion.graph;
+  if (fusion.isInterior(rootNode) ||
+      (!fusion.isRoot(rootNode) &&
+       !isSynthesizedDeviceNode(graph, graph.nodes[rootNode])))
+    return emitError(module.getLoc())
+           << "ONNX in-place Concat of node " << rootNode
+           << " is outside the fused kernel contract";
+  return synthesize(rootNode, nullptr, nullptr, FusedKernelRole::Whole, nullptr,
+                    /*inPlace=*/true);
+}
+
 FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     unsigned rootNode, const DeviceFusionLeafView *view,
     const DeviceRowReduction *schedule, FusedKernelRole role,
-    const DeviceConstantPrefix *prefix) {
+    const DeviceConstantPrefix *prefix, bool inPlace) {
   if (role == FusedKernelRole::RowStatistics)
     prefix = nullptr;
   const GraphRecord &graph = fusion.graph;
   Location location = module.getLoc();
   DeviceFusionDispatch result;
   result.leaves = fusion.leaves(rootNode);
+  // An in-place Concat leaves its first operand where it is: the kernel does
+  // not take it, so the group may read it only as that operand.
+  std::optional<unsigned> leadingBlock;
+  if (inPlace) {
+    const NodeRecord &root = graph.nodes[rootNode];
+    DeviceFusionOperand first = fusion.operand(rootNode, 0);
+    if (role != FusedKernelRole::Whole || view || prefix ||
+        root.operation != "Concat" || root.inputs.size() != 2 ||
+        first.kind != DeviceFusionOperand::Leaf ||
+        static_cast<int64_t>(first.tensor) != root.inputs[0] ||
+        !graph.tensors[first.tensor].dynamic ||
+        !graph.tensors[root.output].dynamic)
+      return emitError(location) << "ONNX in-place Concat of node " << rootNode
+                                 << " is outside the fused kernel contract";
+    for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes)) {
+      if (nodeIndex != rootNode && fusion.roots[nodeIndex] != rootNode)
+        continue;
+      for (auto [operand, input] : llvm::enumerate(node.inputs))
+        if (input == static_cast<int64_t>(first.tensor) &&
+            (nodeIndex != rootNode || operand != 0))
+          return emitError(location)
+                 << "ONNX in-place Concat of node " << rootNode
+                 << " reads its first operand elsewhere in its group";
+    }
+    leadingBlock = first.tensor;
+    llvm::erase(result.leaves, first.tensor);
+    if (result.leaves.empty())
+      return emitError(location) << "ONNX in-place Concat of node " << rootNode
+                                 << " has no operand to write";
+  }
   DeviceFusionCost cost = fusion.cost(rootNode);
   int64_t elements =
       graph.tensors[graph.nodes[rootNode].output].type.getNumElements();
@@ -1130,6 +1189,8 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     keyStream << (role == FusedKernelRole::RowStatistics ? "|statistics"
                                                          : "|from-statistics")
               << schedule->chunks << 'x' << schedule->chunkLength;
+  if (leadingBlock)
+    keyStream << "|in-place";
   for (auto [position, tensor] : llvm::enumerate(storageOrder))
     if (auto found = layoutOf.find(tensor); found != layoutOf.end())
       keyStream << "|layout@" << position << '=' << found->second.kind << ':'
@@ -1350,6 +1411,27 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     rootCoordinates = std::move(coordinates);
     live = arith::AndIOp::create(builder, location, live, inside);
   }
+  // An in-place Concat writes only the elements after its first operand's
+  // block along the axis. `live` decides which fragments store; it depends
+  // on the fragment's row (the words after the axis) alone, so it is the
+  // same for every word of a row.
+  int64_t granule = 0;
+  if (leadingBlock) {
+    int64_t axis = concatAxis(graph, graph.nodes[rootNode]);
+    const DynamicTensor &first = dynamic.at(*leadingBlock);
+    auto valueOf = [&](const Bounded &bounded) -> Value {
+      if (bounded.constant)
+        return arith::ConstantIntOp::create(builder, location,
+                                            *bounded.constant, 32);
+      return bounded.value;
+    };
+    Value after = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::uge,
+        valueOf(rootCoordinates[axis]), valueOf(first.extent));
+    live = arith::AndIOp::create(builder, location, live, after);
+    granule =
+        std::gcd(elementCount(rootShape.drop_front(axis + 1)), surfaceWords);
+  }
   auto guard = scf::IfOp::create(builder, location, TypeRange{f32}, live,
                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
   builder.setInsertionPointToStart(guard.thenBlock());
@@ -1390,7 +1472,9 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
       ArrayRef<BlockArgument>(buffers).take_front(result.leaves.size()), view,
       viewOffset, dynamic.empty() ? nullptr : &dynamic);
   Emitted value;
-  if (role == FusedKernelRole::Whole) {
+  if (leadingBlock) {
+    value = emitter.emitConcatTail(rootNode, rootCoordinates);
+  } else if (role == FusedKernelRole::Whole) {
     value = emitter.emitRoot(rootNode, linear, nullptr, rootCoordinates);
   } else {
     DeviceRowStatistics statistics{rows, schedule->chunks,
@@ -1413,8 +1497,19 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
       Value(arith::ConstantFloatOp::create(
           builder, location, builder.getF32Type(), APFloat(0.0f))));
   builder.setInsertionPointToEnd(&body);
-  memref::StoreOp::create(builder, location, guard.getResult(0), buffers.back(),
-                          ValueRange{fragment});
+  if (leadingBlock) {
+    // The fragments outside the written elements keep their words.
+    auto store = scf::IfOp::create(builder, location, live,
+                                   /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(store.thenBlock());
+    memref::StoreOp::create(builder, location, guard.getResult(0),
+                            buffers.back(), ValueRange{fragment});
+    builder.setInsertionPointToEnd(&body);
+    kernel->setAttr("vrc.output_granule", builder.getI64IntegerAttr(granule));
+  } else {
+    memref::StoreOp::create(builder, location, guard.getResult(0),
+                            buffers.back(), ValueRange{fragment});
+  }
   gpu::ReturnOp::create(builder, location);
   kernel->setAttr("vrc.fragment_cost",
                   builder.getDictionaryAttr(builder.getNamedAttr(

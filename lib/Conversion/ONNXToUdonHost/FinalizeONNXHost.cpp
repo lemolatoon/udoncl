@@ -2809,6 +2809,33 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             builder, location, value,
             addressOf(builder, location, onnxHostDimensionSymbol(symbolIndex)));
       }
+      // The input of an in-place Concat pair is the leading block of its
+      // output when both are bound to one buffer, which needs the same pitch
+      // (the static axes are the model's): one buffer with two layouts is
+      // INVALID_VALUE.
+      for (const InPlaceConcat &pair : inPlaceConcats(graph)) {
+        Value shared =
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                  sessionTokens[graph.inputs[pair.input]],
+                                  sessionTokens[graph.outputs[pair.output]]);
+        Value differ = arith::CmpIOp::create(
+            builder, location, arith::CmpIPredicate::ne,
+            loadI32(builder, location,
+                    addressOf(builder, location,
+                              onnxHostBoundPitchSymbol(false, pair.input))),
+            loadI32(builder, location,
+                    addressOf(builder, location,
+                              onnxHostBoundPitchSymbol(true, pair.output))));
+        Block *next = run.addBlock();
+        Block *invalid = run.addBlock();
+        cf::CondBranchOp::create(
+            builder, location,
+            arith::AndIOp::create(builder, location, shared, differ), invalid,
+            ValueRange{}, next, ValueRange{});
+        builder.setInsertionPointToEnd(invalid);
+        func::ReturnOp::create(builder, location, onnxStatus(1));
+        builder.setInsertionPointToEnd(next);
+      }
       for (unsigned tensorIndex : plan.ownedDeviceBuffers) {
         if (sessionTokens[tensorIndex])
           continue;
@@ -3124,6 +3151,31 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                                          constant(16));
       return arith::OrIOp::create(builder, location, extent(first), high);
     };
+    // The in-place Concat pairs whose input and output buffers this run
+    // binds directly; their Concat writes only the new rows when a session
+    // bound both to one buffer.
+    SmallVector<InPlaceConcat> inPlace;
+    for (const InPlaceConcat &pair : inPlaceConcats(graph)) {
+      unsigned input = graph.inputs[pair.input];
+      unsigned output = graph.outputs[pair.output];
+      if (storage[input] == input && storage[output] == output &&
+          buffers[input] && buffers[output])
+        inPlace.push_back(pair);
+    }
+    auto scalarValuesOf = [&](const DeviceFusionDispatch &fused) {
+      // The run-time scalars of a group over a bounded dimension: the
+      // dimension's value in this run and the pitch of a bound buffer.
+      SmallVector<Value> scalars;
+      for (const DeviceFusionScalar &scalar : fused.scalars)
+        scalars.push_back(
+            scalar.kind == DeviceFusionScalar::Dimension
+                ? dimensionValues[scalar.index]
+                : loadI32(builder, location,
+                          addressOf(builder, location,
+                                    onnxHostBoundPitchSymbol(scalar.output,
+                                                             scalar.index))));
+      return scalars;
+    };
     auto constantPrefix =
         [&](unsigned nodeIndex) -> const DeviceConstantPrefix * {
       const auto &prefix = extents.constantPrefix[nodeIndex];
@@ -3183,17 +3235,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             return emitError(location)
                    << "Device ONNX fusion operand lacks physical storage";
         }
-        // The run-time scalars of a group over a bounded dimension: the
-        // dimension's value in this run and the pitch of a bound buffer.
-        SmallVector<Value> scalars;
-        for (const DeviceFusionScalar &scalar : fused->scalars)
-          scalars.push_back(
-              scalar.kind == DeviceFusionScalar::Dimension
-                  ? dimensionValues[scalar.index]
-                  : loadI32(builder, location,
-                            addressOf(builder, location,
-                                      onnxHostBoundPitchSymbol(scalar.output,
-                                                               scalar.index))));
+        SmallVector<Value> scalars = scalarValuesOf(*fused);
         auto withScalars = [&](ArrayRef<Value> values) {
           SmallVector<Value> all(values);
           llvm::append_range(all, scalars);
@@ -3211,6 +3253,41 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         arguments.push_back(output);
         if (prefix)
           arguments.push_back(zeroRows[prefix->prefix.state]);
+        // An in-place Concat whose input and output a session bound to one
+        // buffer (the run checked their pitches) writes only the rows after
+        // the input; with two buffers it runs as any Concat.
+        const InPlaceConcat *pair =
+            llvm::find_if(inPlace, [&](const InPlaceConcat &candidate) {
+              return candidate.node == nodeIndex;
+            });
+        if (pair != inPlace.end() && !prefix &&
+            fused->statisticsCallee.empty()) {
+          FailureOr<DeviceFusionDispatch> partial =
+              fusedKernels.dispatchInPlace(nodeIndex);
+          if (failed(partial))
+            return failure();
+          SmallVector<Value> partialArguments;
+          for (unsigned leaf : partial->leaves)
+            partialArguments.push_back(buffer(leaf));
+          partialArguments.push_back(output);
+          llvm::append_range(partialArguments, scalarValuesOf(*partial));
+          Value shared =
+              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                    buffer(graph.inputs[pair->input]), output);
+          Block *inPlaceBlock = run.addBlock();
+          Block *separate = run.addBlock();
+          Block *joined = run.addBlock();
+          cf::CondBranchOp::create(builder, location, shared, inPlaceBlock,
+                                   ValueRange{}, separate, ValueRange{});
+          builder.setInsertionPointToEnd(inPlaceBlock);
+          dispatch(partial->callee, partialArguments);
+          cf::BranchOp::create(builder, location, joined);
+          builder.setInsertionPointToEnd(separate);
+          dispatch(fused->callee, withScalars(arguments));
+          cf::BranchOp::create(builder, location, joined);
+          builder.setInsertionPointToEnd(joined);
+          return success();
+        }
         dispatch(fused->callee, withScalars(arguments));
         return success();
       }

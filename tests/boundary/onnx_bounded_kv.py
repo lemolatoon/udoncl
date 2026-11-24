@@ -14,7 +14,13 @@ renderer, library kernels as their CPU builds. It requires
   match ONNX Runtime (present exactly, attention within float rounding),
   without reading rows outside the leading blocks (they hold NaN);
 - the bounded library at the bound to equal the fixed library bit for bit;
-- Run to reject a present whose extent disagrees with the past.
+- Run to reject a present whose extent disagrees with the past;
+- in-place Concat: with each past and present bound to one buffer of the
+  bound (the past its leading block), runs that grow the past, restart from
+  a smaller one without clearing anything (a reset) and grow again (a
+  second turn) to match ONNX Runtime on the rows the buffer holds, with the
+  rows written only once each; one buffer bound with two pitches is
+  UDONONNX_STATUS_INVALID_VALUE.
 """
 
 import json
@@ -99,6 +105,9 @@ def spirv(asset, stage):
 vertex_shader = spirv(vertex, "vert")
 
 
+partial_kernels = {}
+
+
 def compile_library(name, dimension):
     """The finalized Host module of the fixture and its fused kernels."""
     host = output / f"{name}.mlir"
@@ -132,6 +141,10 @@ def compile_library(name, dimension):
             break
     carrier = output / f"{name}-kernels.mlir"
     carrier.write_text(text[start : end + 1] + "\n", encoding="utf-8")
+    # The partial-output kernels: an in-place Concat writes only new rows.
+    partial_kernels[name] = re.findall(
+        r"gpu\.func @(\w+)\(.*vrc\.output_granule", text[start : end + 1]
+    )
     kernels = []
     for index, match in enumerate(
         re.finditer(
@@ -353,6 +366,87 @@ for case in oracle["cases"]:
 # A present that is not one row longer than the past.
 bind_case(bounded, oracle["cases"][2], 5, 7, 6, present_extent=7)
 assert bounded.run() == INVALID_VALUE
+
+# In-place Concat: one buffer of the bound holds each past and its present.
+import numpy  # noqa: E402
+import onnxruntime  # noqa: E402
+
+reference = onnxruntime.InferenceSession(str(model), providers=["CPUExecutionProvider"])
+PITCH = BOUND + 1
+cache_words = KV_HEADS * PITCH * HEAD_DIM
+key_cache = bounded.buffer(cache_words)
+value_cache = bounded.buffer(cache_words)
+ones = bounded.buffer(2 * PITCH, mask_words(PITCH, PITCH))
+# What the caches hold: NaN until a run writes a row.
+held = {
+    "key": numpy.full((1, KV_HEADS, PITCH, HEAD_DIM), numpy.nan, numpy.float32),
+    "value": numpy.full((1, KV_HEADS, PITCH, HEAD_DIM), numpy.nan, numpy.float32),
+}
+generator = numpy.random.default_rng(0x1A7E)
+in_place_checks = []
+# Grow, reset to an empty past (nothing is cleared), grow again to the bound.
+for step, past in enumerate([0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 6, 7, 8]):
+    feeds = {
+        name: generator.uniform(-1.0, 1.0, shape).astype(numpy.float32)
+        for name, shape in (
+            ("query", (1, HEADS, 1, HEAD_DIM)),
+            ("key", (1, KV_HEADS, 1, HEAD_DIM)),
+            ("value", (1, KV_HEADS, 1, HEAD_DIM)),
+        )
+    }
+    query = bounded.buffer(HEADS * HEAD_DIM, float_words(feeds["query"].ravel().tolist()))
+    key = bounded.buffer(KV_HEADS * HEAD_DIM, float_words(feeds["key"].ravel().tolist()))
+    value = bounded.buffer(KV_HEADS * HEAD_DIM, float_words(feeds["value"].ravel().tolist()))
+    attention = bounded.buffer(HEADS * HEAD_DIM)
+    statuses = [
+        bounded.bind(0, 0, query),
+        bounded.bind(0, 1, key),
+        bounded.bind(0, 2, value),
+        bounded.bind(0, 3, ones, past + 1, PITCH),
+        bounded.bind(0, 4, key_cache, past, PITCH),
+        bounded.bind(0, 5, value_cache, past, PITCH),
+        bounded.bind(1, 0, attention),
+        bounded.bind(1, 1, key_cache, past + 1, PITCH),
+        bounded.bind(1, 2, value_cache, past + 1, PITCH),
+    ]
+    assert statuses == [0] * 9, statuses
+    assert bounded.run() == 0
+    feeds["attention_mask"] = numpy.ones((1, past + 1), numpy.int64)
+    feeds["past_key"] = held["key"][:, :, :past]
+    feeds["past_value"] = held["value"][:, :, :past]
+    expected = dict(
+        zip(
+            [output.name for output in reference.get_outputs()],
+            reference.run(None, feeds),
+        )
+    )
+    held["key"][:, :, past] = feeds["key"][:, :, 0]
+    held["value"][:, :, past] = feeds["value"][:, :, 0]
+    in_place_checks.append(
+        (
+            past,
+            expected,
+            bounded.save(attention, HEADS * HEAD_DIM, f"in-place{step}-attention"),
+            bounded.save(key_cache, cache_words, f"in-place{step}-present_key"),
+            bounded.save(value_cache, cache_words, f"in-place{step}-present_value"),
+        )
+    )
+# One buffer bound with two pitches is not a leading block.
+bounded.bind(0, 4, key_cache, 3, BOUND)
+bounded.bind(1, 1, key_cache, 4, PITCH)
+bounded.bind(0, 3, ones, 4, PITCH)
+bounded.bind(0, 5, value_cache, 3, PITCH)
+bounded.bind(1, 2, value_cache, 4, PITCH)
+assert bounded.run() == INVALID_VALUE
+# Every in-place run wrote the present key and value with the partial-output
+# kernel.
+assert len(partial_kernels["bounded"]) == 1, partial_kernels
+assert partial_kernels["fixed"] == [], partial_kernels
+in_place_dispatches = sum(
+    line.startswith(f"dispatch {partial_kernels['bounded'][0]} ")
+    for line in bounded.lines
+)
+assert in_place_dispatches == 2 * len(in_place_checks), in_place_dispatches
 bounded.execute()
 
 fixed = Session("fixed", fixed_host, fixed_kernels)
@@ -379,6 +473,16 @@ for case, pitch, attention_path, key_path, value_path in checks:
         worst = max(worst, abs(got - want))
         assert abs(got - want) <= 1e-5 + 1e-5 * abs(want), (past, pitch, got, want)
     print(f"bounded past={past} pitch={pitch}: present exact, attention within {worst:.3g}")
+
+for past, expected, attention_path, key_path, value_path in in_place_checks:
+    for name, path in (("present_key", key_path), ("present_value", value_path)):
+        words = unpitched(read_words(path), past + 1, PITCH)
+        assert words == float_words(expected[name].ravel().tolist()), (past, name)
+    attention = [as_float(word) for word in read_words(attention_path)]
+    for got, want in zip(attention, expected["attention"].ravel().tolist()):
+        worst = max(worst, abs(got - want))
+        assert abs(got - want) <= 1e-5 + 1e-5 * abs(want), (past, got, want)
+print(f"in-place runs={len(in_place_checks)}: present exact, attention within {worst:.3g}")
 
 # At the bound the bounded library computes exactly what the fixed one does.
 dense_bound = next(check for check in checks if check[0]["past"] == BOUND and check[1] == BOUND + 1)

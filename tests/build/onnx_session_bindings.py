@@ -198,20 +198,26 @@ UDONCL_EXPORT udononnxStatus_t run(void) {'''),
     assert tensors['present']['dimensions'] == [-1, 8], tensors
     assert tensors['present']['dimension_bounds'] == [16, 0], tensors
     assert 'dimension_bounds' not in tensors['step'], tensors
+    # present = Concat(past, step) is an in-place Concat pair.
+    assert onnx_binding['in_place_concats'] == [
+        {'input': 0, 'output': 0, 'axis': 0}], onnx_binding
     bounded_buffers = {
         buffer['name']: buffer
         for buffer in bounded_manifest['device']['buffers']
         if 'public_access' in buffer
     }
     assert set(bounded_buffers) == {'past', 'step', 'present'}, bounded_buffers
-    # Its synthesized kernel takes the value of `past` and the pitches of
-    # the bound buffers as scalars within their ranges.
+    # Its synthesized kernels take the value of `past` and the pitches of
+    # the bound buffers as scalars within their ranges: the whole Concat
+    # those of past and present, the in-place one (which writes only the
+    # new row when past and present share a buffer) that of present.
     scalars = [
         argument for kernel in bounded_manifest['device']['kernels']
         for argument in kernel['args'] if argument['kind'] == 'i32'
     ]
     assert [(argument['minimum'], argument['maximum'])
-            for argument in scalars] == [(0, 15), (0, 16), (0, 16)], scalars
+            for argument in scalars] == [
+                (0, 15), (0, 16), (0, 16), (0, 15), (0, 16)], scalars
 
     def compile_bounded(host_source):
         bounded_copy.write_text(host_source, encoding='utf-8')
@@ -240,6 +246,38 @@ UDONCL_EXPORT udononnxStatus_t run(void) {'''),
             '                        CAPACITY * WIDTH * sizeof(float), 0, &error);',
             '  past = clCreateBuffer(context, CL_MEM_READ_ONLY, 64, 0, &error);'),
         'ONNX graph input "past" needs 512 bytes, but its Device buffer has 64')
+    # Only the past and the present it is the leading block of may share a
+    # buffer.
+    rejected_bounded(
+        'shared-step',
+        bounded_host.replace('udononnxBindInput(session, "step", step, 2,',
+                             'udononnxBindInput(session, "step", past, 2,'),
+        'ONNX graph input "past" and input "step" are bound to one Device '
+        'buffer; only the first operand of an in-place Concat and its result '
+        'may share a buffer')
+    # Past and present in one CL_MEM_READ_WRITE buffer: the public buffer
+    # names both tensors.
+    in_place = compile_bounded(
+        bounded_host.replace(
+            '  past = clCreateBuffer(context, CL_MEM_READ_ONLY,\n',
+            '  past = clCreateBuffer(context, CL_MEM_READ_WRITE,\n').replace(
+            'udononnxBindOutput(session, "present", present, 2,',
+            'udononnxBindOutput(session, "present", past, 2,'))
+    assert in_place.returncode == 0, in_place.stdout + in_place.stderr
+    shared_manifest = json.loads(
+        (consumer / 'udoncl/onnx-session-bindings-bounded/artifact/'
+         'manifest.json').read_text(encoding='utf-8'))
+    shared = {buffer['name']: buffer
+              for buffer in shared_manifest['device']['buffers']
+              if 'public_access' in buffer}
+    assert shared['past']['public_access'] == 'inout', shared['past']
+    assert shared['past']['source'] == {
+        'kind': 'host_variable', 'symbol': 'past',
+        'onnx_tensors': ['past', 'present']}, shared['past']
+    shared_binding = (consumer / 'udoncl/onnx-session-bindings-bounded/'
+                      'artifact/binding.cs').read_text(encoding='utf-8')
+    assert ('bound to the ONNX tensors <c>past</c> and <c>present</c>'
+            in shared_binding), shared_binding
     restored = compile_bounded(bounded_host)
     assert restored.returncode == 0, restored.stdout + restored.stderr
 
