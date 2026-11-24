@@ -117,7 +117,14 @@ udononnxSessionResolveOutput(const udononnxLegacySession_t *session,
 
 /* These generated, whole-program-visible dispatchers are supplied by the
  * linked model host. They dispatch graph_id with direct calls; they are not a
- * public model-specific API or an external execution plan. */
+ * public model-specific API or an external execution plan.
+ *
+ * Create allocates the Device buffers the session owns on `queue` and
+ * enqueues nothing; EnqueueInitialize is Create followed by a marker that
+ * reports completion. */
+udononnxStatus_t udononnxGeneratedCreate(uint32_t graph_id,
+                                         udononnxLegacySession_t *session,
+                                         cl_command_queue queue);
 udononnxStatus_t udononnxGeneratedEnqueueInitialize(
     uint32_t graph_id, udononnxLegacySession_t *session, cl_command_queue queue,
     cl_uint wait_count, const cl_event *wait_list, cl_event *completion);

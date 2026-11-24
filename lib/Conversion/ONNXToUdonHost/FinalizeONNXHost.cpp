@@ -2577,9 +2577,14 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                              invalid, ValueRange{});
   };
 
+  // Create allocates the Device buffers the session owns on the session's
+  // queue and enqueues nothing; under the static Unity lowering they are
+  // assigned Textures, so it does no Device work at all.
   builder.setInsertionPointToEnd(module.getBody());
+  auto createSignature =
+      FunctionType::get(module.getContext(), {i32, pointer, pointer}, {i32});
   auto initialize = func::FuncOp::create(
-      builder, location, "udononnxGeneratedEnqueueInitialize", signature);
+      builder, location, "udononnxGeneratedCreate", createSignature);
   Block *initializeEntry = initialize.addEntryBlock();
   Block *initializeValid = initialize.addBlock();
   Block *initializeInvalid = initialize.addBlock();
@@ -2638,11 +2643,37 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       allocateDeviceBuffer(operatorScratchSymbol, operatorScratchOwnedSymbol,
                            bytes);
   }
+  func::ReturnOp::create(builder, location, onnxStatus(0));
+
+  // The legacy session's initialization is Create followed by a marker that
+  // completes once everything enqueued before it has.
+  builder.setInsertionPointToEnd(module.getBody());
+  auto enqueueInitialize = func::FuncOp::create(
+      builder, location, "udononnxGeneratedEnqueueInitialize", signature);
+  Block *enqueueInitializeEntry = enqueueInitialize.addEntryBlock();
+  Block *enqueueInitializeMarker = enqueueInitialize.addBlock();
+  Block *enqueueInitializeFailure = enqueueInitialize.addBlock();
+  builder.setInsertionPointToEnd(enqueueInitializeEntry);
+  auto created =
+      func::CallOp::create(builder, location, initialize,
+                           ValueRange{enqueueInitializeEntry->getArgument(0),
+                                      enqueueInitializeEntry->getArgument(1),
+                                      enqueueInitializeEntry->getArgument(2)});
+  Value createSucceeded =
+      arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                            created.getResult(0), onnxStatus(0));
+  cf::CondBranchOp::create(builder, location, createSucceeded,
+                           enqueueInitializeMarker, ValueRange{},
+                           enqueueInitializeFailure, ValueRange{});
+  builder.setInsertionPointToEnd(enqueueInitializeFailure);
+  func::ReturnOp::create(builder, location, created.getResult(0));
+  builder.setInsertionPointToEnd(enqueueInitializeMarker);
   auto marker = func::CallOp::create(
       builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
-      ValueRange{
-          initializeEntry->getArgument(2), initializeEntry->getArgument(3),
-          initializeEntry->getArgument(4), initializeEntry->getArgument(5)});
+      ValueRange{enqueueInitializeEntry->getArgument(2),
+                 enqueueInitializeEntry->getArgument(3),
+                 enqueueInitializeEntry->getArgument(4),
+                 enqueueInitializeEntry->getArgument(5)});
   Value markerSucceeded =
       arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
                             marker.getResult(0), onnxStatus(0));

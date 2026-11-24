@@ -31,9 +31,21 @@ func.func @main_graph(
 // CHECK-DAG: sym_name = "__udon_onnx_resolved_token_2"}> {vrc.resolved_token_cache}
 // CHECK-DAG: sym_name = "__udon_onnx_resolved_token_3"}> {vrc.resolved_token_cache}
 
-// CHECK-LABEL: func.func @udononnxGeneratedEnqueueInitialize
+// Creating the session's Device buffers again makes resolved tokens stale.
+// CHECK-LABEL: func.func @udononnxGeneratedCreate
 // CHECK: %[[FORGET:.*]] = udonhl.address_of @__udon_onnx_resolved_binding_version
 // CHECK: "udonhl.store"(%{{.*}}, %[[FORGET]])
+// CHECK-NOT: clEnqueueMarkerWithWaitList
+// CHECK: return
+
+// The legacy initialization is Create followed by a completion marker.
+// CHECK-LABEL: func.func @udononnxGeneratedEnqueueInitialize
+// CHECK: %[[CREATED:.*]] = call @udononnxGeneratedCreate(%arg0, %arg1, %arg2)
+// CHECK: cf.cond_br %{{.*}}, ^[[MARK:bb[0-9]+]], ^[[FAIL:bb[0-9]+]]
+// CHECK: ^[[MARK]]:
+// CHECK: call @clEnqueueMarkerWithWaitList(%arg2, %arg3, %arg4, %arg5)
+// CHECK: ^[[FAIL]]:
+// CHECK: return %[[CREATED]]
 
 // CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
 // CHECK: %[[VERSION:.*]] = call @udononnxSessionBindingVersion(%arg1)

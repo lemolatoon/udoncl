@@ -85,7 +85,7 @@ def assert_pointer_global_accesses(text, symbol):
 
 
 def assert_owned_global_lifecycle(text, symbol):
-    initialize = function_definition(text, "udononnxGeneratedEnqueueInitialize")
+    initialize = function_definition(text, "udononnxGeneratedCreate")
     dispose = function_definition(text, "udononnxGeneratedDispose")
     initialize_addresses = re.findall(
         rf"(%[A-Za-z0-9_.$]+) = udonhl\.address_of @{re.escape(symbol)} ",
@@ -197,6 +197,7 @@ assert host.returncode == 0, (host.stdout, host.stderr)
 assert "func.func @udon_onnx_session_write_input_float" not in host.stdout
 assert "func.func @udon_onnx_session_run" not in host.stdout
 assert "func.func @udon_onnx_session_read_output_float" not in host.stdout
+assert "func.func @udononnxGeneratedCreate" in host.stdout
 assert "func.func @udononnxGeneratedEnqueueInitialize" in host.stdout
 assert "func.func @udononnxGeneratedEnqueueRun" in host.stdout
 assert "func.func @udononnxGeneratedDispose" in host.stdout
@@ -590,7 +591,7 @@ expected_owned_symbols = {
 }
 assert set(owned_symbols) == expected_owned_symbols
 initialize_body = function_definition(
-    unary_host.stdout, "udononnxGeneratedEnqueueInitialize"
+    unary_host.stdout, "udononnxGeneratedCreate"
 )
 dispose_body = function_definition(unary_host.stdout, "udononnxGeneratedDispose")
 assert "udonhl.ptrtoint" not in initialize_body
@@ -924,7 +925,7 @@ scratch_owned_definition = global_definition(
 assert "storage_type = i32" in scratch_owned_definition
 assert "initial_value = 0 : i32" in scratch_owned_definition
 q4_initialize_body = function_definition(
-    q4_host.stdout, "udononnxGeneratedEnqueueInitialize"
+    q4_host.stdout, "udononnxGeneratedCreate"
 )
 q4_dispose_body = function_definition(q4_host.stdout, "udononnxGeneratedDispose")
 assert "__udon_onnx_operator_scratch_owned" in q4_initialize_body
