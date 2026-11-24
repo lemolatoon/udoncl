@@ -21,7 +21,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     //
     // The step graph is plain ONNX: its past and present K/V are ordinary
     // inputs and outputs, each bound to the UDONCL_PUBLIC buffer of the same
-    // name, so every present is read straight from its output buffer.
+    // name, so every present is read straight from its output buffer. The
+    // controller writes and reads them through the binding's named methods,
+    // in ONNX order; this test hands it the sidecar tensors in that order.
     public sealed class PublicTinyLlamaStepValidationTests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/tinyllama_real_m1_step";
@@ -46,8 +48,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "shutdown",
             "done",
         };
-        private const int KindInt64 = 0;
-        private const int KindFloat32 = 1;
+        // Mirrors UdonclTinyLlamaStepTestController's tensor counts.
+        private const int InputCount = 47;
+        private const int OutputCount = 45;
         private const float AbsoluteTolerance = 0.001f;
         private const float RelativeTolerance = 0.001f;
 
@@ -120,6 +123,16 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 string stepName = Path.GetFileName(stepDirectories[step]);
                 ValidatedOnnxOracle oracle = OnnxOracleSidecar.Load(stepDirectories[step]);
                 Assert.AreEqual(
+                    InputCount,
+                    oracle.Inputs.Count,
+                    stepName + ": the sidecar input count differs from the step graph."
+                );
+                Assert.AreEqual(
+                    OutputCount,
+                    oracle.Outputs.Count,
+                    stepName + ": the sidecar output count differs from the step graph."
+                );
+                Assert.AreEqual(
                     inputBuffers.Count,
                     oracle.Inputs.Count,
                     stepName + ": public input buffer count differs from the sidecar."
@@ -129,17 +142,21 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     oracle.Outputs.Count,
                     stepName + ": public output buffer count differs from the sidecar."
                 );
-                // Sidecar tensors are paired with public buffers by name: the
-                // manifest lists buffers in Device allocation order, which a
-                // banked sequence state makes differ from the ONNX order.
-                // Distinct ids over equal counts make the pairing one to one.
-                HashSet<int> pairedIds = new HashSet<int>();
-                int[] inputIds = new int[inputBuffers.Count];
-                int[] inputKinds = new int[inputBuffers.Count];
+                // The controller addresses each tensor by its ONNX index, so
+                // the sidecar must list them in that order. Each tensor's
+                // public buffer (the Host variable bound to it) is found by
+                // name; distinct names over equal counts make the pairing one
+                // to one.
+                HashSet<string> pairedNames = new HashSet<string>();
                 object[] inputValues = new object[inputBuffers.Count];
                 for (int index = 0; index < inputBuffers.Count; ++index)
                 {
                     ValidatedOnnxOracleInput input = oracle.Inputs[index];
+                    Assert.AreEqual(
+                        StepInputName(index),
+                        input.Name,
+                        stepName + ": sidecar input " + index + " is not the ONNX input."
+                    );
                     ValidatedDeviceBuffer buffer = OnnxPublicBuffers.Find(
                         inputBuffers,
                         "input",
@@ -147,7 +164,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         input.Name
                     );
                     Assert.IsTrue(
-                        pairedIds.Add(buffer.Id),
+                        pairedNames.Add(buffer.Name),
                         stepName + ": input " + input.Name + " shares a public buffer."
                     );
                     Assert.AreEqual(
@@ -155,10 +172,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         buffer.ElementType,
                         stepName + ": input " + input.Name + " element type differs."
                     );
-                    inputIds[index] = buffer.Id;
                     if (input.DataType == "int64")
                     {
-                        inputKinds[index] = KindInt64;
                         inputValues[index] = input.ReadInt64Values();
                         Assert.AreEqual(
                             input.Values.Length * sizeof(long),
@@ -173,7 +188,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                             input.DataType,
                             stepName + ": input " + input.Name + " type."
                         );
-                        inputKinds[index] = KindFloat32;
                         inputValues[index] = ToFloats(input.Values);
                         Assert.AreEqual(
                             input.Values.Length * sizeof(float),
@@ -182,11 +196,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         );
                     }
                 }
-                int[] outputIds = new int[outputBuffers.Count];
                 object[] outputValues = new object[outputBuffers.Count];
                 for (int index = 0; index < outputBuffers.Count; ++index)
                 {
                     ValidatedOnnxOracleOutput output = oracle.Outputs[index];
+                    Assert.AreEqual(
+                        index,
+                        output.Index,
+                        stepName + ": sidecar output " + output.Name + " is out of order."
+                    );
+                    Assert.AreEqual(
+                        StepOutputName(index),
+                        output.Name,
+                        stepName + ": sidecar output " + index + " is not the ONNX output."
+                    );
                     ValidatedDeviceBuffer buffer = OnnxPublicBuffers.Find(
                         outputBuffers,
                         "output",
@@ -194,7 +217,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         output.Name
                     );
                     Assert.IsTrue(
-                        pairedIds.Add(buffer.Id),
+                        pairedNames.Add(buffer.Name),
                         stepName + ": output " + output.Name + " shares a public buffer."
                     );
                     Assert.AreEqual(
@@ -207,7 +230,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         buffer.LogicalBytes,
                         stepName + ": output " + output.Name + " size differs."
                     );
-                    outputIds[index] = buffer.Id;
                     outputValues[index] = new float[oracle.Outputs[index].ElementCount];
                 }
 
@@ -229,10 +251,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.NotNull(binding, "The step binding UdonBehaviour was not found.");
                 Assert.NotNull(controller, "The step test controller was not added.");
                 UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
-                UdonclArtifactImporter.SetUdonProgramVariable(controller, "inputBufferIds", inputIds);
-                UdonclArtifactImporter.SetUdonProgramVariable(controller, "inputKinds", inputKinds);
                 UdonclArtifactImporter.SetUdonProgramVariable(controller, "inputValues", inputValues);
-                UdonclArtifactImporter.SetUdonProgramVariable(controller, "outputBufferIds", outputIds);
                 UdonclArtifactImporter.SetUdonProgramVariable(
                     controller,
                     "outputValues",
@@ -386,6 +405,30 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 if (values[index] > values[best])
                     best = index;
             return best;
+        }
+
+        // The ONNX name of step input `index`: input_ids, attention_mask,
+        // position_ids, then the past key and value of each layer.
+        private static string StepInputName(int index)
+        {
+            if (index == 0)
+                return "input_ids";
+            if (index == 1)
+                return "attention_mask";
+            if (index == 2)
+                return "position_ids";
+            int past = index - 3;
+            return "past_key_values." + past / 2 + (past % 2 == 0 ? ".key" : ".value");
+        }
+
+        // The ONNX name of step output `index`: logits, then the present key
+        // and value of each layer.
+        private static string StepOutputName(int index)
+        {
+            if (index == 0)
+                return "logits";
+            int present = index - 1;
+            return "present." + present / 2 + (present % 2 == 0 ? ".key" : ".value");
         }
 
         private static float[] ToFloats(double[] values)

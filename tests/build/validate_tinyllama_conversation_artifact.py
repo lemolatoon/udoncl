@@ -149,9 +149,9 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         self.assertIn("onnx-transformer-tiny-m1-step", cmake)
         self.assertIn('"m1-steps"', oracle)
         # Every sidecar output is compared and reported by name with its
-        # maximum error. Sidecar inputs and outputs are paired with public
-        # buffers by name: manifest buffer order is Device allocation order,
-        # which banked sequence state makes differ from the ONNX order.
+        # maximum error. The controller addresses tensors by ONNX index, so
+        # the test checks the sidecar order against the ONNX names and finds
+        # each tensor's public buffer by name; it passes no buffer id.
         for required in (
             "UDONCL_PUBLIC_TINYLLAMA_STEP_UNITY_BUNDLE",
             "UDONCL_PUBLIC_TINYLLAMA_STEP_ORACLES",
@@ -160,11 +160,16 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             'Debug.Log("udoncl tinyllama_m1_step " + line);',
             "OnnxPublicBuffers.Find(\n                        inputBuffers,",
             "OnnxPublicBuffers.Find(\n                        outputBuffers,",
-            "pairedIds.Add(buffer.Id)",
+            "pairedNames.Add(buffer.Name)",
+            "StepInputName(index),",
+            "StepOutputName(index),",
+            '"inputValues"',
+            '"outputValues"',
         ):
             self.assertIn(required, source)
         for forbidden in ("inputBuffers[index]", "outputBuffers[index]",
-                          "order differs from the sidecar"):
+                          "order differs from the sidecar", "buffer.Id",
+                          "BufferIds", "inputKinds"):
             self.assertNotIn(forbidden, source)
         # The comparison stays strict: absolute + relative 1e-3, NaN/Inf fail.
         for required in (
@@ -177,15 +182,30 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "private static string CompareOutput", 1)[0]
         self.assertNotIn("=>", iterator)
         self.assertNotIn("delegate", iterator)
+        # The controller writes and reads every tensor through the method
+        # named after its Host variable, dispatched on the ONNX index.
         for required in (
-            "TryWriteLongBuffer(",
-            "TryWriteFloatBuffer(",
-            "StartReadFloatBuffer(",
+            "binding.TryWriteInputIds((long[])values)",
+            "binding.TryWriteAttentionMask((long[])values)",
+            "binding.TryWritePositionIds((long[])values)",
+            "binding.StartReadLogits(destination,",
+            "public const int InputCount = 47;",
+            "public const int OutputCount = 45;",
             "SendCustomEventDelayedFrames(nameof(_WriteNextInput), 1);",
         ):
             self.assertIn(required, controller)
+        for layer in range(22):
+            for kind in ("Key", "Value"):
+                self.assertIn(
+                    f"binding.TryWritePastKeyValues{layer}{kind}((float[])values)",
+                    controller)
+                self.assertIn(
+                    f"binding.StartReadPresent{layer}{kind}(destination,",
+                    controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
-                          "__udoncl_", "32000", "1701"):
+                          "__udoncl_", "32000", "1701", "BufferId",
+                          "TryWriteLongBuffer", "TryWriteFloatBuffer",
+                          "StartReadFloatBuffer"):
             self.assertNotIn(forbidden, controller)
 
     def make_artifact(self, root: Path) -> Path:

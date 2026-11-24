@@ -3,10 +3,11 @@ using UnityEngine;
 
 namespace Lemolatoon.Udoncl.Generated
 {
-    // Acceptance-only controller for one M=1 step of the public-buffer step
-    // validation artifact. It is model-independent: the Editor test supplies
-    // every public input buffer id with its value array and every public
-    // output buffer id with a destination array, in manifest order.
+    // Acceptance-only controller for one M=1 step of the step validation
+    // artifact. The Editor test supplies the value of every graph input and a
+    // destination for every graph output, both in ONNX order; the controller
+    // writes and reads them through the binding's methods named after the
+    // Host variables bound to those tensors (transformer_tensors.h).
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public sealed class UdonclTinyLlamaStepTestController : UdonSharpBehaviour
     {
@@ -17,14 +18,13 @@ namespace Lemolatoon.Udoncl.Generated
         public const int PhaseShutdown = 5;
         public const int PhaseDone = 6;
 
-        public const int KindInt64 = 0;
-        public const int KindFloat32 = 1;
+        // input_ids, attention_mask, position_ids and the past key and value
+        // of the 22 layers; logits and the present key and value of each.
+        public const int InputCount = 47;
+        public const int OutputCount = 45;
 
         public UdonclTinyLlamaStepBinding binding;
-        public int[] inputBufferIds;
-        public int[] inputKinds;
         public object[] inputValues;
-        public int[] outputBufferIds;
         public object[] outputValues;
         public bool completed;
         public int status;
@@ -41,14 +41,10 @@ namespace Lemolatoon.Udoncl.Generated
             phase = PhaseInitialize;
             if (
                 binding == null
-                || inputBufferIds == null
-                || inputKinds == null
                 || inputValues == null
-                || inputKinds.Length != inputBufferIds.Length
-                || inputValues.Length != inputBufferIds.Length
-                || outputBufferIds == null
+                || inputValues.Length != InputCount
                 || outputValues == null
-                || outputValues.Length != outputBufferIds.Length
+                || outputValues.Length != OutputCount
             )
             {
                 status = UdonclTinyLlamaStepBinding.StatusInvalidArgument;
@@ -75,7 +71,7 @@ namespace Lemolatoon.Udoncl.Generated
         {
             if (completed)
                 return;
-            if (transferIndex >= inputBufferIds.Length)
+            if (transferIndex >= InputCount)
             {
                 phase = PhaseRun;
                 status = binding.StartRun(this, nameof(OnRunComplete));
@@ -83,16 +79,7 @@ namespace Lemolatoon.Udoncl.Generated
                     completed = true;
                 return;
             }
-            if (inputKinds[transferIndex] == KindInt64)
-                status = binding.TryWriteLongBuffer(
-                    inputBufferIds[transferIndex],
-                    (long[])inputValues[transferIndex]
-                );
-            else
-                status = binding.TryWriteFloatBuffer(
-                    inputBufferIds[transferIndex],
-                    (float[])inputValues[transferIndex]
-                );
+            status = WriteInput(transferIndex, inputValues[transferIndex]);
             if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
             {
                 completed = true;
@@ -100,6 +87,109 @@ namespace Lemolatoon.Udoncl.Generated
             }
             ++transferIndex;
             SendCustomEventDelayedFrames(nameof(_WriteNextInput), 1);
+        }
+
+        // Writes ONNX input index.
+        private int WriteInput(int index, object values)
+        {
+            switch (index)
+            {
+                case 0:
+                    return binding.TryWriteInputIds((long[])values);
+                case 1:
+                    return binding.TryWriteAttentionMask((long[])values);
+                case 2:
+                    return binding.TryWritePositionIds((long[])values);
+                case 3:
+                    return binding.TryWritePastKeyValues0Key((float[])values);
+                case 4:
+                    return binding.TryWritePastKeyValues0Value((float[])values);
+                case 5:
+                    return binding.TryWritePastKeyValues1Key((float[])values);
+                case 6:
+                    return binding.TryWritePastKeyValues1Value((float[])values);
+                case 7:
+                    return binding.TryWritePastKeyValues2Key((float[])values);
+                case 8:
+                    return binding.TryWritePastKeyValues2Value((float[])values);
+                case 9:
+                    return binding.TryWritePastKeyValues3Key((float[])values);
+                case 10:
+                    return binding.TryWritePastKeyValues3Value((float[])values);
+                case 11:
+                    return binding.TryWritePastKeyValues4Key((float[])values);
+                case 12:
+                    return binding.TryWritePastKeyValues4Value((float[])values);
+                case 13:
+                    return binding.TryWritePastKeyValues5Key((float[])values);
+                case 14:
+                    return binding.TryWritePastKeyValues5Value((float[])values);
+                case 15:
+                    return binding.TryWritePastKeyValues6Key((float[])values);
+                case 16:
+                    return binding.TryWritePastKeyValues6Value((float[])values);
+                case 17:
+                    return binding.TryWritePastKeyValues7Key((float[])values);
+                case 18:
+                    return binding.TryWritePastKeyValues7Value((float[])values);
+                case 19:
+                    return binding.TryWritePastKeyValues8Key((float[])values);
+                case 20:
+                    return binding.TryWritePastKeyValues8Value((float[])values);
+                case 21:
+                    return binding.TryWritePastKeyValues9Key((float[])values);
+                case 22:
+                    return binding.TryWritePastKeyValues9Value((float[])values);
+                case 23:
+                    return binding.TryWritePastKeyValues10Key((float[])values);
+                case 24:
+                    return binding.TryWritePastKeyValues10Value((float[])values);
+                case 25:
+                    return binding.TryWritePastKeyValues11Key((float[])values);
+                case 26:
+                    return binding.TryWritePastKeyValues11Value((float[])values);
+                case 27:
+                    return binding.TryWritePastKeyValues12Key((float[])values);
+                case 28:
+                    return binding.TryWritePastKeyValues12Value((float[])values);
+                case 29:
+                    return binding.TryWritePastKeyValues13Key((float[])values);
+                case 30:
+                    return binding.TryWritePastKeyValues13Value((float[])values);
+                case 31:
+                    return binding.TryWritePastKeyValues14Key((float[])values);
+                case 32:
+                    return binding.TryWritePastKeyValues14Value((float[])values);
+                case 33:
+                    return binding.TryWritePastKeyValues15Key((float[])values);
+                case 34:
+                    return binding.TryWritePastKeyValues15Value((float[])values);
+                case 35:
+                    return binding.TryWritePastKeyValues16Key((float[])values);
+                case 36:
+                    return binding.TryWritePastKeyValues16Value((float[])values);
+                case 37:
+                    return binding.TryWritePastKeyValues17Key((float[])values);
+                case 38:
+                    return binding.TryWritePastKeyValues17Value((float[])values);
+                case 39:
+                    return binding.TryWritePastKeyValues18Key((float[])values);
+                case 40:
+                    return binding.TryWritePastKeyValues18Value((float[])values);
+                case 41:
+                    return binding.TryWritePastKeyValues19Key((float[])values);
+                case 42:
+                    return binding.TryWritePastKeyValues19Value((float[])values);
+                case 43:
+                    return binding.TryWritePastKeyValues20Key((float[])values);
+                case 44:
+                    return binding.TryWritePastKeyValues20Value((float[])values);
+                case 45:
+                    return binding.TryWritePastKeyValues21Key((float[])values);
+                case 46:
+                    return binding.TryWritePastKeyValues21Value((float[])values);
+            }
+            return UdonclTinyLlamaStepBinding.StatusInvalidArgument;
         }
 
         public void OnRunComplete()
@@ -116,14 +206,108 @@ namespace Lemolatoon.Udoncl.Generated
 
         private void StartNextOutput()
         {
-            status = binding.StartReadFloatBuffer(
-                outputBufferIds[transferIndex],
-                (float[])outputValues[transferIndex],
-                this,
-                nameof(OnOutputComplete)
-            );
+            status = StartReadOutput(transferIndex, (float[])outputValues[transferIndex]);
             if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
                 completed = true;
+        }
+
+        // Starts reading ONNX output index; OnOutputComplete follows.
+        private int StartReadOutput(int index, float[] destination)
+        {
+            switch (index)
+            {
+                case 0:
+                    return binding.StartReadLogits(destination, this, nameof(OnOutputComplete));
+                case 1:
+                    return binding.StartReadPresent0Key(destination, this, nameof(OnOutputComplete));
+                case 2:
+                    return binding.StartReadPresent0Value(destination, this, nameof(OnOutputComplete));
+                case 3:
+                    return binding.StartReadPresent1Key(destination, this, nameof(OnOutputComplete));
+                case 4:
+                    return binding.StartReadPresent1Value(destination, this, nameof(OnOutputComplete));
+                case 5:
+                    return binding.StartReadPresent2Key(destination, this, nameof(OnOutputComplete));
+                case 6:
+                    return binding.StartReadPresent2Value(destination, this, nameof(OnOutputComplete));
+                case 7:
+                    return binding.StartReadPresent3Key(destination, this, nameof(OnOutputComplete));
+                case 8:
+                    return binding.StartReadPresent3Value(destination, this, nameof(OnOutputComplete));
+                case 9:
+                    return binding.StartReadPresent4Key(destination, this, nameof(OnOutputComplete));
+                case 10:
+                    return binding.StartReadPresent4Value(destination, this, nameof(OnOutputComplete));
+                case 11:
+                    return binding.StartReadPresent5Key(destination, this, nameof(OnOutputComplete));
+                case 12:
+                    return binding.StartReadPresent5Value(destination, this, nameof(OnOutputComplete));
+                case 13:
+                    return binding.StartReadPresent6Key(destination, this, nameof(OnOutputComplete));
+                case 14:
+                    return binding.StartReadPresent6Value(destination, this, nameof(OnOutputComplete));
+                case 15:
+                    return binding.StartReadPresent7Key(destination, this, nameof(OnOutputComplete));
+                case 16:
+                    return binding.StartReadPresent7Value(destination, this, nameof(OnOutputComplete));
+                case 17:
+                    return binding.StartReadPresent8Key(destination, this, nameof(OnOutputComplete));
+                case 18:
+                    return binding.StartReadPresent8Value(destination, this, nameof(OnOutputComplete));
+                case 19:
+                    return binding.StartReadPresent9Key(destination, this, nameof(OnOutputComplete));
+                case 20:
+                    return binding.StartReadPresent9Value(destination, this, nameof(OnOutputComplete));
+                case 21:
+                    return binding.StartReadPresent10Key(destination, this, nameof(OnOutputComplete));
+                case 22:
+                    return binding.StartReadPresent10Value(destination, this, nameof(OnOutputComplete));
+                case 23:
+                    return binding.StartReadPresent11Key(destination, this, nameof(OnOutputComplete));
+                case 24:
+                    return binding.StartReadPresent11Value(destination, this, nameof(OnOutputComplete));
+                case 25:
+                    return binding.StartReadPresent12Key(destination, this, nameof(OnOutputComplete));
+                case 26:
+                    return binding.StartReadPresent12Value(destination, this, nameof(OnOutputComplete));
+                case 27:
+                    return binding.StartReadPresent13Key(destination, this, nameof(OnOutputComplete));
+                case 28:
+                    return binding.StartReadPresent13Value(destination, this, nameof(OnOutputComplete));
+                case 29:
+                    return binding.StartReadPresent14Key(destination, this, nameof(OnOutputComplete));
+                case 30:
+                    return binding.StartReadPresent14Value(destination, this, nameof(OnOutputComplete));
+                case 31:
+                    return binding.StartReadPresent15Key(destination, this, nameof(OnOutputComplete));
+                case 32:
+                    return binding.StartReadPresent15Value(destination, this, nameof(OnOutputComplete));
+                case 33:
+                    return binding.StartReadPresent16Key(destination, this, nameof(OnOutputComplete));
+                case 34:
+                    return binding.StartReadPresent16Value(destination, this, nameof(OnOutputComplete));
+                case 35:
+                    return binding.StartReadPresent17Key(destination, this, nameof(OnOutputComplete));
+                case 36:
+                    return binding.StartReadPresent17Value(destination, this, nameof(OnOutputComplete));
+                case 37:
+                    return binding.StartReadPresent18Key(destination, this, nameof(OnOutputComplete));
+                case 38:
+                    return binding.StartReadPresent18Value(destination, this, nameof(OnOutputComplete));
+                case 39:
+                    return binding.StartReadPresent19Key(destination, this, nameof(OnOutputComplete));
+                case 40:
+                    return binding.StartReadPresent19Value(destination, this, nameof(OnOutputComplete));
+                case 41:
+                    return binding.StartReadPresent20Key(destination, this, nameof(OnOutputComplete));
+                case 42:
+                    return binding.StartReadPresent20Value(destination, this, nameof(OnOutputComplete));
+                case 43:
+                    return binding.StartReadPresent21Key(destination, this, nameof(OnOutputComplete));
+                case 44:
+                    return binding.StartReadPresent21Value(destination, this, nameof(OnOutputComplete));
+            }
+            return UdonclTinyLlamaStepBinding.StatusInvalidArgument;
         }
 
         public void OnOutputComplete()
@@ -135,7 +319,7 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
             ++transferIndex;
-            if (transferIndex < outputBufferIds.Length)
+            if (transferIndex < OutputCount)
             {
                 StartNextOutput();
                 return;
