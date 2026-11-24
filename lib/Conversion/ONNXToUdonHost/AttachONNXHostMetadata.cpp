@@ -47,49 +47,37 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
     }
     return builder.getArrayAttr(entries);
   };
-  auto physical = builder.getDictionaryAttr({
-      builder.getNamedAttr(
-          "create_symbol",
-          builder.getStringAttr("__udononnx_transitional_create")),
-      builder.getNamedAttr(
-          "bind_all_symbol",
-          builder.getStringAttr("__udononnx_transitional_bind_all")),
-      builder.getNamedAttr(
-          "resolve_input_symbol",
-          builder.getStringAttr("__udononnx_transitional_resolve_input")),
-      builder.getNamedAttr(
-          "resolve_output_symbol",
-          builder.getStringAttr("__udononnx_transitional_resolve_output")),
-      builder.getNamedAttr(
-          "enqueue_run_symbol",
-          builder.getStringAttr("__udononnx_transitional_enqueue_run")),
-      builder.getNamedAttr(
-          "enqueue_advance_sequence_state_symbol",
-          builder.getStringAttr(
-              graph.sequenceStates.empty()
-                  ? ""
-                  : "__udononnx_transitional_advance_sequence_state")),
-      builder.getNamedAttr(
-          "enqueue_reset_sequence_state_symbol",
-          builder.getStringAttr(
-              graph.sequenceStates.empty()
-                  ? ""
-                  : "__udononnx_transitional_reset_sequence_state")),
-      builder.getNamedAttr(
-          "dispose_symbol",
-          builder.getStringAttr("__udononnx_transitional_dispose")),
-  });
   SmallVector<NamedAttribute> fields{
-      builder.getNamedAttr("abi", builder.getStringAttr("udononnx-runtime-v2")),
+      builder.getNamedAttr("abi", builder.getStringAttr("udononnx-runtime-v3")),
       builder.getNamedAttr("model_index", builder.getI32IntegerAttr(0)),
       builder.getNamedAttr("model_name", builder.getStringAttr("model_0")),
       builder.getNamedAttr("inputs", ioMetadata(graph.inputs)),
       builder.getNamedAttr("outputs", ioMetadata(graph.outputs)),
   };
-  // Only a library built with TRANSITIONAL_SEQUENCE_STATE has the private
-  // binding these symbols name (FinalizeONNXHost).
-  if (module->hasAttr("udoncl.onnx_sequence_states"))
-    fields.push_back(builder.getNamedAttr("physical", physical));
+  // Transitional (removed in stage 3): a library built with
+  // TRANSITIONAL_SEQUENCE_STATE names the symbols of the private binding
+  // FinalizeONNXHost generates for it, the sequence-state ones when the graph
+  // has sequence state.
+  if (module->hasAttr("udoncl.onnx_sequence_states")) {
+    SmallVector<NamedAttribute> symbols;
+    auto symbol = [&](StringRef key, StringRef name) {
+      symbols.push_back(builder.getNamedAttr(key, builder.getStringAttr(name)));
+    };
+    symbol("create_symbol", "__udononnx_transitional_create");
+    symbol("bind_all_symbol", "__udononnx_transitional_bind_all");
+    symbol("resolve_input_symbol", "__udononnx_transitional_resolve_input");
+    symbol("resolve_output_symbol", "__udononnx_transitional_resolve_output");
+    symbol("enqueue_run_symbol", "__udononnx_transitional_enqueue_run");
+    if (!graph.sequenceStates.empty()) {
+      symbol("reset_sequence_state_symbol",
+             "__udononnx_transitional_reset_sequence_state");
+      symbol("advance_sequence_state_symbol",
+             "__udononnx_transitional_advance_sequence_state");
+    }
+    symbol("dispose_symbol", "__udononnx_transitional_dispose");
+    fields.push_back(builder.getNamedAttr("transitional_sequence_state",
+                                          builder.getDictionaryAttr(symbols)));
+  }
   module->setAttr("udoncl.onnx_binding", builder.getDictionaryAttr(fields));
 }
 

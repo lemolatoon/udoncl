@@ -236,7 +236,6 @@ namespace Lemolatoon.Udoncl.Editor
         public string model_name;
         public UdonOnnxBindingTensorInfo[] inputs;
         public UdonOnnxBindingTensorInfo[] outputs;
-        public UdonOnnxPhysicalBindingInfo physical;
     }
 
     [Serializable]
@@ -247,16 +246,5 @@ namespace Lemolatoon.Udoncl.Editor
         public string data_type;
         public int rank;
         public long[] dimensions;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxPhysicalBindingInfo
-    {
-        public string create_symbol;
-        public string bind_tensor_symbol;
-        public string enqueue_initialize_symbol;
-        public string enqueue_run_symbol;
-        public string enqueue_copy_output_to_input_symbol;
-        public string dispose_symbol;
     }
 }

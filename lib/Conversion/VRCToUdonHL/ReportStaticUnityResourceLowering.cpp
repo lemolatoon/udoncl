@@ -163,16 +163,19 @@ struct ReportStaticUnityResourceLoweringPass
   }
 };
 
-/// Whether the module's generated ONNX binding banks sequence state
-/// (__udononnx_transitional_advance_sequence_state): the transitional
-/// exception to the required static Unity resource lowering.
+/// Whether the module's ONNX binding is the transitional sequence-state
+/// binding (udoncl.onnx_binding.transitional_sequence_state names an advance
+/// symbol): the only exception to the required static Unity resource
+/// lowering, kept by the TinyLlama Conversation and Chat programs until
+/// stage 3 binds their KV cache through the public UdonONNX API.
 bool banksOnnxSequenceState(ModuleOp module) {
   auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
-  auto physical =
-      binding ? binding.getAs<DictionaryAttr>("physical") : DictionaryAttr();
+  auto transitional =
+      binding ? binding.getAs<DictionaryAttr>("transitional_sequence_state")
+              : DictionaryAttr();
   auto advance =
-      physical
-          ? physical.getAs<StringAttr>("enqueue_advance_sequence_state_symbol")
+      transitional
+          ? transitional.getAs<StringAttr>("advance_sequence_state_symbol")
           : StringAttr();
   return advance && !advance.getValue().empty();
 }
@@ -218,9 +221,8 @@ struct RequireStaticUnityResourceLoweringPass
         inventory ? inventory.getAs<ArrayAttr>("resources") : ArrayAttr();
     if ((!resources || resources.empty()) && !allocatesDeviceBuffers(module))
       return;
-    // Stage 1 exception (removed with the sequence-state banking in stage
-    // 3): a Host whose generated ONNX binding banks sequence state keeps
-    // the run-time Device buffer pool.
+    // Transitional exception (removed in stage 3): a Host on the private
+    // sequence-state binding keeps the run-time Device buffer pool.
     if (banksOnnxSequenceState(module))
       return;
     InFlightDiagnostic error = module.emitError(
@@ -236,6 +238,10 @@ struct RequireStaticUnityResourceLoweringPass
         separator = "; ";
       });
     }
+    // Only the transitional sequence-state programs are exempt; name the
+    // program that is not.
+    if (auto program = module->getAttrOfType<StringAttr>("udoncl.program"))
+      error << " (program \"" << program.getValue() << "\")";
     signalPassFailure();
   }
 };

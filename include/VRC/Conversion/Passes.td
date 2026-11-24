@@ -466,9 +466,10 @@ def DescribeONNXBindingManifestPass : Pass<"vrc-describe-onnx-binding-manifest",
     the graph `inputs` and `outputs` (each with its `index`, `name`,
     `data_type`, `rank`, `dimensions`, `logical_bytes` and
     `capacity_bytes`), and, for a library built with
-    TRANSITIONAL_SEQUENCE_STATE, the `physical` symbols of its private
-    binding. The sequence-state symbols are recorded only when the graph has
-    sequence state (their metadata is not empty).
+    TRANSITIONAL_SEQUENCE_STATE (removed in stage 3), the
+    `transitional_sequence_state` symbols of its private binding. The
+    sequence-state symbols are recorded only when the graph has sequence
+    state.
 
     A module without ONNX binding metadata gets no description; metadata
     without one of these fields is an error. A description from an earlier
@@ -485,10 +486,13 @@ def RequireStaticUnityResourceLoweringPass : Pass<"vrc-require-static-unity-reso
     would report. A module without Device buffers (no allocation in the IR and
     none in `vrc.static_device_resource_inventory`) passes.
 
-    Transitional exception (stage 1, removed with the ONNX sequence-state
-    banking in stage 3): a module whose generated ONNX binding banks
-    sequence state (`udoncl.onnx_binding` names an
-    `enqueue_advance_sequence_state_symbol`) keeps the run-time buffer pool.
+    Transitional exception (removed in stage 3): a module whose ONNX binding
+    is the private sequence-state binding of a library built with
+    TRANSITIONAL_SEQUENCE_STATE (`udoncl.onnx_binding` has a
+    `transitional_sequence_state` that names an
+    `advance_sequence_state_symbol`; only the TinyLlama Conversation and Chat
+    programs) keeps the run-time buffer pool. The error names the program
+    (`udoncl.program`) when the module has one.
   }];
 }
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {

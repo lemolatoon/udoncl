@@ -160,11 +160,12 @@ def validate_artifact(
                 logical_bytes=4 * 4 * window * 64,
             )
 
-    physical = binding.get("physical", {})
-    require(physical.get("enqueue_advance_sequence_state_symbol") ==
+    # Transitional (removed in stage 3): the private sequence-state binding.
+    transitional = binding.get("transitional_sequence_state", {})
+    require(transitional.get("advance_sequence_state_symbol") ==
             "__udononnx_transitional_advance_sequence_state",
             "artifact has no generated sequence-state advance helper")
-    require(physical.get("enqueue_reset_sequence_state_symbol") ==
+    require(transitional.get("reset_sequence_state_symbol") ==
             "__udononnx_transitional_reset_sequence_state",
             "artifact has no generated sequence-state reset helper")
     buffers = manifest.get("device", {}).get("buffers")

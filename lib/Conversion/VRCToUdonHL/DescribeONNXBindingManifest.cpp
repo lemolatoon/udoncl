@@ -73,7 +73,8 @@ struct DescribeONNXBindingManifestPass
     auto modelName = binding.getAs<StringAttr>("model_name");
     auto inputs = binding.getAs<ArrayAttr>("inputs");
     auto outputs = binding.getAs<ArrayAttr>("outputs");
-    auto physical = binding.getAs<DictionaryAttr>("physical");
+    auto transitional =
+        binding.getAs<DictionaryAttr>("transitional_sequence_state");
     if (!abi || !modelIndex || !modelName || !inputs || !outputs)
       return module.emitError("ONNX binding metadata is incomplete");
     auto describedInputs = describeTensors(module, inputs);
@@ -92,28 +93,27 @@ struct DescribeONNXBindingManifestPass
         builder.getNamedAttr("inputs", *describedInputs),
         builder.getNamedAttr("outputs", *describedOutputs),
     };
-    // Only a library built with TRANSITIONAL_SEQUENCE_STATE has the private
-    // binding the physical symbols name.
-    if (physical) {
+    // Transitional (removed in stage 3): only a library built with
+    // TRANSITIONAL_SEQUENCE_STATE names the symbols of its private binding,
+    // the sequence-state ones when the graph has sequence state.
+    if (transitional) {
       SmallVector<NamedAttribute> symbols;
       for (StringRef name :
            {"create_symbol", "bind_all_symbol", "resolve_input_symbol",
             "resolve_output_symbol", "enqueue_run_symbol", "dispose_symbol"}) {
-        auto value = physical.getAs<StringAttr>(name);
-        if (!value)
+        auto value = transitional.getAs<StringAttr>(name);
+        if (!value || value.getValue().empty())
           return module.emitError()
-                 << "ONNX binding metadata has no physical " << name;
+                 << "ONNX binding metadata has no transitional " << name;
         symbols.push_back(builder.getNamedAttr(name, value));
       }
-      // The sequence-state symbols exist only for a graph with sequence
-      // state.
-      for (StringRef name : {"enqueue_advance_sequence_state_symbol",
-                             "enqueue_reset_sequence_state_symbol"})
-        if (auto value = physical.getAs<StringAttr>(name);
+      for (StringRef name :
+           {"reset_sequence_state_symbol", "advance_sequence_state_symbol"})
+        if (auto value = transitional.getAs<StringAttr>(name);
             value && !value.getValue().empty())
           symbols.push_back(builder.getNamedAttr(name, value));
-      fields.push_back(
-          builder.getNamedAttr("physical", builder.getDictionaryAttr(symbols)));
+      fields.push_back(builder.getNamedAttr(
+          "transitional_sequence_state", builder.getDictionaryAttr(symbols)));
     }
     module->setAttr(descriptionAttribute, builder.getDictionaryAttr(fields));
     return success();

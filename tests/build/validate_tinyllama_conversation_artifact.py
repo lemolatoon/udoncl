@@ -223,10 +223,10 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "onnx_binding": {
                 "inputs": inputs,
                 "outputs": outputs,
-                "physical": {
-                    "enqueue_advance_sequence_state_symbol":
+                "transitional_sequence_state": {
+                    "advance_sequence_state_symbol":
                         "__udononnx_transitional_advance_sequence_state",
-                    "enqueue_reset_sequence_state_symbol":
+                    "reset_sequence_state_symbol":
                         "__udononnx_transitional_reset_sequence_state",
                 },
             },
@@ -291,8 +291,8 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             artifact = self.make_artifact(Path(directory))
             manifest_path = artifact / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            del manifest["onnx_binding"]["physical"][
-                "enqueue_advance_sequence_state_symbol"]
+            del manifest["onnx_binding"]["transitional_sequence_state"][
+                "advance_sequence_state_symbol"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "sequence-state advance helper"):
                 VALIDATOR.validate_artifact(artifact)
@@ -302,8 +302,8 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             artifact = self.make_artifact(Path(directory))
             manifest_path = artifact / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            del manifest["onnx_binding"]["physical"][
-                "enqueue_reset_sequence_state_symbol"]
+            del manifest["onnx_binding"]["transitional_sequence_state"][
+                "reset_sequence_state_symbol"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "sequence-state reset helper"):
                 VALIDATOR.validate_artifact(artifact)

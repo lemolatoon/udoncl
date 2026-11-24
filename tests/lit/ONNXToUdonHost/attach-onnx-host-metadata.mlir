@@ -20,7 +20,7 @@ func.func @main_graph(
 // CHECK: module attributes {
 // CHECK-SAME: udoncl.mutable_buffer_bytes = array<i64: 16, 16, 16>
 // CHECK-SAME: udoncl.mutable_handle_capacity
-// CHECK-SAME: udoncl.onnx_binding = {abi = "udononnx-runtime-v2"
+// CHECK-SAME: udoncl.onnx_binding = {abi = "udononnx-runtime-v3"
 // CHECK-SAME: inputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = array<i64: 1, 4>, index = 0 : i32, logical_bytes = 16 : i64, name = "left", rank = 2 : i32}
 // CHECK-SAME: outputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = array<i64: 1, 4>, index = 0 : i32, logical_bytes = 16 : i64, name = "sum", rank = 2 : i32}]}
 // CHECK-SAME: udoncl.onnx_device_graph = false
@@ -34,4 +34,4 @@ func.func @main_graph(
 // library built without TRANSITIONAL_SEQUENCE_STATE has no private binding,
 // so the entry names no physical symbols.
 
-// MANIFEST: vrc.onnx_binding_manifest = {abi = "udononnx-runtime-v2", inputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 0 : i64, logical_bytes = 16 : i64, name = "left", rank = 2 : i64}, {capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 1 : i64, logical_bytes = 16 : i64, name = "right", rank = 2 : i64}], model_index = 0 : i64, model_name = "model_0", outputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 0 : i64, logical_bytes = 16 : i64, name = "sum", rank = 2 : i64}]}
+// MANIFEST: vrc.onnx_binding_manifest = {abi = "udononnx-runtime-v3", inputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 0 : i64, logical_bytes = 16 : i64, name = "left", rank = 2 : i64}, {capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 1 : i64, logical_bytes = 16 : i64, name = "right", rank = 2 : i64}], model_index = 0 : i64, model_name = "model_0", outputs = [{capacity_bytes = 16 : i64, data_type = "int32", dimensions = [1, 4], index = 0 : i64, logical_bytes = 16 : i64, name = "sum", rank = 2 : i64}]}
