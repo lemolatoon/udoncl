@@ -222,7 +222,7 @@ LogicalResult writeHostBufferPlan(const HostBufferPlan &plan,
   return success();
 }
 
-LogicalResult applyHostBufferPlan(ModuleOp module, StringRef jsonPath) {
+LogicalResult readHostBufferPlan(ModuleOp module, StringRef jsonPath) {
   auto input = MemoryBuffer::getFile(jsonPath);
   if (!input)
     return module.emitError() << "cannot read Host buffer plan " << jsonPath;
@@ -230,33 +230,28 @@ LogicalResult applyHostBufferPlan(ModuleOp module, StringRef jsonPath) {
   if (!parsed)
     return module.emitError()
            << "invalid Host buffer plan: " << toString(parsed.takeError());
-  auto *object = parsed->getAsObject();
-  auto schema = object ? object->getInteger("schema_version") : std::nullopt;
-  auto base = object ? object->getInteger("base_capacity") : std::nullopt;
-  auto total = object ? object->getInteger("total_capacity") : std::nullopt;
-  auto *extra = object ? object->getArray("extra_buffer_bytes") : nullptr;
-  auto capacity =
-      module->getAttrOfType<IntegerAttr>("udoncl.mutable_handle_capacity");
-  auto bytes =
-      module->getAttrOfType<DenseI64ArrayAttr>("udoncl.mutable_buffer_bytes");
-  if (schema != 1 || !base || !total || !extra || !capacity || !bytes ||
-      capacity.getInt() != *base ||
-      static_cast<int64_t>(bytes.size()) != *base ||
-      *total != *base + static_cast<int64_t>(extra->size()))
-    return module.emitError(
-        "Host buffer plan is inconsistent with ONNX capacity");
-  SmallVector<int64_t> combined(bytes.asArrayRef());
-  for (const json::Value &value : *extra) {
-    auto item = value.getAsInteger();
-    if (!item || *item <= 0)
-      return module.emitError("Host buffer plan contains an invalid byte size");
-    combined.push_back(*item);
-  }
+  // The file's fields, as they are: vrc-apply-host-buffer-plan validates
+  // them against the module.
   Builder builder(module.getContext());
-  module->setAttr("udoncl.mutable_buffer_bytes",
-                  builder.getDenseI64ArrayAttr(combined));
-  module->setAttr("udoncl.mutable_handle_capacity",
-                  builder.getI64IntegerAttr(*total));
+  SmallVector<NamedAttribute> fields{
+      builder.getNamedAttr("path", builder.getStringAttr(jsonPath))};
+  if (auto *object = parsed->getAsObject()) {
+    for (StringRef key : {"schema_version", "base_capacity", "total_capacity"})
+      if (auto value = object->getInteger(key))
+        fields.push_back(
+            builder.getNamedAttr(key, builder.getI64IntegerAttr(*value)));
+    if (auto *extra = object->getArray("extra_buffer_bytes")) {
+      SmallVector<mlir::Attribute> items;
+      for (const json::Value &value : *extra) {
+        auto item = value.getAsInteger();
+        items.push_back(item ? mlir::Attribute(builder.getI64IntegerAttr(*item))
+                             : mlir::Attribute(builder.getUnitAttr()));
+      }
+      fields.push_back(builder.getNamedAttr("extra_buffer_bytes",
+                                            builder.getArrayAttr(items)));
+    }
+  }
+  module->setAttr("vrc.host_buffer_plan", builder.getDictionaryAttr(fields));
   return success();
 }
 

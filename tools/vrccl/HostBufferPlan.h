@@ -28,8 +28,10 @@ mlir::LogicalResult writeHostBufferPlan(const HostBufferPlan &plan,
                                         llvm::StringRef headerPath,
                                         llvm::raw_ostream &diagnostics);
 
-mlir::LogicalResult applyHostBufferPlan(mlir::ModuleOp module,
-                                        llvm::StringRef jsonPath);
+/// Reads the plan file into `vrc.host_buffer_plan` on `module`, which
+/// vrc-apply-host-buffer-plan applies.
+mlir::LogicalResult readHostBufferPlan(mlir::ModuleOp module,
+                                       llvm::StringRef jsonPath);
 
 } // namespace udoncl
 

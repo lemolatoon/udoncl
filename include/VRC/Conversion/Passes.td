@@ -307,6 +307,34 @@ def PlanAssignedUnityBufferLayoutPass : Pass<"vrc-plan-assigned-unity-buffer-lay
     and each must have one resource, capacity and format.
   }];
 }
+def ApplyHostBufferPlanPass : Pass<"vrc-apply-host-buffer-plan", "mlir::ModuleOp"> {
+  let summary = "Add the Device buffers of the Host buffer plan to the ONNX mutable handle capacity";
+  let description = [{
+    The Host buffer plan (`udonclc --plan-host-buffer-capacity`) sizes the
+    OpenCL runtime's handle pool of a Unity library: the
+    `base_capacity` handles of its ONNX Host, then one Device buffer of
+    `extra_buffer_bytes` per allocation of its C Host. udonclc reads the plan
+    file into `vrc.host_buffer_plan`:
+
+    ```mlir
+    vrc.host_buffer_plan = {base_capacity = 3 : i64,
+                            extra_buffer_bytes = [3136 : i64, 40 : i64],
+                            path = "host-buffer-plan.json",
+                            schema_version = 1 : i64, total_capacity = 5 : i64}
+    ```
+
+    The pass checks that the plan is consistent with the ONNX capacity of the
+    module (`udoncl.mutable_handle_capacity` equals `base_capacity` and has
+    one entry of `udoncl.mutable_buffer_bytes` per handle, and
+    `total_capacity` is the base plus the extra buffers) and appends the
+    extra buffers: `udoncl.mutable_handle_capacity` becomes
+    `total_capacity` and `udoncl.mutable_buffer_bytes` gets the extra byte
+    sizes. Every extra byte size is positive.
+
+    A module without `vrc.host_buffer_plan` is unchanged. The plan stays on
+    the module.
+  }];
+}
 def DeriveONNXUnityBuffersPass : Pass<"vrc-derive-onnx-unity-buffers", "mlir::ModuleOp"> {
   let summary = "Derive the Unity buffers of an ONNX Host from its execution plan";
   let description = [{
