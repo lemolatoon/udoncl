@@ -47,8 +47,10 @@ struct DescribeCanonicalUnityBuffersPass
                                    builder.getStringAttr("host_variable")),
               builder.getNamedAttr("symbol", name),
           };
-          // The graph tensor a UdonONNX session binds the variable's buffer
-          // to (vrc-verify-onnx-session-bindings).
+          // Every graph tensor a UdonONNX session binds the variable's
+          // buffer to (vrc-verify-onnx-session-bindings): one, or the input
+          // and the result of an in-place Concat.
+          SmallVector<Attribute> tensors;
           if (auto bound =
                   module->getAttrOfType<ArrayAttr>("vrc.onnx_session_bindings"))
             for (Attribute attribute : bound) {
@@ -58,11 +60,12 @@ struct DescribeCanonicalUnityBuffersPass
               auto tensor =
                   record ? record.getAs<StringAttr>("tensor") : nullptr;
               if (resource && tensor &&
-                  resource.getInt() == resourceId.getInt()) {
-                fields.push_back(builder.getNamedAttr("onnx_tensor", tensor));
-                break;
-              }
+                  resource.getInt() == resourceId.getInt())
+                tensors.push_back(tensor);
             }
+          if (!tensors.empty())
+            fields.push_back(builder.getNamedAttr(
+                "onnx_tensors", builder.getArrayAttr(tensors)));
           return builder.getDictionaryAttr(fields);
         }
     return {};

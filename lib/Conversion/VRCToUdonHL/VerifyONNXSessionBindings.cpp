@@ -4,7 +4,10 @@
 // the static Device resource provenance records what each cell may hold.
 // Every tensor of a Host that runs the graph must hold exactly one Device
 // buffer the compiler knows, large enough for the tensor, of the tensor's
-// element type, and bound with the model's rank and dimensions.
+// element type, and bound with the model's rank and dimensions. Two tensors
+// share a buffer only as an in-place Concat pair (the metadata's
+// in_place_concats): the graph input and the Concat result, bound with the
+// same layout, to a CL_MEM_READ_WRITE buffer.
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -100,6 +103,9 @@ struct VerifyONNXSessionBindingsPass
     // The bytes of the largest constant buffer_dims each tensor is bound
     // with; a buffer must hold them as well as the tensor at its bound.
     std::map<std::pair<bool, int64_t>, int64_t> layoutBytes;
+    // The constant buffer_dims of every bind of a tensor.
+    std::map<std::pair<bool, int64_t>, SmallVector<SmallVector<int64_t>>>
+        constantLayouts;
 
     // A constant rank and dimensions are the model's.
     for (func::CallOp call : binds) {
@@ -203,6 +209,7 @@ struct VerifyONNXSessionBindingsPass
           std::max<int64_t>(boundElements, 1);
       int64_t &bytes = layoutBytes[{output, index.getSExtValue()}];
       bytes = std::max(bytes, elements * elementBytes);
+      constantLayouts[{output, index.getSExtValue()}].push_back(*layout);
     }
 
     // What each memory cell may hold, the capacity of each Device buffer
@@ -214,7 +221,7 @@ struct VerifyONNXSessionBindingsPass
           if (auto cell = dyn_cast<DictionaryAttr>(attribute))
             if (auto global = cell.getAs<FlatSymbolRefAttr>("global"))
               cells[global.getValue()] = cell;
-    std::map<int64_t, int64_t> capacities;
+    std::map<int64_t, int64_t> capacities, memoryFlags;
     if (auto requirements =
             module->getAttrOfType<DictionaryAttr>(requirementsAttribute))
       if (auto entries = requirements.getAs<ArrayAttr>("resources"))
@@ -224,6 +231,9 @@ struct VerifyONNXSessionBindingsPass
             auto capacity = entry.getAs<IntegerAttr>("capacity_bytes");
             if (id && capacity)
               capacities[id.getInt()] = capacity.getInt();
+            if (auto flags = entry.getAs<IntegerAttr>("memory_flags");
+                id && flags)
+              memoryFlags[id.getInt()] = flags.getInt();
           }
     std::map<int64_t, host::GlobalOp> variables;
     for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
@@ -237,6 +247,9 @@ struct VerifyONNXSessionBindingsPass
 
     Builder builder(module.getContext());
     SmallVector<Attribute> records;
+    // The tensors bound to each Device buffer: (output, index, name).
+    std::map<int64_t, SmallVector<std::tuple<bool, int64_t, StringAttr>>>
+        sharing;
     auto verifyTensors = [&](ArrayAttr tensors, bool output) {
       StringRef direction = output ? "output" : "input";
       for (Attribute attribute : tensors) {
@@ -333,10 +346,82 @@ struct VerifyONNXSessionBindingsPass
               FlatSymbolRefAttr::get(variable->second.getSymNameAttr())));
         }
         records.push_back(builder.getDictionaryAttr(fields));
+        sharing[resource].push_back({output, index.getInt(), name});
       }
     };
     verifyTensors(inputs, false);
     verifyTensors(outputs, true);
+    // Only an in-place Concat pair shares a buffer: its first operand, a
+    // graph input, is the leading block of the result when both are bound
+    // with the same layout, and the run writes only the rows after it.
+    SmallVector<std::pair<int64_t, int64_t>> pairs;
+    if (auto entries = binding.getAs<ArrayAttr>("in_place_concats"))
+      for (Attribute attribute : entries)
+        if (auto pair = dyn_cast<DictionaryAttr>(attribute))
+          if (auto input = pair.getAs<IntegerAttr>("input"))
+            if (auto output = pair.getAs<IntegerAttr>("output"))
+              pairs.push_back({input.getInt(), output.getInt()});
+    for (const auto &[resource, tensors] : sharing) {
+      if (tensors.size() < 2)
+        continue;
+      auto describe = [](InFlightDiagnostic &diagnostic,
+                         const std::tuple<bool, int64_t, StringAttr> &tensor) {
+        diagnostic << (std::get<0>(tensor) ? "output" : "input") << " \""
+                   << std::get<2>(tensor).getValue() << "\"";
+      };
+      const auto &first = tensors[0], &second = tensors[1];
+      bool pair =
+          tensors.size() == 2 && !std::get<0>(first) && std::get<0>(second) &&
+          llvm::is_contained(
+              pairs, std::make_pair(std::get<1>(first), std::get<1>(second)));
+      if (!pair) {
+        InFlightDiagnostic diagnostic = module.emitError();
+        diagnostic << "ONNX graph ";
+        for (auto [position, tensor] : llvm::enumerate(tensors)) {
+          if (position)
+            diagnostic << (position + 1 == tensors.size() ? " and " : ", ");
+          describe(diagnostic, tensor);
+        }
+        diagnostic << " are bound to one Device buffer; only the first "
+                      "operand of an in-place Concat and its result may "
+                      "share a buffer";
+        invalid = true;
+        continue;
+      }
+      // CL_MEM_WRITE_ONLY (2) or CL_MEM_READ_ONLY (4) forbids one of them.
+      if (auto flags = memoryFlags.find(resource);
+          flags != memoryFlags.end() && (flags->second & 6) != 0) {
+        InFlightDiagnostic diagnostic = module.emitError();
+        diagnostic << "the Device buffer ONNX graph ";
+        describe(diagnostic, first);
+        diagnostic << " and ";
+        describe(diagnostic, second);
+        diagnostic << " share must be CL_MEM_READ_WRITE";
+        invalid = true;
+        continue;
+      }
+      const auto &inputLayouts = constantLayouts[{false, std::get<1>(first)}];
+      const auto &outputLayouts = constantLayouts[{true, std::get<1>(second)}];
+      bool mismatch = false;
+      for (ArrayRef<int64_t> inputLayout : inputLayouts)
+        for (ArrayRef<int64_t> outputLayout : outputLayouts)
+          if (inputLayout != outputLayout && !mismatch) {
+            mismatch = true;
+            InFlightDiagnostic diagnostic = module.emitError();
+            diagnostic << "ONNX graph ";
+            describe(diagnostic, first);
+            diagnostic << " and ";
+            describe(diagnostic, second);
+            diagnostic << " share a Device buffer but are bound with "
+                          "buffer_dims [";
+            llvm::interleaveComma(inputLayout, diagnostic);
+            diagnostic << "] and [";
+            llvm::interleaveComma(outputLayout, diagnostic);
+            diagnostic << "]; the input must be the leading block of the "
+                          "output's layout";
+            invalid = true;
+          }
+    }
     if (invalid)
       return signalPassFailure();
     module->setAttr(outputAttribute, builder.getArrayAttr(records));

@@ -86,7 +86,7 @@ def main():
     for item in public.values():
         assert item['source'] == {
             'kind': 'host_variable', 'symbol': item['name'],
-            'onnx_tensor': item['name']}, item
+            'onnx_tensors': [item['name']]}, item
     # The binding documents the tensor each public buffer method transfers.
     binding = (artifact / manifest['program']['binding_source']).read_text(
         encoding='utf-8')

@@ -341,14 +341,26 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
         const json::Object *source = sourceValue->getAsObject();
         auto kind = source ? source->getString("kind") : std::nullopt;
         auto symbol = source ? source->getString("symbol") : std::nullopt;
-        auto boundTensor =
-            source ? source->getString("onnx_tensor") : std::nullopt;
+        const json::Array *boundTensors =
+            source ? source->getArray("onnx_tensors") : nullptr;
         if (kind && *kind == "host_variable" && symbol) {
           origin = "the Host variable <c>" + xmlDocumentationText(*symbol) +
                    "</c> (UDONCL_PUBLIC)";
-          if (boundTensor)
-            origin += ", bound to the ONNX tensor <c>" +
-                      xmlDocumentationText(*boundTensor) + "</c>";
+          // The ONNX tensors a session binds it to: one, or the input and
+          // the result of an in-place Concat.
+          if (boundTensors && !boundTensors->empty()) {
+            origin += boundTensors->size() == 1
+                          ? ", bound to the ONNX tensor "
+                          : ", bound to the ONNX tensors ";
+            for (auto [position, value] : llvm::enumerate(*boundTensors)) {
+              auto tensor = value.getAsString();
+              if (!tensor)
+                return invalid("Device buffer has an invalid source");
+              if (position)
+                origin += position + 1 == boundTensors->size() ? " and " : ", ";
+              origin += "<c>" + xmlDocumentationText(*tensor) + "</c>";
+            }
+          }
         } else
           return invalid("Device buffer has an invalid source");
       }

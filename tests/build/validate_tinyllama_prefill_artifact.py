@@ -49,7 +49,7 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
             return {"public_access": access, "name": name,
                     "logical_bytes": item["logical_bytes"],
                     "source": {"kind": "host_variable", "symbol": name,
-                               "onnx_tensor": item["name"]}}
+                               "onnx_tensors": [item["name"]]}}
 
         # The empty past K/V inputs share one private buffer.
         buffers = [public(item, "input") for item in inputs[:3]] + [
@@ -103,8 +103,8 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
             artifact = self.make_artifact(Path(directory))
             manifest_path = artifact / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["device"]["buffers"][4]["source"]["onnx_tensor"] = (
-                "present.1.key")
+            manifest["device"]["buffers"][4]["source"]["onnx_tensors"] = [
+                "present.1.key"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not the Host variable"):
                 VALIDATOR.validate_artifact(artifact)

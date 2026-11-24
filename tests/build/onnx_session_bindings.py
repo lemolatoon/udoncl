@@ -75,7 +75,7 @@ def main():
         assert buffer['element_type'] == 'float32', buffer
         assert buffer['logical_bytes'] == 32 * 256 * 4, buffer
         assert buffer['source'] == {
-            'kind': 'host_variable', 'symbol': name, 'onnx_tensor': name,
+            'kind': 'host_variable', 'symbol': name, 'onnx_tensors': [name],
         }, buffer
     binding = (artifact / 'binding.cs').read_text(encoding='utf-8')
     assert ('Device buffer of the Host variable <c>a</c> (UDONCL_PUBLIC), '

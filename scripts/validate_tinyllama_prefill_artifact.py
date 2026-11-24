@@ -107,7 +107,7 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
                 f"{name}: logical size differs from the tensor")
         require(buffer.get("source") == {"kind": "host_variable",
                                          "symbol": name,
-                                         "onnx_tensor": tensor["name"]},
+                                         "onnx_tensors": [tensor["name"]]},
                 f"{name}: buffer is not the Host variable bound to the tensor")
     require(not any(item["name"].startswith("past_key_values")
                     for item in public.values()),
