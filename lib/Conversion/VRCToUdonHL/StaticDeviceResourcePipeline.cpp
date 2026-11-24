@@ -11,6 +11,8 @@ void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
   manager.addPass(createAttachDeviceResourceOperandContractsPass());
   // A constant-trip loop of allocations has one context per iteration.
   manager.addPass(createUnrollStaticResourceLoopsPass());
+  // An unrolled loop over a constant table reads one entry per iteration.
+  manager.addPass(createFoldConstantHostTablesPass());
   manager.addPass(createDiscoverStaticDeviceResourcesPass());
   manager.addPass(createPlanStaticDeviceResourceContextSpecializationPass());
   manager.addPass(createSpecializeStaticAllocationContextsPass());

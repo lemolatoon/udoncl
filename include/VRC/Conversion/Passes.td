@@ -197,6 +197,23 @@ def UnrollStaticResourceLoopsPass : Pass<"vrc-unroll-static-resource-loops", "ml
   ];
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
+def FoldConstantHostTablesPass : Pass<"vrc-fold-constant-host-tables", "mlir::ModuleOp"> {
+  let summary = "Fold pointer loads from constant Host tables";
+  let description = [{
+    A `constant` udonhl.global is never written. A load of a pointer word
+    from it at a constant byte offset (its address, moved by constant
+    `udonhl.ptr_add` offsets) is replaced by the initializer of that word:
+    the `udonhl.address_of` of the global its relocation names (plus the
+    addend), or the integer its bytes hold. A word whose relocation names a
+    Unity buffer token is left alone. Run after constant-trip loops are
+    unrolled, a loop over a constant table of strings or of global addresses
+    thereby names one object per iteration.
+  }];
+  let statistics = [
+    Statistic<"foldedLoads", "folded-loads", "Pointer loads replaced by their initializer">
+  ];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect"];
+}
 def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resources", "mlir::ModuleOp"> {
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect"];
