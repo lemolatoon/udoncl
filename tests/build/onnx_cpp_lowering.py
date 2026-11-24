@@ -1575,9 +1575,9 @@ result = subprocess.run(
 )
 assert result.returncode != 0, result.stdout
 assert "unsupported ONNX operator Log" in result.stderr, result.stderr
-# The bounded decoder fixture compiles through the ONNX passes with a bounded
-# past; the Host graph then names the first operator that does not support
-# a dynamic extent yet.
+# The bounded decoder fixture compiles to a Device graph with a bounded past:
+# its fused kernels take the value of the dimension as a run-time scalar and
+# the gather prover proves every one of them.
 if onnx_frontend is not None:
     output.mkdir(parents=True, exist_ok=True)
     model = output / "bounded_kv.onnx"
@@ -1585,13 +1585,14 @@ if onnx_frontend is not None:
         [sys.executable, root / "tests/boundary/onnx_bounded_kv_fixture.py", "-o", model],
         check=True,
     )
+    bounded_host = output / "bounded_kv_host.mlir"
     bounded = subprocess.run(
         [
             sys.executable,
             root / "scripts/compile_onnx_mlir.py",
             model,
             "-o",
-            output / "bounded_kv_host.mlir",
+            bounded_host,
             "--frontend",
             onnx_frontend,
             "--dimension",
@@ -1605,9 +1606,21 @@ if onnx_frontend is not None:
         text=True,
         capture_output=True,
     )
-    assert bounded.returncode != 0, bounded.stdout
-    assert (
-        "ONNX operator Concat does not support a dynamic extent on axis 2 "
-        "(dimension past)" in bounded.stderr
-    ), bounded.stderr
+    assert bounded.returncode == 0, bounded.stderr
+    proven = subprocess.run(
+        [
+            host_opt,
+            bounded_host,
+            "--vrc-assign-synthesized-kernel-ids=first-id=4096",
+            "--vrc-prove-synthesized-gather-kernels",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert proven.returncode == 0, proven.stderr
+    assert "udoncl.onnx_device_graph = true" in proven.stdout
+    assert "udoncl.dimension_bounds = {past = 8 : i64}" in proven.stdout
+    kernels = proven.stdout.count("vrc.gather_proven")
+    assert kernels == proven.stdout.count("vrc.synthesized_kernel") and kernels >= 4
+    assert proven.stdout.count("vrc.argument_bounds") >= 4
 print("onnx_cpp_lowering=passed")

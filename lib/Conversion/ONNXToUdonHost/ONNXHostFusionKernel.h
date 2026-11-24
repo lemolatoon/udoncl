@@ -10,6 +10,7 @@
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/StringMap.h"
 
+#include <functional>
 #include <string>
 
 namespace vrc {
@@ -26,11 +27,42 @@ struct DeviceRowReduction;
 /// `statisticsCallee` with the leaf tokens and then a scratch buffer of at
 /// least `statisticsWords` words, which it writes; `callee` then takes the
 /// leaf tokens, that scratch buffer and the result.
+/// A run-time i32 a kernel over tensors with an axis of a bounded dimension
+/// takes after its other scalars: the value of bounded dimension `index`
+/// (in GraphRecord::dimensionBounds), or the pitch the binding of graph
+/// input (`output` false) or output `index` gave its dynamic axis.
+struct DeviceFusionScalar {
+  enum Kind { Dimension, BoundPitch };
+  Kind kind;
+  unsigned index;
+  bool output = false;
+  bool operator==(const DeviceFusionScalar &other) const {
+    return kind == other.kind && index == other.index && output == other.output;
+  }
+};
+
+/// How the buffer that holds a tensor with an axis of a bounded dimension
+/// lays out that axis: the pitch of the axis is its run-time extent (a
+/// Device buffer written dense), its largest extent (a constant planned at
+/// the bound), or the pitch a binding gave (a graph input or output).
+struct DeviceFusionLayout {
+  enum Kind { Dense, Bound, Binding };
+  Kind kind = Dense;
+  /// The binding of a Binding layout.
+  bool output = false;
+  unsigned binding = 0;
+  /// The largest pitch: the words of the buffer cover this extent.
+  int64_t capacity = 0;
+};
+using DeviceFusionLayouts = std::function<DeviceFusionLayout(unsigned)>;
+
 struct DeviceFusionDispatch {
   std::string callee;
   llvm::SmallVector<unsigned> leaves;
   std::string statisticsCallee;
   int64_t statisticsWords = 0;
+  /// The run-time scalars both kernels take after the others, in order.
+  llvm::SmallVector<DeviceFusionScalar> scalars;
 };
 
 /// A leaf that the kernel reads in a larger buffer: the element at
@@ -56,8 +88,11 @@ struct DeviceFusionLeafView {
 /// share a kernel.
 class DeviceFusionKernels {
 public:
-  DeviceFusionKernels(mlir::ModuleOp module, const DeviceFusion &fusion)
-      : module(module), fusion(fusion) {}
+  /// `layouts` gives the layout of the buffer of every leaf or root tensor
+  /// with an axis of a bounded dimension.
+  DeviceFusionKernels(mlir::ModuleOp module, const DeviceFusion &fusion,
+                      DeviceFusionLayouts layouts = {})
+      : module(module), fusion(fusion), layouts(std::move(layouts)) {}
 
   /// Returns the dispatch of the group rooted at `rootNode`, synthesizing its
   /// kernel unless an identical one exists. `rootNode` may also be a node
@@ -98,6 +133,7 @@ private:
 
   mlir::ModuleOp module;
   const DeviceFusion &fusion;
+  DeviceFusionLayouts layouts;
   mlir::Operation *carrier = nullptr;
   /// Dispatch declaration of every kernel by its structure key.
   llvm::StringMap<std::string> callees;

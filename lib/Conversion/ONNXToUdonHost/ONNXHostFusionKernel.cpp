@@ -68,9 +68,15 @@ void structureKey(const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
   const GraphRecord &graph = fusion.graph;
   const NodeRecord &node = graph.nodes[nodeIndex];
   DeviceFusionKind kind = *deviceFusionKind(graph, node);
+  // A dynamic axis has its extent and its run-time value: write both.
+  auto dynamic = [&](int64_t tensor) {
+    if (const auto &axis = graph.tensors[tensor].dynamic)
+      os << '~' << axis->axis << ':' << axis->symbol << '+' << axis->offset;
+  };
   os << node.operation << '[';
   llvm::interleave(shapeOf(graph, node.output), os, "x");
   os << ']';
+  dynamic(node.output);
   if (kind == DeviceFusionKind::Slice) {
     DeviceSliceShape slice =
         *deviceSliceShape(graph, node, DeviceKernelLimits::Synthesized);
@@ -107,6 +113,8 @@ void structureKey(const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
        << graph.tensors[operand.tensor].type.getNumElements() << '[';
     llvm::interleave(shapeOf(graph, node.inputs[index]), os, "x");
     os << ']';
+    dynamic(node.inputs[index]);
+    dynamic(operand.tensor);
   }
   os << ')';
 }
@@ -153,6 +161,17 @@ struct DeviceRowStatistics {
   int64_t partials() const { return rows * chunks; }
 };
 
+/// The axis of a bounded dimension of a tensor in a fused kernel: its
+/// run-time extent and, for a leaf or the root, the pitch of the axis in its
+/// buffer (at least 1) and the words that buffer holds.
+struct DynamicTensor {
+  int64_t axis;
+  Bounded extent;
+  Bounded pitch;
+  int64_t capacityWords = 0;
+};
+using DynamicTensors = llvm::DenseMap<unsigned, DynamicTensor>;
+
 /// Emits the expression of one fusion group at the builder's insertion point.
 class ExpressionEmitter {
 public:
@@ -162,16 +181,61 @@ public:
                     const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
                     ArrayRef<BlockArgument> buffers,
                     const DeviceFusionLeafView *view,
-                    std::optional<Bounded> viewOffset = std::nullopt)
+                    std::optional<Bounded> viewOffset = std::nullopt,
+                    const DynamicTensors *dynamic = nullptr)
       : builder(builder), location(location), fusion(fusion),
         graph(fusion.graph), leaves(leaves), buffers(buffers), view(view),
-        viewOffset(viewOffset) {}
+        viewOffset(viewOffset), dynamic(dynamic) {}
+
+  /// The coordinates of the root element fragment `linear` writes when the
+  /// root has an axis of a bounded dimension, laid out with the pitch of its
+  /// buffer, and the condition that the element is inside the tensor at its
+  /// run-time extent. Emitted where the fragment guard is built.
+  std::pair<SmallVector<Bounded>, Value> rootElement(unsigned rootNode,
+                                                     Value linear) {
+    unsigned tensor = graph.nodes[rootNode].output;
+    const DynamicTensor &axisInfo = dynamic->at(tensor);
+    ArrayRef<int64_t> shape = shapeOf(graph, tensor);
+    int64_t axis = axisInfo.axis;
+    int64_t inner = elementCount(shape.drop_front(axis + 1));
+    int64_t outer = elementCount(shape.take_front(axis));
+    Bounded fragment{linear, axisInfo.capacityWords - 1, std::nullopt};
+    Bounded rows = divide(fragment, inner);
+    Bounded innerLinear = remainder(fragment, inner);
+    Bounded coordinate = remainder(rows, axisInfo.pitch);
+    Bounded outerLinear = divide(rows, axisInfo.pitch);
+    SmallVector<Bounded> coordinates;
+    auto decompose = [&](Bounded value, ArrayRef<int64_t> part) {
+      int64_t stride = elementCount(part);
+      for (int64_t extent : part) {
+        stride /= extent;
+        coordinates.push_back(extent == 1
+                                  ? constant(0)
+                                  : remainder(divide(value, stride), extent));
+      }
+    };
+    decompose(outerLinear, shape.take_front(axis));
+    coordinates.push_back(bound(coordinate, shape[axis] - 1));
+    decompose(innerLinear, shape.drop_front(axis + 1));
+    Value inside =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ult,
+                              valueOf(coordinate), valueOf(axisInfo.extent));
+    Value inOuter =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ult,
+                              valueOf(outerLinear), i32Constant(outer));
+    return {coordinates,
+            arith::AndIOp::create(builder, location, inside, inOuter)};
+  }
 
   Emitted emitRoot(unsigned rootNode, Value linear,
-                   const DeviceRowStatistics *statistics) {
+                   const DeviceRowStatistics *statistics,
+                   ArrayRef<Bounded> rootCoordinates = {}) {
     ArrayRef<int64_t> shape = shapeOf(graph, graph.nodes[rootNode].output);
     IndexMap &map = newMap(shape);
-    map.linear = Bounded{linear, elementCount(shape) - 1, std::nullopt};
+    if (!rootCoordinates.empty())
+      map.coordinates = SmallVector<Bounded>(rootCoordinates);
+    else
+      map.linear = Bounded{linear, elementCount(shape) - 1, std::nullopt};
     if (*deviceFusionKind(graph, graph.nodes[rootNode]) ==
         DeviceFusionKind::Softmax)
       return statistics ? emitSoftmaxFromStatistics(rootNode, map, *statistics)
@@ -208,7 +272,7 @@ public:
         builder, location,
         arith::AddIOp::create(builder, location, start,
                               i32Constant(statistics.chunkLength)),
-        i32Constant(extent));
+        axisLimit(graph.nodes[rootNode].output, axis, extent));
     std::pair<Value, unsigned> maximum =
         foldAxis(rootNode, map, axis, f32Constant(-3.402823466e+38f), start,
                  end, [&](Value current, Value sample) -> Value {
@@ -240,8 +304,9 @@ private:
                                       int64_t axis, Value initial,
                                       Combine &&combine) {
     // The limit is defined outside the loop, so the proof recognizes a
-    // counted loop.
-    Value limit = i32Constant(map.shape[axis]);
+    // counted loop. A dynamic axis ends at its run-time extent.
+    Value limit =
+        axisLimit(graph.nodes[rootNode].output, axis, map.shape[axis]);
     return foldAxis(rootNode, map, axis, initial, i32Constant(0), limit,
                     std::forward<Combine>(combine));
   }
@@ -413,6 +478,52 @@ private:
     return {arith::AddIOp::create(builder, location, valueOf(a), valueOf(b)),
             a.max + b.max, std::nullopt};
   }
+  /// The run-time extent of `axis` of `tensor` when it is the axis of a
+  /// bounded dimension, else the constant `extent`.
+  Value axisLimit(unsigned tensor, int64_t axis, int64_t extent) {
+    if (dynamic)
+      if (auto found = dynamic->find(tensor);
+          found != dynamic->end() && found->second.axis == axis)
+        return valueOf(found->second.extent);
+    return i32Constant(extent);
+  }
+  Bounded multiply(const Bounded &a, const Bounded &b) {
+    if (b.constant)
+      return multiply(a, *b.constant);
+    if (a.constant)
+      return multiply(b, *a.constant);
+    return {arith::MulIOp::create(builder, location, a.value, b.value),
+            a.max * b.max, std::nullopt};
+  }
+  /// Division by a run-time value of at least 1.
+  Bounded divide(const Bounded &a, const Bounded &divisor) {
+    if (divisor.constant)
+      return divide(a, *divisor.constant);
+    if (a.constant && *a.constant == 0)
+      return a;
+    return {
+        arith::DivUIOp::create(builder, location, valueOf(a), divisor.value),
+        a.max, std::nullopt};
+  }
+  Bounded remainder(const Bounded &a, const Bounded &divisor) {
+    if (divisor.constant)
+      return remainder(a, *divisor.constant);
+    if (a.constant && *a.constant == 0)
+      return a;
+    return {
+        arith::RemUIOp::create(builder, location, valueOf(a), divisor.value),
+        std::min(a.max, divisor.max - 1), std::nullopt};
+  }
+  Bounded subtract(const Bounded &a, const Bounded &b) {
+    if (a.constant && b.constant)
+      return constant(*a.constant - *b.constant);
+    if (b.constant == 0)
+      return a;
+    // The subtraction may wrap; every caller bounds the result.
+    return {arith::SubIOp::create(builder, location, valueOf(a), valueOf(b)),
+            std::numeric_limits<int32_t>::max(), std::nullopt};
+  }
+
   Bounded divide(const Bounded &a, int64_t divisor) {
     if (a.constant)
       return constant(*a.constant / divisor);
@@ -547,6 +658,23 @@ private:
         linear = add(multiply(linear, extent), coordinate);
       }
       capacity = elementCount(view->shape);
+    } else if (const DynamicTensor *axisInfo = dynamicOf(tensor)) {
+      // The leaf's buffer holds its dynamic axis with a run-time pitch:
+      // ((outer * pitch) + coordinate) * inner + inner offset.
+      ArrayRef<int64_t> shape = shapeOf(graph, tensor);
+      ArrayRef<Bounded> coordinates = coordinatesOf(reshape(map, shape));
+      Bounded outer = constant(0), inner = constant(0);
+      for (int64_t axis = 0; axis < axisInfo->axis; ++axis)
+        outer = add(multiply(outer, shape[axis]), coordinates[axis]);
+      for (int64_t axis = axisInfo->axis + 1;
+           axis < static_cast<int64_t>(shape.size()); ++axis)
+        inner = add(multiply(inner, shape[axis]), coordinates[axis]);
+      Bounded row =
+          add(multiply(outer, axisInfo->pitch), coordinates[axisInfo->axis]);
+      linear =
+          add(multiply(row, elementCount(shape.drop_front(axisInfo->axis + 1))),
+              inner);
+      capacity = axisInfo->capacityWords;
     } else {
       linear = linearOf(map);
     }
@@ -593,6 +721,12 @@ private:
     int64_t right = shapeOf(graph, node.inputs[1])[axis];
     SmallVector<Bounded> coordinates(coordinatesOf(map));
     Bounded coordinate = coordinates[axis];
+    // A left operand with a run-time extent on the axis splits there.
+    if (const DynamicTensor *leftAxis =
+            dynamicOf(static_cast<unsigned>(node.inputs[0]));
+        leftAxis && leftAxis->axis == axis)
+      return emitDynamicConcat(nodeIndex, axis, coordinates, coordinate,
+                               leftAxis->extent, left, right);
     if (coordinate.constant)
       return *coordinate.constant < left
                  ? emitConcatSide(nodeIndex, 0, axis, coordinates, coordinate)
@@ -620,6 +754,36 @@ private:
                                         bound(moved, right - 1));
     scf::YieldOp::create(builder, location, rightValue.value);
     return {branch.getResult(0), std::max(leftValue.loads, rightValue.loads)};
+  }
+
+  Emitted emitDynamicConcat(unsigned nodeIndex, int64_t axis,
+                            ArrayRef<Bounded> coordinates, Bounded coordinate,
+                            Bounded leftExtent, int64_t left, int64_t right) {
+    Value isLeft =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ult,
+                              valueOf(coordinate), valueOf(leftExtent));
+    auto branch = scf::IfOp::create(builder, location,
+                                    TypeRange{builder.getF32Type()}, isLeft,
+                                    /*addThenBlock=*/true,
+                                    /*addElseBlock=*/true);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(branch.thenBlock());
+    Emitted leftValue = emitConcatSide(nodeIndex, 0, axis, coordinates,
+                                       bound(coordinate, left - 1));
+    scf::YieldOp::create(builder, location, leftValue.value);
+    builder.setInsertionPointToStart(branch.elseBlock());
+    Emitted rightValue =
+        emitConcatSide(nodeIndex, 1, axis, coordinates,
+                       bound(subtract(coordinate, leftExtent), right - 1));
+    scf::YieldOp::create(builder, location, rightValue.value);
+    return {branch.getResult(0), std::max(leftValue.loads, rightValue.loads)};
+  }
+
+  const DynamicTensor *dynamicOf(unsigned tensor) const {
+    if (!dynamic)
+      return nullptr;
+    auto found = dynamic->find(tensor);
+    return found == dynamic->end() ? nullptr : &found->second;
   }
 
   /// The value of the UdonDNN large activation kernel for `mode` with alpha
@@ -773,6 +937,7 @@ private:
   ArrayRef<BlockArgument> buffers;
   const DeviceFusionLeafView *view;
   std::optional<Bounded> viewOffset;
+  const DynamicTensors *dynamic;
   std::deque<IndexMap> maps;
   std::map<std::string, IndexMap *> derivedMaps;
   /// Value of a node (key 2 * node) or of a leaf Load (key 2 * tensor + 1)
@@ -871,6 +1036,77 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     if (role == FusedKernelRole::RowStatistics)
       elements = statisticsWords;
   }
+  // The tensors of the group with an axis of a bounded dimension: their
+  // run-time extents, and for the root and the leaves the layout of their
+  // buffers. The kernel takes the value of every dimension they name and the
+  // pitch of every binding among them as i32 scalars after its others.
+  unsigned rootTensor = graph.nodes[rootNode].output;
+  SmallVector<unsigned> dynamicTensors;
+  auto noteDynamic = [&](unsigned tensor) {
+    if (graph.tensors[tensor].dynamic &&
+        !llvm::is_contained(dynamicTensors, tensor))
+      dynamicTensors.push_back(tensor);
+  };
+  noteDynamic(rootTensor);
+  for (unsigned leaf : result.leaves)
+    noteDynamic(leaf);
+  for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes))
+    if (nodeIndex == rootNode || fusion.roots[nodeIndex] == rootNode) {
+      noteDynamic(node.output);
+      for (int64_t input : node.inputs)
+        if (input >= 0)
+          noteDynamic(static_cast<unsigned>(input));
+    }
+  std::map<unsigned, DeviceFusionLayout> layoutOf;
+  auto isStorage = [&](unsigned tensor) {
+    return tensor == rootTensor || llvm::is_contained(result.leaves, tensor);
+  };
+  for (unsigned tensor : dynamicTensors) {
+    if (!isStorage(tensor))
+      continue;
+    if (!layouts || view || prefix)
+      return emitError(location)
+             << "ONNX Device fusion group of node " << rootNode
+             << " has a dynamic extent outside the fused kernel contract";
+    layoutOf[tensor] = layouts(tensor);
+  }
+  for (unsigned tensor : dynamicTensors) {
+    const auto &axis = *graph.tensors[tensor].dynamic;
+    DeviceFusionScalar scalar{
+        DeviceFusionScalar::Dimension,
+        static_cast<unsigned>(dimensionIndex(graph, axis.symbol))};
+    if (!llvm::is_contained(result.scalars, scalar))
+      result.scalars.push_back(scalar);
+  }
+  // The buffers in kernel order: the root, then the leaves. Groups of the
+  // same structure (the layers of a model) share a kernel, so everything a
+  // key records about them is by position, never by tensor or binding.
+  SmallVector<unsigned> storageOrder{rootTensor};
+  llvm::append_range(storageOrder, result.leaves);
+  for (unsigned tensor : storageOrder) {
+    auto found = layoutOf.find(tensor);
+    if (found == layoutOf.end() ||
+        found->second.kind != DeviceFusionLayout::Binding)
+      continue;
+    DeviceFusionScalar scalar{DeviceFusionScalar::BoundPitch,
+                              found->second.binding, found->second.output};
+    if (!llvm::is_contained(result.scalars, scalar))
+      result.scalars.push_back(scalar);
+  }
+  // The words of the buffer of a dynamic leaf or root: a binding may give
+  // its axis a pitch up to the largest extent of its dimension.
+  auto bufferWords = [&](unsigned tensor) -> int64_t {
+    RankedTensorType type = graph.tensors[tensor].type;
+    auto found = layoutOf.find(tensor);
+    if (found == layoutOf.end() ||
+        found->second.kind != DeviceFusionLayout::Binding)
+      return type.getNumElements();
+    int64_t axis = graph.tensors[tensor].dynamic->axis;
+    return type.getNumElements() / type.getDimSize(axis) *
+           found->second.capacity;
+  };
+  if (role != FusedKernelRole::RowStatistics && layoutOf.count(rootTensor))
+    elements = bufferWords(rootTensor);
   if (!cost.withinCaps() || result.leaves.empty() ||
       elements > maximumSurfaceWords ||
       (view && !llvm::is_contained(result.leaves, view->tensor)))
@@ -894,6 +1130,27 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     keyStream << (role == FusedKernelRole::RowStatistics ? "|statistics"
                                                          : "|from-statistics")
               << schedule->chunks << 'x' << schedule->chunkLength;
+  for (auto [position, tensor] : llvm::enumerate(storageOrder))
+    if (auto found = layoutOf.find(tensor); found != layoutOf.end())
+      keyStream << "|layout@" << position << '=' << found->second.kind << ':'
+                << found->second.capacity;
+  keyStream << "|scalars";
+  for (const DeviceFusionScalar &scalar : result.scalars) {
+    if (scalar.kind == DeviceFusionScalar::Dimension) {
+      keyStream << ":d" << scalar.index;
+      continue;
+    }
+    // A pitch is that of the first buffer with its binding.
+    for (auto [position, tensor] : llvm::enumerate(storageOrder))
+      if (auto found = layoutOf.find(tensor);
+          found != layoutOf.end() &&
+          found->second.kind == DeviceFusionLayout::Binding &&
+          found->second.binding == scalar.index &&
+          found->second.output == scalar.output) {
+        keyStream << ":p" << position;
+        break;
+      }
+  }
   ArrayRef<int64_t> rootShape = shapeOf(graph, graph.nodes[rootNode].output);
   if (prefix) {
     if (prefix->prefix.axis < 0 ||
@@ -928,11 +1185,10 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   Type i32 = builder.getI32Type();
   SmallVector<Type> arguments;
   for (unsigned leaf : result.leaves)
-    arguments.push_back(
-        MemRefType::get({view && view->tensor == leaf
-                             ? elementCount(view->shape)
-                             : graph.tensors[leaf].type.getNumElements()},
-                        f32));
+    arguments.push_back(MemRefType::get({view && view->tensor == leaf
+                                             ? elementCount(view->shape)
+                                             : bufferWords(leaf)},
+                                        f32));
   // The statistics buffer is the operator scratch, read as the whole surface
   // the statistics pass writes: a buffer texture is at most surfaceWidth
   // words wide, so this keeps the addressing of the scratch texture.
@@ -950,6 +1206,9 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   bool dynamicView = view && view->dynamicOffset;
   if (dynamicView)
     arguments.push_back(i32);
+  unsigned firstScalar = arguments.size();
+  for (size_t index = 0; index < result.scalars.size(); ++index)
+    arguments.push_back(i32);
   builder.setInsertionPointToEnd(cast<gpu::GPUModuleOp>(carrier).getBody());
   auto kernel = gpu::GPUFuncOp::create(
       builder, location, kernelName,
@@ -964,6 +1223,30 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   kernel->setAttr("vrc.profile", builder.getStringAttr("gather-f32"));
   kernel->setAttr("vrc.synthesized_kernel", builder.getUnitAttr());
   kernel->setAttr("vrc.words", builder.getI32IntegerAttr(surfaceWords));
+  // The run passes a dimension within its bound and a pitch within the
+  // largest extent of its dimension.
+  if (!result.scalars.empty()) {
+    SmallVector<Attribute> bounds;
+    for (auto [index, scalar] : llvm::enumerate(result.scalars)) {
+      int64_t maximum =
+          scalar.kind == DeviceFusionScalar::Dimension
+              ? graph.dimensionBounds[scalar.index].second
+              : [&] {
+                  for (const auto &[tensor, layout] : layoutOf)
+                    if (layout.kind == DeviceFusionLayout::Binding &&
+                        layout.binding == scalar.index &&
+                        layout.output == scalar.output)
+                      return layout.capacity;
+                  return int64_t{0};
+                }();
+      bounds.push_back(builder.getDictionaryAttr(
+          {builder.getNamedAttr("index",
+                                builder.getI64IntegerAttr(firstScalar + index)),
+           builder.getNamedAttr("max", builder.getI64IntegerAttr(maximum)),
+           builder.getNamedAttr("min", builder.getI64IntegerAttr(0))}));
+    }
+    kernel->setAttr("vrc.argument_bounds", builder.getArrayAttr(bounds));
+  }
 
   // Every fragment is defined, also those of a buffer taller than the launch
   // surface: the fragments of the root's elements evaluate the expression,
@@ -991,6 +1274,82 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   Value live = arith::CmpIOp::create(
       builder, location, arith::CmpIPredicate::ult, linear,
       arith::ConstantIntOp::create(builder, location, elements, 32));
+  // The run-time extents and pitches, each bounded once (a minui with a
+  // constant, which the gather prover derives an interval from). A pitch is
+  // at least 1 so that it divides: an empty dynamic axis has no element to
+  // address anyway.
+  DynamicTensors dynamic;
+  SmallVector<Bounded> scalarValues;
+  for (auto [index, scalar] : llvm::enumerate(result.scalars)) {
+    int64_t maximum = 0;
+    if (scalar.kind == DeviceFusionScalar::Dimension)
+      maximum = graph.dimensionBounds[scalar.index].second;
+    else
+      for (const auto &[tensor, layout] : layoutOf)
+        if (layout.kind == DeviceFusionLayout::Binding &&
+            layout.binding == scalar.index && layout.output == scalar.output)
+          maximum = layout.capacity;
+    Value value = arith::MinUIOp::create(
+        builder, location, body.getArgument(firstScalar + index),
+        arith::ConstantIntOp::create(builder, location, maximum, 32));
+    scalarValues.push_back(Bounded{value, maximum, std::nullopt});
+  }
+  auto atLeastOne = [&](const Bounded &value) -> Bounded {
+    if (value.constant)
+      return Bounded{Value(), std::max<int64_t>(*value.constant, 1),
+                     std::max<int64_t>(*value.constant, 1)};
+    Value zero = arith::ConstantIntOp::create(builder, location, 0, 32);
+    Value positive = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::ugt, value.value, zero);
+    Value selected = arith::SelectOp::create(
+        builder, location, positive, value.value,
+        arith::ConstantIntOp::create(builder, location, 1, 32));
+    return Bounded{selected, std::max<int64_t>(value.max, 1), std::nullopt};
+  };
+  for (unsigned tensor : dynamicTensors) {
+    const auto &axis = *graph.tensors[tensor].dynamic;
+    unsigned symbol = dimensionIndex(graph, axis.symbol);
+    unsigned scalar =
+        llvm::find(result.scalars,
+                   DeviceFusionScalar{DeviceFusionScalar::Dimension, symbol}) -
+        result.scalars.begin();
+    const Bounded &value = scalarValues[scalar];
+    Bounded extent = axis.offset
+                         ? Bounded{arith::AddIOp::create(
+                                       builder, location, value.value,
+                                       arith::ConstantIntOp::create(
+                                           builder, location, axis.offset, 32)),
+                                   value.max + axis.offset, std::nullopt}
+                         : value;
+    DynamicTensor entry{axis.axis, extent, atLeastOne(extent),
+                        graph.tensors[tensor].type.getNumElements()};
+    if (auto found = layoutOf.find(tensor); found != layoutOf.end()) {
+      entry.capacityWords = bufferWords(tensor);
+      if (found->second.kind == DeviceFusionLayout::Bound) {
+        int64_t pitch = graph.tensors[tensor].type.getDimSize(axis.axis);
+        entry.pitch = Bounded{Value(), pitch, pitch};
+      } else if (found->second.kind == DeviceFusionLayout::Binding) {
+        unsigned pitch =
+            llvm::find(result.scalars,
+                       DeviceFusionScalar{DeviceFusionScalar::BoundPitch,
+                                          found->second.binding,
+                                          found->second.output}) -
+            result.scalars.begin();
+        entry.pitch = atLeastOne(scalarValues[pitch]);
+      }
+    }
+    dynamic[tensor] = entry;
+  }
+  // A root with a dynamic axis is decoded with the pitch of its buffer, and
+  // only the elements inside its run-time extent are evaluated.
+  SmallVector<Bounded> rootCoordinates;
+  if (role != FusedKernelRole::RowStatistics && dynamic.count(rootTensor)) {
+    ExpressionEmitter decoder(builder, location, fusion, result.leaves, {},
+                              nullptr, std::nullopt, &dynamic);
+    auto [coordinates, inside] = decoder.rootElement(rootNode, linear);
+    rootCoordinates = std::move(coordinates);
+    live = arith::AndIOp::create(builder, location, live, inside);
+  }
   auto guard = scf::IfOp::create(builder, location, TypeRange{f32}, live,
                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
   builder.setInsertionPointToStart(guard.thenBlock());
@@ -1029,17 +1388,18 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   ExpressionEmitter emitter(
       builder, location, fusion, result.leaves,
       ArrayRef<BlockArgument>(buffers).take_front(result.leaves.size()), view,
-      viewOffset);
+      viewOffset, dynamic.empty() ? nullptr : &dynamic);
   Emitted value;
   if (role == FusedKernelRole::Whole) {
-    value = emitter.emitRoot(rootNode, linear, nullptr);
+    value = emitter.emitRoot(rootNode, linear, nullptr, rootCoordinates);
   } else {
     DeviceRowStatistics statistics{rows, schedule->chunks,
                                    schedule->chunkLength,
                                    buffers[result.leaves.size()]};
-    value = role == FusedKernelRole::RowStatistics
-                ? emitter.emitSoftmaxStatistics(rootNode, linear, statistics)
-                : emitter.emitRoot(rootNode, linear, &statistics);
+    value =
+        role == FusedKernelRole::RowStatistics
+            ? emitter.emitSoftmaxStatistics(rootNode, linear, statistics)
+            : emitter.emitRoot(rootNode, linear, &statistics, rootCoordinates);
   }
   if (prefixBranch) {
     scf::YieldOp::create(builder, location, value.value);

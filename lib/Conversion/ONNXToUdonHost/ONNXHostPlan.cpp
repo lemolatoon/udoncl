@@ -158,6 +158,8 @@ unsigned dimensionIndex(const GraphRecord &graph, StringRef symbol) {
   llvm_unreachable("unknown bounded dimension");
 }
 
+static bool runsSynthesizedWhenDynamic(const NodeRecord &node);
+
 /// Whether a MatMul with tensors of a bounded dimension runs on the arena
 /// SGEMM with run-time m, n and k: the batch axes are static, an operand
 /// whose dynamic axis is its inner (column) axis is dense, and the result,
@@ -204,6 +206,26 @@ std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
   // constant at the bound.
   if (node.operation == "MatMul" && supportsDynamicMatMul(graph, node))
     return std::nullopt;
+  // A node a synthesized kernel evaluates indexes at the largest extents
+  // and reads the run-time extents where they matter: the guard of the
+  // result, the split of a Concat on the axis, the loop of a reduction. A
+  // Slice must step 1 along the dynamic axis and an Expand must not
+  // broadcast to it.
+  if (runsSynthesizedWhenDynamic(node) && deviceFusionKind(graph, node)) {
+    const TensorRecord &input = graph.tensors[node.inputs[0]];
+    if (node.operation == "Slice" && input.dynamic) {
+      std::optional<DeviceSliceShape> slice =
+          deviceSliceShape(graph, node, DeviceKernelLimits::Synthesized);
+      if (!slice || slice->steps[input.dynamic->axis] != 1)
+        return diagnostic(input);
+    }
+    if (node.operation == "Expand" && output.dynamic &&
+        (!input.dynamic ||
+         input.dynamic->axis + output.type.getRank() - input.type.getRank() !=
+             output.dynamic->axis))
+      return diagnostic(output);
+    return std::nullopt;
+  }
   // The per-element library kernels take their element count and packed
   // shapes at run time; they address their operands dense.
   if ((isDeviceCastI64F32Node(graph, node) || isDeviceEqualNode(graph, node) ||
@@ -1206,7 +1228,31 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
          isSynthesizedDeviceNode(graph, node);
 }
 
+/// Whether `node` reads or writes a tensor with an axis of a bounded
+/// dimension.
+static bool hasDynamicTensor(const GraphRecord &graph, const NodeRecord &node) {
+  if (graph.tensors[node.output].dynamic)
+    return true;
+  return llvm::any_of(node.inputs, [&](int64_t input) {
+    return input >= 0 && graph.tensors[input].dynamic;
+  });
+}
+
+/// The per-element, re-indexing and Softmax nodes a synthesized kernel
+/// evaluates with run-time extents. With a dynamic extent they always run
+/// that way, so their library kernels keep static contracts.
+static bool runsSynthesizedWhenDynamic(const NodeRecord &node) {
+  return llvm::is_contained(ArrayRef<StringRef>{"Add", "Mul", "Relu", "Sigmoid",
+                                                "Tanh", "Cos", "Sin", "Neg",
+                                                "Slice", "Concat", "Expand",
+                                                "Transpose", "Softmax"},
+                            node.operation);
+}
+
 bool isSynthesizedDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
+  if (runsSynthesizedWhenDynamic(node) && hasDynamicTensor(graph, node))
+    return supportsDeviceNodeWithin(graph, node,
+                                    DeviceKernelLimits::Synthesized);
   return !supportsDeviceNodeWithin(graph, node, DeviceKernelLimits::Library) &&
          supportsDeviceNodeWithin(graph, node, DeviceKernelLimits::Synthesized);
 }

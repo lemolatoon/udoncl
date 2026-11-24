@@ -2932,7 +2932,23 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       operatorScratch = resolvePhysicalBuffer(handle);
     }
     DeviceFusion fusion(graph, plan.deviceFusionRoots);
-    DeviceFusionKernels fusedKernels(module, fusion);
+    // The layout of the buffer of every fused leaf or root with an axis of a
+    // bounded dimension (dynamicLayout).
+    DeviceFusionKernels fusedKernels(module, fusion, [&](unsigned tensorIndex) {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      DynamicLayout layout = *dynamicLayout(graph, tensorIndex);
+      DeviceFusionLayout result;
+      result.kind =
+          layout.kind == DynamicLayout::Dense   ? DeviceFusionLayout::Dense
+          : layout.kind == DynamicLayout::Bound ? DeviceFusionLayout::Bound
+                                                : DeviceFusionLayout::Binding;
+      result.output = layout.output;
+      result.binding = layout.binding;
+      result.capacity = layout.kind == DynamicLayout::Binding
+                            ? dimensionCapacity(graph, tensor.dynamic->symbol)
+                            : tensor.type.getDimSize(tensor.dynamic->axis);
+      return result;
+    });
     // Banked sequence states (sequenceStateBanks in ONNXHostPlan.h). The
     // bank, read once per run, decides where the carried rows are and where
     // the present goes; every dispatch that touches either buffer is
@@ -3167,6 +3183,22 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             return emitError(location)
                    << "Device ONNX fusion operand lacks physical storage";
         }
+        // The run-time scalars of a group over a bounded dimension: the
+        // dimension's value in this run and the pitch of a bound buffer.
+        SmallVector<Value> scalars;
+        for (const DeviceFusionScalar &scalar : fused->scalars)
+          scalars.push_back(
+              scalar.kind == DeviceFusionScalar::Dimension
+                  ? dimensionValues[scalar.index]
+                  : loadI32(builder, location,
+                            addressOf(builder, location,
+                                      onnxHostBoundPitchSymbol(scalar.output,
+                                                               scalar.index))));
+        auto withScalars = [&](ArrayRef<Value> values) {
+          SmallVector<Value> all(values);
+          llvm::append_range(all, scalars);
+          return all;
+        };
         // A two-pass row reduction writes its partial statistics to the
         // operator scratch, and the elementwise pass reads them there.
         if (!fused->statisticsCallee.empty()) {
@@ -3174,12 +3206,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             return emitError(location)
                    << "Device row reduction lacks operator scratch storage";
           arguments.push_back(operatorScratch);
-          dispatch(fused->statisticsCallee, arguments);
+          dispatch(fused->statisticsCallee, withScalars(arguments));
         }
         arguments.push_back(output);
         if (prefix)
           arguments.push_back(zeroRows[prefix->prefix.state]);
-        dispatch(fused->callee, arguments);
+        dispatch(fused->callee, withScalars(arguments));
         return success();
       }
       if (node.operation == "Conv") {
