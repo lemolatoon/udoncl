@@ -26,6 +26,8 @@ void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
   // UDONCL_PUBLIC variables resolve to the allocation their global cell
   // holds.
   manager.addPass(createClassifyAnnotatedPublicDeviceResourcesPass());
+  // Each ONNX graph tensor a UdonONNX session binds holds one known buffer.
+  manager.addPass(createVerifyONNXSessionBindingsPass());
   manager.addPass(createResolveStaticTransferBindingsPass());
   manager.addPass(createClassifyStaticPublicDeviceResourcesPass());
   manager.addPass(createAnalyzeStaticDeviceResourcePersistencePass());

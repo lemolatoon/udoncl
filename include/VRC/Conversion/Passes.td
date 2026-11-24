@@ -314,10 +314,6 @@ def DeriveONNXUnityBuffersPass : Pass<"vrc-derive-onnx-unity-buffers", "mlir::Mo
            "Expose the graph inputs and outputs as public Device buffers">
   ];
 }
-def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-device-resources", "mlir::ModuleOp"> {
-  let summary = "Classify static allocation identities bound to public ONNX inputs and outputs";
-  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
-}
 def ClassifyAnnotatedPublicDeviceResourcesPass : Pass<"vrc-classify-annotated-public-device-resources", "mlir::ModuleOp"> {
   let summary = "Classify the Device buffers of UDONCL_PUBLIC Host variables";
   let description = [{
@@ -335,6 +331,31 @@ def ClassifyAnnotatedPublicDeviceResourcesPass : Pass<"vrc-classify-annotated-pu
     `vrc.static_device_resource_public_bindings`, and their resources listed
     in `vrc.static_declared_public_resources`: they need no configured Unity
     buffer.
+  }];
+}
+def VerifyONNXSessionBindingsPass : Pass<"vrc-verify-onnx-session-bindings", "mlir::ModuleOp"> {
+  let summary = "Verify the Device buffers a UdonONNX session binds";
+  let description = [{
+    In a module with ONNX binding metadata (`udoncl.onnx_binding`) that uses
+    the UdonONNX session API (calls udononnxRun, udononnxBindInputAt or
+    udononnxBindOutputAt), reads what the generated memory cell of each
+    graph input and output (`__udon_onnx_bound_{input,output}_<index>`) may
+    hold from `vrc.static_device_global_cell_provenance` and requires, for
+    each tensor:
+
+    - a bind, when the Host runs the graph (udononnxRun);
+    - exactly one Device buffer, of one known allocation context;
+    - a static capacity (`vrc.static_device_resource_requirements`) of at
+      least the tensor's logical bytes;
+    - the tensor's element type, when a UDONCL_PUBLIC variable holds the
+      buffer.
+
+    A bind call with a constant rank or constant dimensions must also bind
+    the model's. Each violation is an error naming the tensor. On success the
+    pass records `vrc.onnx_session_bindings`: per bound tensor its `access`,
+    `index`, `tensor` name, `resource_id` and, when a UDONCL_PUBLIC variable
+    holds the buffer, `host_variable`. Run after
+    vrc-propagate-device-resource-provenance.
   }];
 }
 def ClassifyStaticPublicDeviceResourcesPass : Pass<"vrc-classify-static-public-device-resources", "mlir::ModuleOp"> {
