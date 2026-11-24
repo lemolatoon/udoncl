@@ -29,6 +29,8 @@ module attributes {udoncl.dimension_bounds = {past = 7 : i64}} {
   }
 }
 
+// The binding metadata lists a dynamic axis as -1 with its largest extent.
+// CHECK: module attributes {{.*}}inputs = [{capacity_bytes = 28 : i64, data_type = "float32", dimension_bounds = array<i64: 0, 7>, dimension_names = ["", "past"], dimensions = array<i64: 1, -1>
 // CHECK-DAG: "udonhl.global"() <{{{.*}}sym_name = "__udon_onnx_dimension_0"
 // CHECK-DAG: "udonhl.global"() <{{{.*}}sym_name = "__udon_onnx_bound_input_extent_0"
 // CHECK-DAG: "udonhl.global"() <{{{.*}}sym_name = "__udon_onnx_bound_input_pitch_1"

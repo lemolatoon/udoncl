@@ -245,6 +245,12 @@ namespace Lemolatoon.Udoncl.Editor
         public string name;
         public string data_type;
         public int rank;
+
+        // -1 on the axis of a bounded dimension, whose largest extent is in
+        // dimension_bounds and whose name is in dimension_names (both absent
+        // for a static tensor).
         public long[] dimensions;
+        public long[] dimension_bounds;
+        public string[] dimension_names;
     }
 }

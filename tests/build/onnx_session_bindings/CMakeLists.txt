@@ -34,3 +34,36 @@ udoncl_add_unity_library(onnx-session-bindings
     session_user_host
     UdonONNXRuntime::UdonONNXRuntime
     UdonCL::OpenCLRuntime)
+
+# A model with a bounded dimension: present = Concat(past, step), bound to
+# the leading blocks of fixed buffers with the run-time extent of each run
+# (bounded_host.c).
+set(bounded_model "${CMAKE_CURRENT_BINARY_DIR}/session-bindings-bounded.onnx")
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/generate_onnx.py" --bounded
+          -o "${bounded_model}"
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE stdout
+  ERROR_VARIABLE stderr)
+if(NOT result EQUAL 0)
+  message(FATAL_ERROR "ONNX generation failed:\n${stdout}${stderr}")
+endif()
+udoncl_add_onnx_host_library(session_bounded_model_host
+  MODEL "${bounded_model}"
+  DIMENSION_BOUNDS past=15)
+target_include_directories(session_bounded_model_host INTERFACE
+  "${UdonONNXOperators_INCLUDE_DIRS}")
+set(UDONCL_SESSION_BINDINGS_BOUNDED_HOST
+  "${CMAKE_CURRENT_SOURCE_DIR}/bounded_host.c"
+  CACHE FILEPATH "Host C source of the bounded library")
+udoncl_add_host_library(session_bounded_user_host
+  "${UDONCL_SESSION_BINDINGS_BOUNDED_HOST}")
+target_include_directories(session_bounded_user_host INTERFACE
+  "${UdonONNXRuntime_INCLUDE_DIRS}")
+udoncl_add_unity_library(onnx-session-bindings-bounded
+  HOST_LIBRARIES
+    session_bounded_model_host
+    session_bounded_user_host
+    UdonONNXRuntime::UdonONNXRuntime
+    UdonCL::OpenCLRuntime)

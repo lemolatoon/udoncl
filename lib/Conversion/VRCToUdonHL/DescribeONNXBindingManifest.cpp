@@ -47,7 +47,17 @@ struct DescribeONNXBindingManifestPass
       SmallVector<Attribute> shape;
       for (int64_t dimension : dimensions.asArrayRef())
         shape.push_back(builder.getI64IntegerAttr(dimension));
-      result.push_back(builder.getDictionaryAttr({
+      // A dynamic axis is -1, with its largest extent and the name of its
+      // bounded dimension.
+      auto bounds = entry.getAs<DenseI64ArrayAttr>("dimension_bounds");
+      auto names = entry.getAs<ArrayAttr>("dimension_names");
+      bool dynamic = llvm::is_contained(dimensions.asArrayRef(), -1);
+      if (dynamic != static_cast<bool>(bounds) || (bounds && !names) ||
+          (bounds && (bounds.size() != dimensions.size() ||
+                      names.size() != dimensions.size())))
+        return module.emitError(
+            "ONNX binding tensor bounded dimensions are malformed");
+      SmallVector<NamedAttribute> fields({
           builder.getNamedAttr("index",
                                builder.getI64IntegerAttr(index.getInt())),
           builder.getNamedAttr("name", name),
@@ -59,7 +69,16 @@ struct DescribeONNXBindingManifestPass
                                                     logicalBytes.getInt())),
           builder.getNamedAttr("capacity_bytes", builder.getI64IntegerAttr(
                                                      capacityBytes.getInt())),
-      }));
+      });
+      if (bounds) {
+        SmallVector<Attribute> extents;
+        for (int64_t bound : bounds.asArrayRef())
+          extents.push_back(builder.getI64IntegerAttr(bound));
+        fields.push_back(builder.getNamedAttr("dimension_bounds",
+                                              builder.getArrayAttr(extents)));
+        fields.push_back(builder.getNamedAttr("dimension_names", names));
+      }
+      result.push_back(builder.getDictionaryAttr(fields));
     }
     return builder.getArrayAttr(result);
   }

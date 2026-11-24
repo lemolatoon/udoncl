@@ -25,7 +25,25 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
     entries.reserve(tensors.size());
     for (auto [index, tensorIndex] : llvm::enumerate(tensors)) {
       const TensorRecord &tensor = graph.tensors[tensorIndex];
-      entries.push_back(builder.getDictionaryAttr({
+      // A dynamic axis (a bounded dimension) is -1, with its largest extent
+      // in `dimension_bounds` and the dimension's name in `dimension_names`
+      // (0 and "" on the static axes). Byte sizes are at the largest extent.
+      SmallVector<int64_t> dimensions(tensor.type.getShape());
+      SmallVector<NamedAttribute> dynamicFields;
+      if (tensor.dynamic) {
+        SmallVector<int64_t> bounds(dimensions.size(), 0);
+        SmallVector<Attribute> names(dimensions.size(),
+                                     builder.getStringAttr(""));
+        bounds[tensor.dynamic->axis] = dimensions[tensor.dynamic->axis];
+        names[tensor.dynamic->axis] =
+            builder.getStringAttr(tensor.dynamic->symbol);
+        dimensions[tensor.dynamic->axis] = -1;
+        dynamicFields.push_back(builder.getNamedAttr(
+            "dimension_bounds", builder.getDenseI64ArrayAttr(bounds)));
+        dynamicFields.push_back(builder.getNamedAttr(
+            "dimension_names", builder.getArrayAttr(names)));
+      }
+      SmallVector<NamedAttribute> fields({
           builder.getNamedAttr("index", builder.getI32IntegerAttr(index)),
           builder.getNamedAttr("name", builder.getStringAttr(tensor.name)),
           builder.getNamedAttr("data_type",
@@ -33,8 +51,8 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
                                    tensor.type.getElementType()))),
           builder.getNamedAttr(
               "rank", builder.getI32IntegerAttr(tensor.type.getRank())),
-          builder.getNamedAttr("dimensions", builder.getDenseI64ArrayAttr(
-                                                 tensor.type.getShape())),
+          builder.getNamedAttr("dimensions",
+                               builder.getDenseI64ArrayAttr(dimensions)),
           builder.getNamedAttr(
               "logical_bytes",
               builder.getI64IntegerAttr(
@@ -43,7 +61,9 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
           builder.getNamedAttr("capacity_bytes",
                                builder.getI64IntegerAttr(
                                    bindingCapacityBytes(graph, tensorIndex))),
-      }));
+      });
+      llvm::append_range(fields, dynamicFields);
+      entries.push_back(builder.getDictionaryAttr(fields));
     }
     return builder.getArrayAttr(entries);
   };

@@ -97,6 +97,9 @@ struct VerifyONNXSessionBindingsPass
       return;
     SymbolTable symbols(module);
     bool invalid = false;
+    // The bytes of the largest constant buffer_dims each tensor is bound
+    // with; a buffer must hold them as well as the tensor at its bound.
+    std::map<std::pair<bool, int64_t>, int64_t> layoutBytes;
 
     // A constant rank and dimensions are the model's.
     for (func::CallOp call : binds) {
@@ -116,6 +119,8 @@ struct VerifyONNXSessionBindingsPass
       auto tensorRank = tensor ? tensor.getAs<IntegerAttr>("rank") : nullptr;
       auto dimensions =
           tensor ? tensor.getAs<DenseI64ArrayAttr>("dimensions") : nullptr;
+      auto bounds = tensor ? tensor.getAs<DenseI64ArrayAttr>("dimension_bounds")
+                           : nullptr;
       if (!name || !tensorRank || !dimensions) {
         call.emitError() << call.getCallee() << " binds graph "
                          << (output ? "output " : "input ")
@@ -135,7 +140,18 @@ struct VerifyONNXSessionBindingsPass
       }
       auto bound =
           constantDimensions(call.getOperand(4), tensorRank.getInt(), symbols);
-      if (bound && ArrayRef<int64_t>(*bound) != dimensions.asArrayRef()) {
+      // A dynamic axis (-1) takes any extent within its bound.
+      auto matches = [&](ArrayRef<int64_t> values) {
+        for (auto [axis, value] : llvm::enumerate(values)) {
+          int64_t model = dimensions.asArrayRef()[axis];
+          if (model < 0
+                  ? value < 0 || !bounds || value > bounds.asArrayRef()[axis]
+                  : value != model)
+            return false;
+        }
+        return true;
+      };
+      if (bound && !matches(*bound)) {
         InFlightDiagnostic diagnostic = call.emitError();
         diagnostic << "ONNX graph " << (output ? "output" : "input") << " \""
                    << name.getValue() << "\" has dimensions [";
@@ -143,8 +159,50 @@ struct VerifyONNXSessionBindingsPass
         diagnostic << "], bound with [";
         llvm::interleaveComma(*bound, diagnostic);
         diagnostic << "]";
+        if (bounds) {
+          diagnostic << "; a -1 dimension takes an extent up to [";
+          llvm::interleaveComma(bounds.asArrayRef(), diagnostic);
+          diagnostic << "]";
+        }
         invalid = true;
+        continue;
       }
+      // A constant buffer_dims is never smaller than the tensor and is
+      // larger only on the dynamic axis; the buffer must hold it.
+      auto layout =
+          constantDimensions(call.getOperand(5), tensorRank.getInt(), symbols);
+      if (!layout)
+        continue;
+      bool consistent = true;
+      for (auto [axis, extent] : llvm::enumerate(*layout)) {
+        int64_t model = dimensions.asArrayRef()[axis];
+        int64_t logical = bound ? (*bound)[axis] : model;
+        if (model >= 0 ? extent != model
+                       : extent < std::max<int64_t>(logical, 0))
+          consistent = false;
+      }
+      if (!consistent) {
+        InFlightDiagnostic diagnostic = call.emitError();
+        diagnostic << "ONNX graph " << (output ? "output" : "input") << " \""
+                   << name.getValue() << "\" is bound with buffer_dims [";
+        llvm::interleaveComma(*layout, diagnostic);
+        diagnostic << "], which must equal its static dimensions and hold "
+                      "its dimensions on the dynamic axis";
+        invalid = true;
+        continue;
+      }
+      int64_t elements = 1;
+      for (int64_t extent : *layout)
+        elements *= extent;
+      int64_t boundElements = 1;
+      for (auto [axis, model] : llvm::enumerate(dimensions.asArrayRef()))
+        boundElements *=
+            model >= 0 ? model : (bounds ? bounds.asArrayRef()[axis] : 0);
+      int64_t elementBytes =
+          tensor.getAs<IntegerAttr>("logical_bytes").getInt() /
+          std::max<int64_t>(boundElements, 1);
+      int64_t &bytes = layoutBytes[{output, index.getSExtValue()}];
+      bytes = std::max(bytes, elements * elementBytes);
     }
 
     // What each memory cell may hold, the capacity of each Device buffer
@@ -238,10 +296,12 @@ struct VerifyONNXSessionBindingsPass
           invalid = true;
           continue;
         }
-        if (capacity->second < logical.getInt()) {
+        int64_t needed =
+            std::max(logical.getInt(), layoutBytes[{output, index.getInt()}]);
+        if (capacity->second < needed) {
           module.emitError()
               << "ONNX graph " << direction << " \"" << name.getValue()
-              << "\" needs " << logical.getInt() << " bytes, but its Device "
+              << "\" needs " << needed << " bytes, but its Device "
               << "buffer has " << capacity->second;
           invalid = true;
           continue;

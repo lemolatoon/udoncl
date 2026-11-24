@@ -39,9 +39,13 @@ def main():
     host_copy = output / 'host.c'
     host = (source / 'host.c').read_text(encoding='utf-8')
     host_copy.write_text(host, encoding='utf-8')
+    bounded_copy = output / 'bounded_host.c'
+    bounded_host = (source / 'bounded_host.c').read_text(encoding='utf-8')
+    bounded_copy.write_text(bounded_host, encoding='utf-8')
     run([
         args.cmake, '-S', source, '-B', consumer, '-G', args.generator,
         f'-DUDONCL_SESSION_BINDINGS_HOST={host_copy}',
+        f'-DUDONCL_SESSION_BINDINGS_BOUNDED_HOST={bounded_copy}',
         f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
         f'-DCMAKE_PREFIX_PATH={install}',
         f'-DUdonCL_DIR={packages / "UdonCL"}',
@@ -175,6 +179,68 @@ UDONCL_EXPORT udononnxStatus_t run(void) {'''),
         '16')
     # The original Host builds again.
     restored = compile_variant(host)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+
+    # A model with a bounded dimension: the run binds the past and the
+    # present with run-time extents in buffers of a fixed pitch. The
+    # manifest lists their dynamic axes as -1 with their largest extents.
+    run([args.cmake, '--build', consumer, '--target',
+         'onnx-session-bindings-bounded'])
+    bounded_manifest = json.loads(
+        (consumer / 'udoncl/onnx-session-bindings-bounded/artifact/'
+         'manifest.json').read_text(encoding='utf-8'))
+    onnx_binding = bounded_manifest['onnx_binding']
+    tensors = {tensor['name']: tensor for tensor in
+               onnx_binding['inputs'] + onnx_binding['outputs']}
+    assert tensors['past']['dimensions'] == [-1, 8], tensors
+    assert tensors['past']['dimension_bounds'] == [15, 0], tensors
+    assert tensors['past']['dimension_names'] == ['past', ''], tensors
+    assert tensors['present']['dimensions'] == [-1, 8], tensors
+    assert tensors['present']['dimension_bounds'] == [16, 0], tensors
+    assert 'dimension_bounds' not in tensors['step'], tensors
+    bounded_buffers = {
+        buffer['name']: buffer
+        for buffer in bounded_manifest['device']['buffers']
+        if 'public_access' in buffer
+    }
+    assert set(bounded_buffers) == {'past', 'step', 'present'}, bounded_buffers
+    # Its synthesized kernel takes the value of `past` and the pitches of
+    # the bound buffers as scalars within their ranges.
+    scalars = [
+        argument for kernel in bounded_manifest['device']['kernels']
+        for argument in kernel['args'] if argument['kind'] == 'i32'
+    ]
+    assert [(argument['minimum'], argument['maximum'])
+            for argument in scalars] == [(0, 15), (0, 16), (0, 16)], scalars
+
+    def compile_bounded(host_source):
+        bounded_copy.write_text(host_source, encoding='utf-8')
+        return subprocess.run(
+            [str(args.cmake), '--build', str(consumer), '--target',
+             'onnx-session-bindings-bounded'], text=True, capture_output=True)
+
+    def rejected_bounded(name, host_source, diagnostic):
+        result = compile_bounded(host_source)
+        log = ' '.join((result.stdout + result.stderr).split())
+        assert result.returncode != 0, (name, log)
+        assert diagnostic in log, (name, diagnostic, log)
+
+    # A constant extent beyond the bound of the dimension.
+    rejected_bounded(
+        'beyond-bound',
+        bounded_host.replace('int64_t past_dims[2] = {length, WIDTH};',
+                             'static const int64_t past_dims[2] = {20, WIDTH};'),
+        'ONNX graph input "past" has dimensions [-1, 8], bound with [20, 8]; '
+        'a -1 dimension takes an extent up to [15, 0]')
+    # A buffer too small for the layout it is bound with.
+    rejected_bounded(
+        'small-bounded-buffer',
+        bounded_host.replace(
+            '  past = clCreateBuffer(context, CL_MEM_READ_ONLY,\n'
+            '                        CAPACITY * WIDTH * sizeof(float), 0, &error);',
+            '  past = clCreateBuffer(context, CL_MEM_READ_ONLY, 64, 0, &error);'),
+        'ONNX graph input "past" needs 512 bytes, but its Device buffer has 64')
+    restored = compile_bounded(bounded_host)
     assert restored.returncode == 0, restored.stdout + restored.stderr
 
     # ONNX_PUBLIC_TENSOR_BUFFERS, which made the planned graph inputs and
