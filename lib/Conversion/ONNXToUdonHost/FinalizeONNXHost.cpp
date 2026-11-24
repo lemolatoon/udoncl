@@ -23,6 +23,7 @@
 #include "llvm/ADT/DenseMap.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -3044,6 +3045,40 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         sharedRows = zeroRows[stateIndex];
       }
     }
+    // The value of every bounded dimension in this run (set by the session
+    // run), and the run-time extent and pitch of a tensor's dynamic axis.
+    SmallVector<Value> dimensionValues;
+    for (unsigned index = 0; index < graph.dimensionBounds.size(); ++index)
+      dimensionValues.push_back(loadI32(
+          builder, location,
+          addressOf(builder, location, onnxHostDimensionSymbol(index))));
+    auto extentOf = [&](unsigned tensorIndex, int64_t axis) -> Value {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      if (!tensor.dynamic || tensor.dynamic->axis != axis)
+        return constant(tensor.type.getDimSize(axis));
+      Value symbol =
+          dimensionValues[dimensionIndex(graph, tensor.dynamic->symbol)];
+      if (!tensor.dynamic->offset)
+        return symbol;
+      return arith::AddIOp::create(builder, location, symbol,
+                                   constant(tensor.dynamic->offset));
+    };
+    auto pitchOf = [&](unsigned tensorIndex) -> Value {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      int64_t axis = tensor.dynamic->axis;
+      DynamicLayout layout = *dynamicLayout(graph, tensorIndex);
+      if (layout.kind == DynamicLayout::Dense)
+        return extentOf(tensorIndex, axis);
+      if (layout.kind == DynamicLayout::Bound)
+        return constant(tensor.type.getDimSize(axis));
+      return loadI32(
+          builder, location,
+          addressOf(builder, location,
+                    onnxHostBoundPitchSymbol(layout.output, layout.binding)));
+    };
+    auto multiplyValues = [&](Value left, Value right) -> Value {
+      return arith::MulIOp::create(builder, location, left, right);
+    };
     auto constantPrefix =
         [&](unsigned nodeIndex) -> const DeviceConstantPrefix * {
       const auto &prefix = extents.constantPrefix[nodeIndex];
@@ -3541,6 +3576,47 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         // The first K terms the product skips (ONNXHostSequenceExtents.h);
         // only the strided-batched kernels take them.
         std::optional<unsigned> skipped = extents.skippedRows[nodeIndex];
+        // With an axis of a bounded dimension, m, n or k is that axis's
+        // run-time extent; the kernel is chosen for the largest extent. An
+        // operand whose dynamic axis is its rows has its buffer's pitch
+        // there, so its batch stride is pitch x columns; the validator has
+        // checked that every other dynamic operand and the result are dense.
+        auto tensorOf = [&](unsigned operand) {
+          return static_cast<unsigned>(operand < 2 ? node.inputs[operand]
+                                                   : node.output);
+        };
+        if (llvm::any_of(std::array<unsigned, 3>{0, 1, 2}, [&](unsigned op) {
+              return graph.tensors[tensorOf(op)].dynamic.has_value();
+            })) {
+          unsigned left = tensorOf(0), right = tensorOf(1);
+          int64_t leftRank = graph.tensors[left].type.getRank();
+          int64_t rightRank = graph.tensors[right].type.getRank();
+          Value m = extentOf(left, leftRank - 2);
+          Value k = extentOf(left, leftRank - 1);
+          Value n = extentOf(right, rightRank - 1);
+          auto batchStride = [&](unsigned tensor, Value rows, Value columns,
+                                 int64_t batches) -> Value {
+            if (batches == 1)
+              return constant(0);
+            const TensorRecord &record = graph.tensors[tensor];
+            if (record.dynamic &&
+                record.dynamic->axis == record.type.getRank() - 2)
+              return multiplyValues(pitchOf(tensor), columns);
+            return multiplyValues(rows, columns);
+          };
+          dispatch(needsLargeBatchedSgemm(*shape)
+                       ? "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                         "batched_large"
+                       : "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                         "batched",
+                   ValueRange{
+                       buffer(node.inputs[0]), buffer(node.inputs[1]), output,
+                       m, n, k, batchStride(left, m, k, shape->leftBatches),
+                       batchStride(right, k, n, shape->rightBatches),
+                       multiplyValues(m, n), constant(shape->outputBatches),
+                       constant(0), constant(0), floating(1.0f), constant(0)});
+          return success();
+        }
         if (shape->outputBatches == 1 && smallOperands && !skipped) {
           dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),

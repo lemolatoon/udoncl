@@ -114,6 +114,74 @@ int64_t dimensionCapacity(const GraphRecord &graph, StringRef symbol) {
   return capacity;
 }
 
+std::optional<DynamicLayout> dynamicLayout(const GraphRecord &graph,
+                                           unsigned tensor) {
+  if (!graph.tensors[tensor].dynamic)
+    return std::nullopt;
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (const NodeRecord &node : graph.nodes)
+      if (node.output == tensor && isMetadataOnlyAlias(node) &&
+          !node.inputs.empty() && node.inputs[0] >= 0) {
+        tensor = static_cast<unsigned>(node.inputs[0]);
+        changed = true;
+        break;
+      }
+  }
+  if (const unsigned *input = llvm::find(graph.inputs, tensor);
+      input != graph.inputs.end())
+    return DynamicLayout{DynamicLayout::Binding, false,
+                         static_cast<unsigned>(input - graph.inputs.begin())};
+  const TensorRecord &owner = graph.tensors[tensor];
+  if (owner.staticResourceId >= 0 || owner.initialValue)
+    return DynamicLayout{DynamicLayout::Bound};
+  if (const unsigned *output = llvm::find(graph.outputs, tensor);
+      output != graph.outputs.end())
+    return DynamicLayout{DynamicLayout::Binding, true,
+                         static_cast<unsigned>(output - graph.outputs.begin())};
+  return DynamicLayout{DynamicLayout::Dense};
+}
+
+bool hasDenseDynamicLayout(const GraphRecord &graph, unsigned tensor) {
+  const TensorRecord &record = graph.tensors[tensor];
+  if (!record.dynamic)
+    return true;
+  if (dynamicLayout(graph, tensor)->kind == DynamicLayout::Dense)
+    return true;
+  return aroundAxis(record.type.getShape(), record.dynamic->axis).first == 1;
+}
+
+unsigned dimensionIndex(const GraphRecord &graph, StringRef symbol) {
+  for (auto [index, dimension] : llvm::enumerate(graph.dimensionBounds))
+    if (dimension.first == symbol)
+      return index;
+  llvm_unreachable("unknown bounded dimension");
+}
+
+/// Whether a MatMul with tensors of a bounded dimension runs on the arena
+/// SGEMM with run-time m, n and k: the batch axes are static, an operand
+/// whose dynamic axis is its inner (column) axis is dense, and the result,
+/// which the kernel writes dense, is dense.
+static bool supportsDynamicMatMul(const GraphRecord &graph,
+                                  const NodeRecord &node) {
+  if (!deviceMatMulShape(graph, node))
+    return false;
+  for (int64_t tensor :
+       {node.inputs[0], node.inputs[1], static_cast<int64_t>(node.output)}) {
+    const TensorRecord &record = graph.tensors[tensor];
+    if (!record.dynamic)
+      continue;
+    int64_t rank = record.type.getRank();
+    if (record.dynamic->axis < rank - 2)
+      return false;
+    bool inner = record.dynamic->axis == rank - 1;
+    if ((inner || tensor == node.output) &&
+        !hasDenseDynamicLayout(graph, static_cast<unsigned>(tensor)))
+      return false;
+  }
+  return true;
+}
+
 std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
                                                     const NodeRecord &node) {
   const TensorRecord &output = graph.tensors[node.output];
@@ -134,6 +202,8 @@ std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
   // and keeps the elements on either side of it: it then reads the same
   // words at every extent. A bounded prefix is the leading block of its
   // constant at the bound.
+  if (node.operation == "MatMul" && supportsDynamicMatMul(graph, node))
+    return std::nullopt;
   if (isMetadataOnlyAlias(node) && !node.inputs.empty() &&
       node.inputs[0] >= 0) {
     const TensorRecord &input = graph.tensors[node.inputs[0]];

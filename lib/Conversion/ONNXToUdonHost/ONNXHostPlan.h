@@ -93,6 +93,30 @@ bool isMetadataOnlyAlias(const NodeRecord &node);
 /// The largest extent of the bounded dimension `symbol` on any graph input
 /// or output: the largest pitch a bound buffer may give its axis.
 int64_t dimensionCapacity(const GraphRecord &graph, llvm::StringRef symbol);
+/// How the buffer that holds a tensor with an axis of a bounded dimension
+/// lays out that axis. A Device buffer a node writes holds the tensor dense
+/// at its run-time extent (pitch = extent), which keeps the library kernels'
+/// contiguous contracts; a constant (a bounded prefix) is planned at the
+/// bound (pitch = largest extent); a graph input or output has the pitch its
+/// binding gave (buffer_dims).
+struct DynamicLayout {
+  enum Kind { Dense, Bound, Binding };
+  Kind kind;
+  /// For a Binding: the graph output (or input) index.
+  bool output = false;
+  unsigned binding = 0;
+};
+/// The layout of the buffer that holds `tensor`, following metadata aliases
+/// to the tensor that owns the buffer. Nothing for a tensor without a
+/// dynamic axis.
+std::optional<DynamicLayout> dynamicLayout(const GraphRecord &graph,
+                                           unsigned tensor);
+/// Whether every element of `tensor` is where a dense layout puts it at any
+/// extent: its layout is dense, or no axis before the dynamic one has more
+/// than one element.
+bool hasDenseDynamicLayout(const GraphRecord &graph, unsigned tensor);
+/// The index of the bounded dimension `symbol` in GraphRecord::dimensionBounds.
+unsigned dimensionIndex(const GraphRecord &graph, llvm::StringRef symbol);
 /// Why `node` cannot run with the dynamic extents of its tensors (axes of a
 /// bounded dimension), or nothing when it has none or supports them.
 std::optional<std::string> unsupportedDynamicExtent(const GraphRecord &graph,
