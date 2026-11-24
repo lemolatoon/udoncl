@@ -17,7 +17,6 @@
 #include "HostBufferPlan.h"
 #include "OpenCLUserKernels.h"
 #include "UnityDeviceKernels.h"
-#include "UnityOnnxBuffers.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -798,6 +797,34 @@ LogicalResult materializeCanonicalUnityBufferConfig(ModuleOp module,
   auto value = mlirAttributeToJson(buffers);
   if (!value) {
     module.emitError("canonical Unity buffers are not serializable");
+    return failure();
+  }
+  config["buffers"] = std::move(*value);
+  return success();
+}
+
+/// The Device buffers of an ONNX Host, as vrc-derive-onnx-unity-buffers
+/// derives them from its execution plan and binding, replace the `buffers`
+/// of `config`. A Host without ONNX binding metadata leaves `config`
+/// unchanged.
+LogicalResult deriveOnnxUnityBufferConfig(ModuleOp module,
+                                          json::Object &config) {
+  PassManager derive(module.getContext());
+  derive.enableVerifier(false);
+  ::vrc::DeriveONNXUnityBuffersPassOptions options;
+  options.publicTensorBuffers =
+      config.getBoolean("generate_onnx_public_buffers").value_or(false);
+  derive.addPass(::vrc::createDeriveONNXUnityBuffersPass(options));
+  if (failed(derive.run(module)))
+    return failure();
+  auto buffers = module->getAttrOfType<ArrayAttr>("vrc.onnx_unity_buffers");
+  if (!buffers)
+    return success();
+  // The description is an input of the artifact, not Host IR.
+  module->removeAttr("vrc.onnx_unity_buffers");
+  auto value = mlirAttributeToJson(buffers);
+  if (!value) {
+    module.emitError("ONNX Unity buffers are not serializable");
     return failure();
   }
   config["buffers"] = std::move(*value);
@@ -2812,13 +2839,13 @@ int main(int argc, char **argv) {
       }
     }
     // The Device buffers of an ONNX Host come from its execution plan and
-    // binding (UnityOnnxBuffers.h). The Device import below takes its texture
-    // shape and row pitch decisions from these buffers.
+    // binding (vrc-derive-onnx-unity-buffers). The Device import below takes
+    // its texture shape and row pitch decisions from these buffers.
     phase("unity-buffers");
     if (!hostBufferPlan.empty() &&
         failed(udoncl::applyHostBufferPlan(*module, hostBufferPlan)))
       return 1;
-    if (failed(udoncl::deriveOnnxUnityBuffers(*module, *unityConfig, errs())))
+    if (failed(deriveOnnxUnityBufferConfig(*module, *unityConfig)))
       return 1;
     auto parsedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(parsedBuffers))

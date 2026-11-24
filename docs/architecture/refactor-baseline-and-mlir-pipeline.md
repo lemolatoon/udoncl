@@ -972,7 +972,8 @@ derives every entry; the entries are an internal record, not user input.
 A Unity library whose Host is an ONNX Host (`udoncl_add_onnx_host_library`,
 a Host module with `udoncl.onnx_binding`) does not list its Device buffers
 either: `udonclc --emit-unity-library-bundle` derives every buffer from the
-ONNX execution plan (`tools/vrccl/UnityOnnxBuffers.cpp`).
+ONNX execution plan (`vrc-derive-onnx-unity-buffers`, which records them in
+`vrc.onnx_unity_buffers` for the artifact).
 
 - **When.** Right after the Device kernel entries and before the Device
   libraries are imported, so the texture shape and row-pitch decisions of
