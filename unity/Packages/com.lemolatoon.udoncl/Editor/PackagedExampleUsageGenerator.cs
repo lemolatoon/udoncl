@@ -46,14 +46,45 @@ namespace Lemolatoon.Udoncl.Generated
     public sealed class UdonclSaxpyDemoExample : UdonSharpBehaviour
     {
         [SerializeField] private UdonclSaxpyDemoBinding binding;
-        [SerializeField] private int count = 16;
-        [SerializeField] private float alpha = 2.0f;
         [SerializeField] private float firstResult;
+        [SerializeField] private float secondResult;
         [SerializeField] private int status;
         [SerializeField] private int openclStatus;
+        [SerializeField] private int disposeStatus = -1;
+        [SerializeField] private int disposeResult;
+        private bool initialized;
+        private bool secondRun;
         private float[] x;
         private float[] y;
         private float[] result;
+
+        private void OnEnable()
+        {
+            // One frame later every behaviour, the binding included, is ready.
+            SendCustomEventDelayedFrames(nameof(InitializeSaxpy), 1);
+        }
+
+        private void OnDisable()
+        {
+            if (!initialized)
+                return;
+            initialized = false;
+            disposeStatus = binding.TryDispose(out disposeResult);
+        }
+
+        public void InitializeSaxpy()
+        {
+            if (initialized)
+                return;
+            if (binding == null)
+            {
+                status = UdonclSaxpyDemoBinding.StatusNotInitialized;
+                return;
+            }
+            // Initialize enqueues no Device work, so it completes at once.
+            status = binding.TryInitialize(out openclStatus);
+            initialized = status == UdonclSaxpyDemoBinding.StatusSuccess && openclStatus == 0;
+        }
 
         public override void Interact()
         {
@@ -62,11 +93,12 @@ namespace Lemolatoon.Udoncl.Generated
 
         public void Run()
         {
-            if (binding == null)
-            {
-                status = UdonclSaxpyDemoBinding.StatusNotInitialized;
+            InitializeSaxpy();
+            if (!initialized)
                 return;
-            }
+            firstResult = 0.0f;
+            secondResult = 0.0f;
+            secondRun = false;
             x = new float[32];
             y = new float[32];
             result = new float[32];
@@ -75,21 +107,26 @@ namespace Lemolatoon.Udoncl.Generated
                 x[index] = index + 1;
                 y[index] = 100 + index;
             }
+            StartSaxpy(16, 2.0f);
+        }
+
+        private void StartSaxpy(int count, float alpha)
+        {
             status = binding.TryWriteX(x);
             if (status != UdonclSaxpyDemoBinding.StatusSuccess)
                 return;
             status = binding.TryWriteY(y);
             if (status != UdonclSaxpyDemoBinding.StatusSuccess)
                 return;
-            status = binding.StartRunSaxpy(count, alpha, this, ""OnSaxpyComplete"");
+            status = binding.StartRun(count, alpha, this, ""OnSaxpyComplete"");
         }
 
         public void OnSaxpyComplete()
         {
-            status = binding.GetRunSaxpyStatus();
+            status = binding.GetRunStatus();
             if (status != UdonclSaxpyDemoBinding.StatusSuccess)
                 return;
-            status = binding.TryGetRunSaxpyResult(out openclStatus);
+            status = binding.TryGetRunResult(out openclStatus);
             if (status != UdonclSaxpyDemoBinding.StatusSuccess || openclStatus != 0)
                 return;
             status = binding.StartReadResult(result, this, ""OnReadbackComplete"");
@@ -98,8 +135,22 @@ namespace Lemolatoon.Udoncl.Generated
         public void OnReadbackComplete()
         {
             status = binding.GetLastReadbackStatus();
-            if (status == UdonclSaxpyDemoBinding.StatusSuccess)
-                firstResult = result[0];
+            if (status != UdonclSaxpyDemoBinding.StatusSuccess)
+                return;
+            if (secondRun)
+            {
+                secondResult = result[31];
+                return;
+            }
+            firstResult = result[0];
+            // The same kernel again, with new inputs over all 32 words.
+            secondRun = true;
+            for (int index = 0; index < 32; ++index)
+            {
+                x[index] = 10 * (index + 1);
+                y[index] = -index;
+            }
+            StartSaxpy(32, 0.5f);
         }
     }
 }

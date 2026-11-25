@@ -95,30 +95,50 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(saxpyController);
             AssertRuntimeBinding(saxpy, saxpyController, "UdonclSaxpyDemoBinding");
 
-            // RunSaxpy is an asynchronous export of a Host that includes the
+            // Run is an asynchronous export of a Host that includes the
             // OpenCL runtime, so it spans frames like the UdonBLAS example.
+            // The controller initializes the library, runs SAXPY over the
+            // first 16 words, then again with new inputs over all 32 words,
+            // reading the result after each run.
             const int timeoutFrames = 900;
             UdonclArtifactImporter.SendUdonCustomEvent(saxpyController, "Run");
             int saxpyFrame = 0;
-            float saxpyResult = 0.0f;
-            while (saxpyFrame < timeoutFrames && Math.Abs(saxpyResult - 102.0f) > 0.0001f)
+            float firstResult = 0.0f;
+            float secondResult = 0.0f;
+            while (saxpyFrame < timeoutFrames && Math.Abs(secondResult - 129.0f) > 0.0001f)
             {
                 ++saxpyFrame;
                 yield return null;
-                saxpyResult = (float)
+                firstResult = (float)
                     UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "firstResult");
+                secondResult = (float)
+                    UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "secondResult");
             }
             int saxpyStatus = (int)
                 UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "status");
+            // Disabling the controller disposes the library.
+            saxpy.SetActive(false);
+            yield return null;
+            int disposeStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "disposeStatus");
             yield return new ExitPlayMode();
 
             Assert.Less(
                 saxpyFrame,
                 timeoutFrames,
-                "SAXPY readback timed out; status=" + saxpyStatus + "; result=" + saxpyResult
+                "SAXPY readback timed out; status="
+                    + saxpyStatus
+                    + "; first="
+                    + firstResult
+                    + "; second="
+                    + secondResult
             );
             Assert.AreEqual(0, saxpyStatus);
-            Assert.AreEqual(102.0f, saxpyResult, 0.0001f);
+            // 2 * x[0] + y[0] = 2 * 1 + 100.
+            Assert.AreEqual(102.0f, firstResult, 0.0001f);
+            // 0.5 * x[31] + y[31] = 0.5 * 320 - 31.
+            Assert.AreEqual(129.0f, secondResult, 0.0001f);
+            Assert.AreEqual(0, disposeStatus);
         }
 
         [UnityTest]

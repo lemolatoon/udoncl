@@ -2531,9 +2531,14 @@ def main():
         (export['public_name'], export['async'], export['result']['kind'],
          [parameter['name'] for parameter in export['parameters']])
         for export in saxpy_manifest['exports']
-    ] == [('RunSaxpy', True, 'i32', ['n', 'alpha'])]
-    # RunSaxpy is the PascalCase of run_saxpy, and its parameters keep their
-    # C names. No binding is named: udonclc generates the U# binding under the
+    ] == [
+        ('Dispose', False, 'i32', []),
+        ('Initialize', False, 'i32', []),
+        ('Run', True, 'i32', ['n', 'alpha']),
+    ]
+    # Each export is the PascalCase of its C name, and the parameters of run
+    # keep their C names. Initialize and Dispose launch no Device work and
+    # are synchronous. No binding is named: udonclc generates the U# binding under the
     # default name the Unity importer documents, Udoncl + the PascalCase
     # program name + Binding.
     assert saxpy_manifest['program']['binding_source'] == 'binding.cs'
@@ -2567,10 +2572,12 @@ def main():
         'public sealed class UdonclSaxpyDemoBinding : UdonSharpBehaviour',
         'public int TryWriteX(float[] source)',
         'public int TryWriteY(float[] source)',
-        'public int StartRunSaxpy(int n, float alpha, '
+        'public int TryInitialize(out int result)',
+        'public int StartRun(int n, float alpha, '
         'UdonSharpBehaviour receiver, string completionEvent)',
-        'public int GetRunSaxpyStatus()',
-        'public int TryGetRunSaxpyResult(out int result)',
+        'public int GetRunStatus()',
+        'public int TryGetRunResult(out int result)',
+        'public int TryDispose(out int result)',
         'public int StartReadResult(float[] destination, '
         'UdonSharpBehaviour receiver, string completionEvent)',
         'public int GetLastReadbackStatus()',
@@ -2609,7 +2616,7 @@ def main():
     saxpy_assembly = (saxpy_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
-    assert '.export __0_RunSaxpy' in saxpy_assembly
+    assert '.export __0_Run' in saxpy_assembly
     # The run-time i32 n is bound by the first dispatch through the site's
     # material and afterwards only when it differs from the value the
     # material remembers; the run-time f32 alpha on every dispatch.
