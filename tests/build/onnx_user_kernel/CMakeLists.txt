@@ -4,7 +4,10 @@ project(udoncl_onnx_user_kernel_test LANGUAGES NONE)
 # An ONNX Host plus an OpenCL C kernel of its own in one Unity library: the
 # Host C (host.c) runs the MNIST model through the UdonONNX session API and
 # launches the ArgMax of argmax.cl over the logits, with its tensors in
-# cl_mem arrays created, bound and released in loops.
+# cl_mem arrays created, bound and released in loops. The library also links
+# the UdonONNXOperators Host, as the TinyLlama chat example does: its own
+# launches of library kernels, whose objects it clears with 0, are not
+# launches of the one user kernel.
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 find_package(UdonCL 0.1 CONFIG REQUIRED)
 find_package(UdonBLAS 0.1 CONFIG REQUIRED)
@@ -46,4 +49,6 @@ udoncl_add_unity_library(onnx-user-kernel
   DEVICE_LIBRARIES
     UdonATen::Device
     UdonBLAS::Device
-    user_kernel_argmax)
+    user_kernel_argmax
+  LIBRARIES
+    UdonONNXOperators::UdonONNXOperators)

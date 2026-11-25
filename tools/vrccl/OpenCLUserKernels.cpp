@@ -761,6 +761,14 @@ describeOpenCLUserDispatches(ModuleOp host, llvm::StringRef hostLLVMPath,
           llvm::SmallPtrSet<const llvm::Value *, 16> visited;
           bool unknown = false;
           kernelNames(call->getArgOperand(1), kernels, visited, unknown);
+          // As in bindOpenCLUserKernelLaunches: a launch of named library
+          // kernels only is no user launch, even when its kernel slot may
+          // also hold an unknown value (a library that clears it with 0).
+          if (!kernels.empty() &&
+              llvm::none_of(kernels, [&](const std::string &name) {
+                return userNames.count(name);
+              }))
+            continue;
           for (auto it = kernels.begin(); it != kernels.end();)
             it = userNames.count(*it) ? std::next(it) : kernels.erase(it);
           if (kernels.empty() && unknown && userNames.size() == 1)
