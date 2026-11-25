@@ -5,9 +5,37 @@ Python ONNX execution-plan path (its planner, examples, Unity runtime,
 `UdonOnnxRuntimeBehaviour` and the Arena Add / Tiny Llama samples) was removed
 in 343bd31a, ce4c1ad7, edb10b4e, 450e4305 and 43eabad6, and the legacy OpenCL
 recovery of Hosts without a linked runtime, with the Hello Dispatch libraries
-and `<udoncl/unity_buffer.h>`, in 2f8e2bc1, 80d3bd30 and 38d03881. Current
-Unity validation runs through the commit validation service described in
-[validation/unity-ci.md](validation/unity-ci.md).
+and `<udoncl/unity_buffer.h>`, in 2f8e2bc1, 80d3bd30 and 38d03881. The
+example Hosts later moved to the `initialize`/`run`/`dispose` lifecycle: the
+SAXPY entry below calls the former `run_saxpy` export (`RunSaxpy`), which
+`examples/saxpy` replaced with `initialize`, `run(n, alpha)` and `dispose`.
+Current Unity validation runs through the commit validation service described
+in [validation/unity-ci.md](validation/unity-ci.md); the real-TinyLlama gates
+run through `scripts/tinyllama_gates.py` (see the 2026-11-25 entry).
+
+## TinyLlama chat example gate (2026-11-25)
+
+`scripts/tinyllama_gates.py` builds an exact commit's compiler, SDK and real
+TinyLlama artifacts in an isolated tree, generates their ONNX Runtime oracles,
+and runs the focused Unity fixtures (`run --gates ...`) in a copy of the Unity
+template. The gates are `prefill`, `step`, `conv`, `chat`, `multiturn`,
+`conv-4k`, `chat-4k`, `multiturn-4k` (the advanced `examples/onnx-transformer-tiny`
+artifacts) and `tinychat` (build target `tinyllama-chat`, the
+`examples/tinyllama-chat` artifact at 2048 tokens, checked by
+`scripts/validate_tinyllama_chat_artifact.py`). The `tinychat` oracle
+(`chat-2k`) is `tests/boundary/tinyllama_chat_oracle.py --capacity 2048` with
+the user messages "What is your name?" and "Repeat your name.".
+
+The `tinychat` fixture runs both turns through `UdonclTinyllamaChatBinding`
+(`BeginMessage`, `ContinueMessage` per frame, `Generate` while
+`ReadStreamedText` polls every frame), compares each reply's tokens
+(`ReadGeneratedTokens`) and text with the oracle, then disposes, initializes
+again and disposes once more. On 4f33feb0 it passed in Unity 2022.3 with the
+Worlds SDK (D3D11): both replies matched the oracle token for token
+(`[3421, 1024, 338, 19235, 29889, 2]` "My name is Sarah." and
+`[29903, 279, 801, 29889, 2]` "Sarah."), the streamed text only grew and
+never changed, no poll was refused as busy, and the second Initialize started
+an empty conversation. The advanced `chat` gate passed in the same run.
 
 ## Public ONNX Package Sample lifecycle (2026-11-03)
 

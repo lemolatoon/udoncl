@@ -34,6 +34,9 @@ All notable changes to this package are recorded here.
   starts `Initialize`, `Interact` sends a message (`BeginMessage`,
   `ContinueMessage` once per frame, `StartGenerate`) and streams the reply
   with `ReadStreamedText`, and `OnDisable` calls `TryDispose`.
+- Every example Host releases its objects in a `dispose` export
+  (`TryDispose`), which replaces `shutdown` (`TryShutdown`), the advanced
+  TinyLlama Conversation and Chat artifacts included.
 - The packaged ONNX MNIST example binds its `image` and `logits` buffers
   through the UdonONNX session API (`udononnxCreateSession`,
   `udononnxBindInput`, `udononnxBindOutput`, `udononnxRun`,

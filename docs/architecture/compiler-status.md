@@ -29,10 +29,27 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   global work size must be one constant (a run-time NDRange is a build
   error).
   The standalone `examples/saxpy` consumer launches a three-buffer kernel with
-  mixed i32/f32 scalars. A Host without the runtime may not call the OpenCL
-  API: the build names the calls and asks for `UdonCL::OpenCLRuntime`.
+  mixed i32/f32 scalars, and `examples/tinyllama-chat` launches its own ArgMax
+  kernel next to an ONNX Host and the UdonONNXOperators Host. A kernel object
+  may live in a Host global from `initialize` to `dispose`, as long as no code
+  stores 0 into it; a launch whose kernel object holds only named library
+  kernels is not a user launch. A Host without the runtime may not call the
+  OpenCL API: the build names the calls and asks for `UdonCL::OpenCLRuntime`.
   Generated U# bindings separately expose byte-exact whole-buffer upload and
   asynchronous readback.
+- The OpenCL runtime of every Unity library with a C Host has exactly one
+  buffer handle per static allocation context. udonclc plans them before the
+  runtime is compiled: `--plan-host-buffer-capacity` recovers the C Host as
+  the main compile does and runs `vrc-plan-host-device-handle-pipeline` (the
+  static resource discovery, then `vrc-plan-host-device-handles`), after the
+  handles of an ONNX Host. The main compile checks the compiled-in capacity
+  against the allocation contexts (`vrc-verify-host-device-handle-capacity`).
+- Natural Host C over `cl_mem` arrays: `static cl_mem keys[22]` is tracked
+  element by element once the loops that index it are unrolled. Constant-trip
+  loops that create, bind or release Device resources are unrolled, also when
+  an iteration returns early (`if (status) return status;`); a dynamic index
+  into such an array is a compile error. A file-scope `udon_string_t` (or
+  `udon_int32_array_t`) keeps a U# reference from one export to the next.
 - `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
   packages the ShaderLab/HLSL of every kernel the Host launches, with its
   manifest metadata, in the Unity artifact. Nothing declares those kernels:
@@ -65,8 +82,9 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   a compile error. The TinyLlama Conversation and Chat Hosts run one position
   per run this way, with 44 shared key/value buffers
   ([operator-ownership.md](operator-ownership.md#bounded-dimensions)).
-  `examples/onnx-mnist` and `examples/onnx-transformer-tiny`, up to the real
-  TinyLlama-1.1B with 512- and 4096-token contexts, use this path. The Python
+  `examples/onnx-mnist`, `examples/tinyllama-chat` (2048 tokens) and
+  `examples/onnx-transformer-tiny`, up to the real TinyLlama-1.1B with 512-
+  and 4096-token contexts, use this path. The Python
   execution-plan planner and its Unity runtime were removed (43eabad6,
   450e4305); no execution-plan JSON is generated or interpreted.
 - The typed Unity backend lowers each fixed AOT `vrc.dispatch` with ordered
@@ -82,6 +100,26 @@ Gates and evidence are recorded in [validation.md](../validation.md).
 - `vrc-lower-udonhl-to-udonasm` and `udoncl-translate --emit-udon-assembly`:
   an incremental scalar/CFG backend for real Udon opcodes and textual `.uasm`.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
+
+Known limits of the Host C the static lowering accepts (each is a compile
+error, not a silent fallback):
+
+- A Device buffer created and released within one export (a per-run scratch
+  buffer); create it in `initialize`.
+- One graph tensor bound from two exports: bind each tensor from one export,
+  as the TinyLlama Hosts bind the token, position and logits in `initialize`
+  and the mask and the key/value cache in `generate`.
+- A user kernel object that some code clears with `kernel = 0`.
+- An array index whose bound is not proven: a loop over a global count needs
+  a dominating `count > N` check (or an unsigned minimum) and a plain
+  `index < bound` loop condition.
+- The address of an allocation loop's index (`&layer`), a loop that only
+  checks array elements (it is not unrolled, so its index stays dynamic), a
+  `size_t` constant table indexed by the loop variable, and a helper's return
+  value as a `clCreateBuffer` size (use a macro or a select).
+
+The general Concat kernels of an ONNX Host remain in the artifact after the
+in-place Concat folds their dispatch away; they cost size, not behaviour.
 
 The other 32 operations, complete verifiers/lowerings, the full executable Udon
 host ABI, complete OpenCL runtime coverage and production Unity integration

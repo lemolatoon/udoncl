@@ -65,9 +65,10 @@ other examples.
   library that your own Host C drives through the `UdonONNXRuntime` session
   API (`udononnxCreateSession`, `udononnxBindInput`/`udononnxBindOutput`,
   `udononnxRun`, `udononnxReleaseSession`, after ONNX Runtime's C API), from
-  the MNIST CNN up to the real TinyLlama-1.1B model with 512- and 4096-token
-  chat artifacts. The model runs as compiled Udon Assembly and fragment shaders,
-  not through an execution-plan interpreter.
+  the MNIST CNN up to the real TinyLlama-1.1B model: a 2048-token chat in one
+  Host C file, and 512- and 4096-token advanced chat artifacts. The model
+  runs as compiled Udon Assembly and fragment shaders, not through an
+  execution-plan interpreter.
 - **Libraries:** CUDA-compatible subsets of UdonBLAS (cuBLAS) and UdonDNN
   (cuDNN), plus UdonTokenizers for Hugging Face tokenizers.
 - **Validation:** artifacts are validated in the Unity Editor (D3D11 on

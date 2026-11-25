@@ -1010,7 +1010,7 @@ ONNX execution plan (`vrc-derive-onnx-unity-buffers`, which records them in
   the capacity `udoncl-plan-onnx-host-graph` planned for it
   (`udoncl.mutable_handle_capacity`, `udoncl.mutable_buffer_bytes`); the
   Host buffer plan of the user C Host (`--host-buffer-plan`) appends the
-  buffers that C allocates itself.
+  buffers that C allocates itself (see Host handle plan).
 - **Public buffers.** Every planned ONNX buffer is private and named
   `private_<id>`. A Host exposes a graph input or output by declaring a
   `UDONCL_PUBLIC(type) cl_mem` variable, creating it with `clCreateBuffer`
@@ -1023,6 +1023,28 @@ ONNX execution plan (`vrc-derive-onnx-unity-buffers`, which records them in
   lowering applies, the canonical layout it plans keeps these ids.
 - **No hand-written buffers.** The Unity library config file that could
   list buffers is removed; nothing restates the derived ones.
+
+#### Host handle plan
+
+The OpenCL runtime keeps its buffer handles in fixed C arrays, so every Unity
+library with a C Host plans their number before the runtime is compiled:
+
+- **Plan.** `udonclc --plan-host-buffer-capacity host.bc` recovers the
+  runtime-free C Host as the main compile does (user kernel launches bound
+  with `--device-llvm`), configures its exports and runs
+  `vrc-plan-host-device-handle-pipeline`: the static resource discovery
+  prefix through InferStaticDeviceResourceRequirements, then
+  `vrc-plan-host-device-handles`, which records one handle per allocation
+  context with its capacity (`vrc.host_device_handle_plan`). Constant-trip
+  allocation loops are unrolled first, so a helper called in a 22-trip loop
+  gets 22 contexts. udonclc writes `host-buffer-plan.json` and the
+  `-include`d capacity header after the base of an ONNX Host (0 without
+  one).
+- **Apply.** The main compile reads the plan into `vrc.host_buffer_plan`, and
+  `vrc-apply-host-buffer-plan` merges it into `udoncl.mutable_*`.
+- **Verify.** `vrc-verify-host-device-handle-capacity` fails the build when
+  the compiled-in capacity is below the allocation contexts of the linked
+  module, naming both numbers.
 
 #### Canonical Unity buffers
 
@@ -1076,7 +1098,11 @@ standard `clCreateKernel`, `clSetKernelArg` and `clEnqueueNDRangeKernel`:
   reads a buffer (otherwise one invocation) and no further access contract.
   A run-time or disagreeing global work size fails the build ("cannot derive
   the NDRange of OpenCL kernel ...; launch it with a constant work dimension
-  and global work size").
+  and global work size"). A launch whose kernel object holds only named
+  library kernels, possibly also a 0 the library stores to clear it, is a
+  library launch and does not count, in the launch binding and in the
+  NDRange alike. The input words of a user kernel are bounded by the buffers
+  its launches pass.
 
 #### Generated kernel channel
 

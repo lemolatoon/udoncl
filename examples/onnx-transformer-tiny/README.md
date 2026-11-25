@@ -24,15 +24,25 @@ pinned acceptance model can be downloaded and verified with
 `scripts/fetch_tinyllama_onnx.py`; the synthetic model remains the default so a
 normal package smoke test does not download a 909 MB model.
 
-## Real TinyLlama conversation and chat
+## Real TinyLlama conversation and chat (advanced)
+
+[`examples/tinyllama-chat`](../tinyllama-chat/README.md) is the minimal
+TinyLlama chat: one Host C file, a 2048-token context and the TinyLlama Chat
+Package Sample. This example is the advanced version of the same model and
+API family, with a token-array Host separate from its text layer, a reset
+export, 512- and 4096-token artifacts, and a decode loop that runs the next
+step from the Device-resident token while the Host reads it back.
 
 With `UDONCL_TINYLLAMA_ONNX_MODEL` set, the `onnx-transformer-tiny-conversation`
-target builds the token-array Conversation Artifact (`conversation_host.c`) and,
-with `UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY`, `onnx-transformer-tiny-chat` adds
-the text layer (`conversation_text.c`). Their Context Capacity is the cache
-variable `UDONCL_TINYLLAMA_CONTEXT_CAPACITY` (default 512 tokens): the `M=1`
-graph is specialized to `batch_size=1` and `sequence_length=1`, its
-`past_sequence_length` is bounded by `capacity - 1`
+target builds the token-array Conversation Artifact (`conversation_host.c`,
+program `tinyllama_real_conversation`, binding
+`UdonclTinyLlamaConversationBinding`) and, with
+`UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY`, `onnx-transformer-tiny-chat` adds the
+text layer (`chat_host.c` and `conversation_text.c`, program
+`tinyllama_real_chat`, binding `UdonclTinyLlamaChatBinding`). Their Context
+Capacity is the cache variable `UDONCL_TINYLLAMA_CONTEXT_CAPACITY` (default
+512 tokens): the `M=1` graph is specialized to `batch_size=1` and
+`sequence_length=1`, its `past_sequence_length` is bounded by `capacity - 1`
 (`DIMENSION_BOUNDS past_sequence_length=<capacity - 1>`), and the Host and
 text layer are compiled with the same capacity.
 
@@ -40,27 +50,48 @@ text layer are compiled with the same capacity.
 through the UdonONNX session API, as `host.c` does. Every run is one position
 `t`: it binds the attention mask at `t + 1` and each layer's past at `t` rows
 and present at `t + 1` rows in one private `CL_MEM_READ_WRITE` buffer of the
-capacity (`buffer_dims` `{1, 4, capacity, 64}`, 44 buffers for the 22
-layers' K and V), then calls `udononnxRun`. The past is the leading block of
-the present, so the run writes only the new row (in-place Concat, see
+capacity (`buffer_dims` `{1, 4, capacity, 64}`), then calls `udononnxRun`.
+The 22 layers' K and V buffers are the arrays `keys[22]` and `values[22]`,
+created, bound and released in loops. The past is the leading block of the
+present, so the run writes only the new row (in-place Concat, see
 [operator-ownership.md](../../docs/architecture/operator-ownership.md#in-place-concat)).
 A reset starts again at `t = 0` without clearing anything, and a later turn
-continues at the position the conversation reached. The real TinyLlama
-prefill and M=1 step validation artifacts (`prefill_host.c`, `step_host.c`)
-keep fixed graphs: they are `host.c` over the tensor lists of their graphs,
-and U# writes and reads each tensor through the method named after its Host
+continues at the position the conversation reached. `dispose` releases
+everything; the Host then stays disposed. The real TinyLlama prefill and M=1
+step validation artifacts (`prefill_host.c`, `step_host.c`) keep fixed
+graphs: they are `host.c` over the tensor lists of their graphs, and U#
+writes and reads each tensor through the method named after its Host
 variable (`TryWriteInputIds`, `StartReadPresent0Key`, ...).
 
-The 4096-token variants `onnx-transformer-tiny-conversation-4k` and
-`onnx-transformer-tiny-chat-4k` are configured next to them
-(`UDONCL_TINYLLAMA_CONTEXT_4K`, default `ON`). Their Host file is
-`conversation_host_4k.c`, a thin translation unit that pins a capacity of 4096
-and includes the shared `conversation_host.c`; CMake specializes their graph
-and text layer to the same capacity. They expose the same U# API, program and
-binding names as the default artifacts, so a project imports one of the two.
-Per position their attention loads and computes only the positions the
-conversation holds, while its draws still cover 4096 positions, and each of
-the 44 K/V buffers holds 1,048,576 words. TinyLlama-1.1B was trained on 2048
-positions (`max_position_embeddings`); its rotary embedding is computed from
-the position, so longer conversations run, but replies past position 2048 may
+The 4096-token variants are configured next to them
+(`UDONCL_TINYLLAMA_CONTEXT_4K`, default `ON`):
+
+| Target | Host files | Program |
+| --- | --- | --- |
+| `onnx-transformer-tiny-conversation-4k` | `conversation_host_4k.c` | `tinyllama_real_conversation_4k` |
+| `onnx-transformer-tiny-chat-4k` | `chat_host_4k.c`, `conversation_text.c` | `tinyllama_real_chat_4k` |
+
+`conversation_host_4k.c` is a thin translation unit that pins a capacity of
+4096 and includes the shared `conversation_host.c`, and `chat_host_4k.c`
+includes it under the Chat program; CMake specializes their graph and text
+layer to the same capacity. Each variant has the U# API and binding class of
+its 512-token counterpart but a program of its own, so Unity imports it under
+`Assets/udoncl-generated/<program>` next to the other. Per position their
+attention loads and computes only the positions the conversation holds,
+while its draws still cover 4096 positions, and each of the 44 K/V buffers
+holds 1,048,576 words. TinyLlama-1.1B was trained on 2048 positions
+(`max_position_embeddings`); its rotary embedding is computed from the
+position, so longer conversations run, but replies past position 2048 may
 degrade.
+
+To build the 4096-token Chat Artifact:
+
+```powershell
+$model = python scripts/fetch_tinyllama_onnx.py
+$tokenizer = python scripts/fetch_tinyllama_tokenizer.py
+cmake -S examples/onnx-transformer-tiny -B build/tinyllama-advanced -G Ninja `
+  -DCMAKE_PREFIX_PATH="$PWD" `
+  -DUDONCL_TINYLLAMA_ONNX_MODEL="$model" `
+  -DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY="$tokenizer"
+cmake --build build/tinyllama-advanced --target onnx-transformer-tiny-chat-4k
+```
