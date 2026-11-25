@@ -32,16 +32,8 @@ class InstallONNXMLIRTests(unittest.TestCase):
             'include/onnx-mlir/build/third_party/onnx/onnx/onnx-ml.pb.h',
             'include/onnx-mlir/build/_deps/protobuf-src/src/google/protobuf/message.h',
             'lib/cmake/ONNXMLIR/ONNXMLIRConfig.cmake',
-            'lib/OMBuilder.lib' if host == 'windows' else 'lib/libOMBuilder.a',
-            'lib/OMCompilerOptions.lib' if host == 'windows' else 'lib/libOMCompilerOptions.a',
-            'lib/OMCompilerDialects.lib' if host == 'windows' else 'lib/libOMCompilerDialects.a',
-            'lib/OMONNXOps.lib' if host == 'windows' else 'lib/libOMONNXOps.a',
-            'lib/OMShapeInferencePass.lib' if host == 'windows' else 'lib/libOMShapeInferencePass.a',
-            'lib/OMONNXRewrite.lib' if host == 'windows' else 'lib/libOMONNXRewrite.a',
-            'lib/OMONNXSimplifyShapeRelatedOps.lib' if host == 'windows' else 'lib/libOMONNXSimplifyShapeRelatedOps.a',
-            'lib/OMONNXStandardFuncReturnPass.lib' if host == 'windows' else 'lib/libOMONNXStandardFuncReturnPass.a',
-            'lib/onnx.lib' if host == 'windows' else 'lib/libonnx.a',
-            'lib/libprotobuf.lib' if host == 'windows' else 'lib/libprotobuf.a',
+            *('lib/' + installer.sdk_library_name(component, host)
+              for component in installer.sdk_components()),
         ):
             path = prefix / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,16 +218,39 @@ class InstallONNXMLIRTests(unittest.TestCase):
     def test_tablegen_headers_are_generated_before_sdk_libraries(self):
         commands = installer.build_commands(
             self.lock, Path('build'), 'cmake', 4)
-        self.assertEqual(commands, [
-            ['cmake', '--build', Path('build'), '--config', 'Release',
-             '--parallel', '4', '--target', 'udoncl-onnx-mlir-tablegen'],
-            ['cmake', '--build', Path('build'), '--config', 'Release',
-             '--parallel', '4', '--target', *self.lock['build_targets']],
-        ])
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0], [
+            'cmake', '--build', Path('build'), '--config', 'Release',
+            '--parallel', '4', '--target', 'udoncl-onnx-mlir-tablegen'])
+        self.assertEqual(commands[1][:8], [
+            'cmake', '--build', Path('build'), '--config', 'Release',
+            '--parallel', '4', '--target'])
         include = installer.PROJECT_INCLUDE.read_text(encoding='utf-8')
         self.assertIn('add_custom_target(udoncl-onnx-mlir-tablegen)', include)
         self.assertIn('"/Tablegenning$"', include)
         self.assertIn('cmake_language(DEFER CALL', include)
+
+    def test_every_library_the_sdk_config_links_is_built(self):
+        # A static library build does not build the static libraries it
+        # links; OMSupport, for example, is not a dependency of any locked
+        # build target.
+        components = installer.sdk_components()
+        self.assertIn('OMSupport', components)
+        self.assertIn('libprotobuf', components)
+        libraries = installer.build_commands(
+            self.lock, Path('build'), 'cmake', 4)[1][8:]
+        self.assertEqual(libraries[:len(self.lock['build_targets'])],
+                         self.lock['build_targets'])
+        self.assertEqual(sorted(set(libraries)),
+                         sorted({*self.lock['build_targets'], *components}))
+        self.assertEqual(len(libraries), len(set(libraries)))
+
+    def test_sdk_missing_a_config_library_is_rejected(self):
+        prefix = self.publish('windows')
+        installer.validate(prefix, self.lock, 'windows')
+        (prefix / 'lib/OMSupport.lib').unlink()
+        with self.assertRaisesRegex(RuntimeError, 'OMSupport.lib'):
+            installer.validate(prefix, self.lock, 'windows')
 
     def test_sdk_without_cmake_exports_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, 'no CMake exports'):

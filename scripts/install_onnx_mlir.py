@@ -113,6 +113,22 @@ def expected_receipt(lock, host, root=ROOT):
     }
 
 
+def sdk_components(root=ROOT):
+    """Return the static libraries that ONNXMLIRConfig.cmake links."""
+    config = root / 'cmake/ONNXMLIRConfig.cmake'
+    match = re.search(r'set\(_onnxmlir_component_names\s+([^)]*)\)',
+                      config.read_text(encoding='utf-8'))
+    if not match:
+        raise RuntimeError(f'{config} does not list its SDK components')
+    return match.group(1).split()
+
+
+def sdk_library_name(component, host):
+    if component == 'libprotobuf':
+        return 'libprotobuf.lib' if host == 'windows' else 'libprotobuf.a'
+    return f'{component}.lib' if host == 'windows' else f'lib{component}.a'
+
+
 def copy_sdk_headers(source, destination):
     extensions = {'.def', '.h', '.hpp', '.inc', '.td'}
     for path in source.rglob('*'):
@@ -140,16 +156,8 @@ def validate(prefix, lock, host):
         prefix / 'include/onnx-mlir/build/_deps/protobuf-src/src/google/protobuf/message.h',
         prefix / 'lib/cmake/ONNXMLIR/ONNXMLIRConfig.cmake',
     ]
-    for component in ('OMBuilder', 'OMCompilerOptions', 'OMCompilerDialects',
-                      'OMONNXOps', 'OMShapeInferencePass',
-                      'OMONNXRewrite', 'OMONNXSimplifyShapeRelatedOps',
-                      'OMONNXStandardFuncReturnPass', 'onnx', 'protobuf'):
-        if component == 'protobuf':
-            library_name = 'libprotobuf.lib' if host == 'windows' else 'libprotobuf.a'
-        else:
-            library_name = (f'{component}.lib' if host == 'windows'
-                            else f'lib{component}.a')
-        sdk_required.append(prefix / 'lib' / library_name)
+    for component in sdk_components():
+        sdk_required.append(prefix / 'lib' / sdk_library_name(component, host))
     missing_sdk = [path for path in sdk_required if not path.is_file()]
     if missing_sdk:
         raise RuntimeError(
@@ -242,11 +250,16 @@ def configure_command(lock, source, build, llvm_prefix, host, cmake,
 
 
 def build_commands(lock, build, cmake, jobs):
+    # Building a static library does not build the static libraries it
+    # links, so also name every library that ONNXMLIRConfig.cmake links.
+    libraries = [*lock['build_targets'],
+                 *(component for component in sdk_components()
+                   if component not in lock['build_targets'])]
     # Generate every TableGen header first: ONNX-MLIR libraries include
     # generated headers whose generator they do not depend on.
     return [[cmake, '--build', build, '--config', 'Release', '--parallel',
              str(jobs), '--target', *targets]
-            for targets in ([TABLEGEN_TARGET], lock['build_targets'])]
+            for targets in ([TABLEGEN_TARGET], libraries)]
 
 
 def install(lock, host, prefix, source, build, llvm_prefix, jobs):
