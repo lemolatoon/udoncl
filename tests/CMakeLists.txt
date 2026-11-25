@@ -954,6 +954,20 @@ add_test(NAME onnx-session-bindings
     --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(onnx-session-bindings PROPERTIES TIMEOUT 300)
+add_test(NAME onnx-user-kernel
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_user_kernel.py"
+    --root "${PROJECT_SOURCE_DIR}"
+    --project-build "${PROJECT_BINARY_DIR}"
+    --output "${PROJECT_BINARY_DIR}/tests/onnx-user-kernel"
+    --cmake "${CMAKE_COMMAND}"
+    --generator "${CMAKE_GENERATOR}"
+    --make-program "${CMAKE_MAKE_PROGRAM}"
+    --clang "${VRC_TEST_CLANG}"
+    --llvm-link "${VRC_TEST_LLVM_LINK}"
+    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
+)
+set_tests_properties(onnx-user-kernel PROPERTIES TIMEOUT 300)
 add_test(NAME static-initialization-artifact
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/static_initialization.py"
