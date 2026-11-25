@@ -867,6 +867,15 @@ add_test(NAME tinyllama-conversation-text
     "${PROJECT_BINARY_DIR}/tests/tinyllama-conversation-text"
     "${CMAKE_C_COMPILER}"
 )
+# The minimal TinyLlama chat Host (examples/tinyllama-chat) against a fake
+# OpenCL and UdonONNX session, with the real tokenizer tables.
+add_test(NAME tinyllama-chat-host
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_chat_host.py"
+    "${PROJECT_SOURCE_DIR}"
+    "${PROJECT_BINARY_DIR}/tests/tinyllama-chat-host"
+    "${CMAKE_C_COMPILER}"
+)
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )
