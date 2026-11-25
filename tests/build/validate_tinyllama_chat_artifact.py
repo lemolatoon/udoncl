@@ -218,6 +218,19 @@ class TinyLlamaChatArtifactValidatorTests(unittest.TestCase):
                          "TryBeginMessage(", "TryContinueMessage(", "StartGenerate(",
                          "TryReadStreamedText("):
             self.assertIn(required, sample)
+        # The players share one conversation: the sender restores the synced
+        # history, generates, and syncs the new history and log.
+        self.assertEqual(sample.count("[UdonSynced]"), 3)
+        for required in ("[UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]",
+                         "private int[] conversationTokens", "private string conversationLog",
+                         "private bool busy",
+                         "Networking.SetOwner(", "StartRestoreConversation(",
+                         "TryReadConversationTokens(", "RequestSerialization()",
+                         "OnDeserialization()", "OnOwnershipTransferred(",
+                         "public void Clear()"):
+            self.assertIn(required, sample)
+        readme = (package / "Samples~/TinyLlama Chat/README.md").read_text(encoding="utf-8")
+        self.assertIn("Real multi-player sync is checked by hand only", readme)
 
 
 if __name__ == "__main__":
