@@ -66,6 +66,23 @@ assert gates.GATES["conv-4k"][0] == "conversation-4k"
 assert gates.GATES["multiturn-4k"][1:] == gates.GATES["multiturn"][1:]
 assert "step-4k" not in gates.GATES and "prefill-4k" not in gates.GATES
 assert gates.parse_gates("multiturn-4k,conv,chat-4k") == ["conv", "chat-4k", "multiturn-4k"]
+# The minimal chat example: a project of its own at its own capacity, gated
+# against the chat oracle at that capacity.
+assert gates.parse_targets("tinyllama-chat,chat") == ["chat", "tinyllama-chat"]
+assert "tinyllama-chat" not in gates.DEFAULT_TARGETS
+assert gates.target_capacity("tinyllama-chat", 512) == gates.CHAT_EXAMPLE_CAPACITY == 2048
+assert gates.target_family("tinyllama-chat") == "tinyllama-chat"
+assert gates.TARGET_ORACLES["tinyllama-chat"] == "chat-2k"
+assert gates.GATES["tinychat"][0] == "tinyllama-chat"
+assert "tinychat" not in gates.PACED_GATES and "tinychat-4k" not in gates.GATES
+assert gates.parse_gates("tinychat,conv") == ["conv", "tinychat"]
+command = gates.chat_example_configure_command(
+    Path("s"), Path("e"), Path("k"), Path("l"), "ninja", Path("m.onnx"), Path("t")
+)
+assert command[1:3] == ["-S", str(Path("s") / "examples/tinyllama-chat")], command
+assert "-DUDONCL_TINYLLAMA_CONTEXT_CAPACITY=2048" in command, command
+assert "-DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY=t" in command, command
+assert not any("CONTEXT_4K" in item for item in command), command
 with contextlib.redirect_stderr(io.StringIO()) as stderr:
     code = gates.main(["build", "--commit", "HEAD", "--out", "x", "--targets", "decode"])
 assert code == 2 and "unknown build target" in stderr.getvalue(), stderr.getvalue()
@@ -138,6 +155,10 @@ with tempfile.TemporaryDirectory(prefix="udoncl gates ") as temporary:
     (keep / "manifest.json").write_text("{}", encoding="utf-8")
     (keep.parent / "CMakeFiles").mkdir()
     (build / "ex" / "build.ninja").write_text("", encoding="utf-8")
+    keep_chat = build / "ex-chat" / "udoncl" / "tinyllama-chat" / "artifact"
+    keep_chat.mkdir(parents=True)
+    (keep_chat / "manifest.json").write_text("{}", encoding="utf-8")
+    (build / "ex-chat" / "build.ninja").write_text("", encoding="utf-8")
     (build / "logs").mkdir()
     (build / "logs" / "build-chat.log").write_text("log", encoding="utf-8")
     gates.write_manifest(
@@ -146,8 +167,12 @@ with tempfile.TemporaryDirectory(prefix="udoncl gates ") as temporary:
             "kind": "build",
             "source": "src",
             "example": "ex",
-            "targets": {"chat": {"artifact": keep.relative_to(build).as_posix()}},
-            "heavy": ["src", "cb", "sdk", "ex"],
+            "example_chat": "ex-chat",
+            "targets": {
+                "chat": {"artifact": keep.relative_to(build).as_posix()},
+                "tinyllama-chat": {"artifact": keep_chat.relative_to(build).as_posix()},
+            },
+            "heavy": ["src", "cb", "sdk", "ex", "ex-chat"],
         },
     )
     assert "outside" in refused(gates.remove_heavy, Path(".."), build)
@@ -158,10 +183,13 @@ with tempfile.TemporaryDirectory(prefix="udoncl gates ") as temporary:
     assert (keep / "manifest.json").is_file()
     assert not (keep.parent / "CMakeFiles").exists()
     assert not (build / "ex" / "build.ninja").exists()
+    assert (keep_chat / "manifest.json").is_file()
+    assert not (build / "ex-chat" / "build.ninja").exists()
     assert (build / "logs" / "build-chat.log").is_file()
     assert "cleaned" in gates.read_manifest(build)
     assert gates.main(["clean", "--out", str(build)]) == 0
     assert not (build / "ex").exists() and not source.exists()
+    assert not (build / "ex-chat").exists()
     assert (shared / "llvm23" / "keep.txt").is_file()
     with contextlib.redirect_stderr(io.StringIO()) as stderr:
         assert gates.main(["clean", "--out", str(temporary / "template")]) == 2
@@ -220,6 +248,9 @@ assert gates.plan_sessions(["prefill", "conv", "chat", "multiturn"]) == [
     ["prefill"], ["conv"], ["chat", "multiturn"],
 ]
 assert gates.plan_sessions(["multiturn"]) == [["multiturn"]]
+assert gates.plan_sessions(["chat", "multiturn", "tinychat"]) == [
+    ["chat", "multiturn"], ["tinychat"],
+]
 assert gates.plan_sessions(["chat", "conv-4k", "chat-4k", "multiturn-4k"]) == [
     ["chat"], ["conv-4k"], ["chat-4k", "multiturn-4k"],
 ]
@@ -368,6 +399,28 @@ with tempfile.TemporaryDirectory(prefix="udoncl gates run ") as temporary:
     assert "no conversation artifact" in refused(gates.session_artifacts, build, build_manifest, ["conv"])
     oracle.write_text(json.dumps({"turns": [{}]}), encoding="utf-8")
     gates.session_artifacts(build, build_manifest, ["chat", "multiturn"])
+    # tinychat runs the minimal chat fixture on the chat example artifact
+    # and needs an oracle with a later turn.
+    artifact_chat = build / "ex-chat" / "udoncl" / "tinyllama-chat" / "artifact"
+    artifact_chat.mkdir(parents=True)
+    (artifact_chat / "manifest.json").write_text("{}", encoding="utf-8")
+    (build / "oracle" / "chat-2k").mkdir(parents=True)
+    oracle_2k = build / "oracle" / "chat-2k" / "chat-oracle.json"
+    oracle_2k.write_text(json.dumps({"turns": []}), encoding="utf-8")
+    build_manifest_chat = {
+        "targets": {
+            "tinyllama-chat": {"artifact": artifact_chat.relative_to(build).as_posix()}
+        },
+        "oracles": {"chat-2k": "oracle/chat-2k/chat-oracle.json"},
+    }
+    assert "no later turn" in refused(
+        gates.session_artifacts, build, build_manifest_chat, ["tinychat"]
+    )
+    oracle_2k.write_text(json.dumps({"turns": [{}]}), encoding="utf-8")
+    assert gates.session_artifacts(build, build_manifest_chat, ["tinychat"]) == {
+        "tinyllama_minimal_chat_artifact": str(artifact_chat),
+        "tinyllama_minimal_chat_oracle": str(oracle_2k),
+    }
     # A -4k gate runs its family's fixture on the -4k artifact and oracle.
     artifact_4k = build / "ex" / "udoncl" / "onnx-transformer-tiny-conversation-4k" / "artifact"
     artifact_4k.mkdir(parents=True)

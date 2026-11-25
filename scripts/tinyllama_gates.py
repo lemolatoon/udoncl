@@ -45,7 +45,8 @@ LOCK = ".udoncl-gates.lock"
 SCHEMA = 1
 PARALLEL = 4
 
-# Build target name -> examples/onnx-transformer-tiny CMake target.
+# Build target name -> examples/onnx-transformer-tiny CMake target, or the
+# examples/tinyllama-chat one for CHAT_EXAMPLE_TARGETS.
 TARGETS = {
     "conversation": "onnx-transformer-tiny-conversation",
     "chat": "onnx-transformer-tiny-chat",
@@ -53,6 +54,7 @@ TARGETS = {
     "prefill": "onnx-transformer-tiny",
     "conversation-4k": "onnx-transformer-tiny-conversation-4k",
     "chat-4k": "onnx-transformer-tiny-chat-4k",
+    "tinyllama-chat": "tinyllama-chat",
 }
 # The default `build --targets`: every target at the build's --capacity.
 DEFAULT_TARGETS = ("conversation", "chat", "m1-step", "prefill")
@@ -60,10 +62,15 @@ DEFAULT_TARGETS = ("conversation", "chat", "m1-step", "prefill")
 # their own, independent of --capacity, and their own oracles.
 CONTEXT_4K = 4096
 CONTEXT_4K_TARGETS = ("conversation-4k", "chat-4k")
+# The minimal chat example (examples/tinyllama-chat) is a CMake project of
+# its own, configured in a second example tree at its default capacity.
+CHAT_EXAMPLE_TARGETS = ("tinyllama-chat",)
+CHAT_EXAMPLE_CAPACITY = 2048
 # The oracle every target is checked against: "real" and "chat" at the
 # build's capacity (the M=1 step sidecars of tests/boundary/
 # tinyllama_real_onnx.py exist for the example's default capacity only), and
-# their -4k counterparts at CONTEXT_4K.
+# their -4k counterparts at CONTEXT_4K, and the chat oracle at the chat
+# example's capacity.
 TARGET_ORACLES = {
     "conversation": "real",
     "chat": "chat",
@@ -71,6 +78,7 @@ TARGET_ORACLES = {
     "prefill": "real",
     "conversation-4k": "real-4k",
     "chat-4k": "chat-4k",
+    "tinyllama-chat": "chat-2k",
 }
 ORACLE_CAPACITY = 512
 # The pinned two-turn chat oracle (TINYLLAMA_AOT_CONVERSATION_PLAN.md 6.11).
@@ -177,6 +185,8 @@ def target_family(name: str) -> str:
 
 
 def target_capacity(name: str, capacity: int) -> int:
+    if name in CHAT_EXAMPLE_TARGETS:
+        return CHAT_EXAMPLE_CAPACITY
     return CONTEXT_4K if name in CONTEXT_4K_TARGETS else capacity
 
 
@@ -487,6 +497,24 @@ def example_configure_command(
     ]
 
 
+def chat_example_configure_command(
+    source: Path,
+    example: Path,
+    sdk: Path,
+    llvm: Path,
+    make_program: str,
+    model: Path,
+    tokenizer: Path,
+) -> list[str]:
+    """Configures examples/tinyllama-chat at its default capacity and reply
+    limit, the ones its oracle (chat-2k) uses."""
+    command = example_configure_command(
+        source, example, sdk, llvm, make_program, model, tokenizer, CHAT_EXAMPLE_CAPACITY
+    )
+    command[2] = str(source / "examples/tinyllama-chat")
+    return [item for item in command if not item.startswith("-DUDONCL_TINYLLAMA_CONTEXT_4K=")]
+
+
 def example_context_4k(example: Path) -> bool:
     """Whether a configured example build has the -4k targets."""
     try:
@@ -526,6 +554,7 @@ def build_main(args) -> int:
     require_free_space(out, needed)
     out.mkdir(parents=True, exist_ok=True)
     source, compiler, sdk, example = out / "src", out / "cb", out / "sdk", out / "ex"
+    example_chat = out / "ex-chat"
     oracles, logs = out / "oracle", out / "logs"
     previous = None
     if (out / MANIFEST).is_file():
@@ -543,9 +572,10 @@ def build_main(args) -> int:
         "compiler": "cb",
         "sdk": "sdk",
         "example": "ex",
+        "example_chat": "ex-chat",
         "targets": dict((previous or {}).get("targets", {})),
         "oracles": dict((previous or {}).get("oracles", {})),
-        "heavy": ["src", "cb", "sdk", "ex"],
+        "heavy": ["src", "cb", "sdk", "ex", "ex-chat"],
         "started": now(),
     }
     with DirectoryLock(out, "build"):
@@ -606,7 +636,8 @@ def build_main(args) -> int:
             configured = (example / "CMakeCache.txt").is_file()
             want_4k = any(name in CONTEXT_4K_TARGETS for name in targets)
             has_4k = configured and example_context_4k(example)
-            if not configured or (want_4k and not has_4k):
+            want_tiny = any(name not in CHAT_EXAMPLE_TARGETS for name in targets)
+            if want_tiny and (not configured or (want_4k and not has_4k)):
                 run_logged(
                     example_configure_command(
                         source, example, sdk, llvm,
@@ -617,17 +648,38 @@ def build_main(args) -> int:
                     logs / "example-configure.log", cwd=source, env=environment,
                     timeout=BUILD_STEP_TIMEOUT,
                 )
+            want_chat_example = any(name in CHAT_EXAMPLE_TARGETS for name in targets)
+            if want_chat_example and not (example_chat / "CMakeCache.txt").is_file():
+                run_logged(
+                    chat_example_configure_command(
+                        source, example_chat, sdk, llvm,
+                        cmake_cache_value(compiler, "CMAKE_MAKE_PROGRAM"),
+                        Path(model), Path(tokenizer),
+                    ),
+                    logs / "example-chat-configure.log", cwd=source, env=environment,
+                    timeout=BUILD_STEP_TIMEOUT,
+                )
             for name in targets:
                 target = TARGETS[name]
+                tree = example_chat if name in CHAT_EXAMPLE_TARGETS else example
                 started = time.monotonic()
                 run_logged(
-                    ["cmake", "--build", example, "--target", target, "--parallel", str(PARALLEL), "-v"],
+                    ["cmake", "--build", tree, "--target", target, "--parallel", str(PARALLEL), "-v"],
                     logs / f"build-{name}.log", cwd=source, env=environment,
                     timeout=BUILD_STEP_TIMEOUT,
                 )
-                artifact = example / "udoncl" / target / "artifact"
+                artifact = tree / "udoncl" / target / "artifact"
                 if not (artifact / "manifest.json").is_file():
                     raise GateError(f"{target} produced no artifact manifest: {artifact}")
+                if name in CHAT_EXAMPLE_TARGETS:
+                    run_logged(
+                        [
+                            sys.executable, source / "scripts/validate_tinyllama_chat_artifact.py",
+                            artifact, "--capacity", str(CHAT_EXAMPLE_CAPACITY),
+                        ],
+                        logs / f"validate-{name}.log", cwd=source, env=environment,
+                        timeout=BUILD_STEP_TIMEOUT,
+                    )
                 manifest["targets"][name] = {
                     "artifact": artifact.relative_to(out).as_posix(),
                     "seconds": round(time.monotonic() - started, 1),
@@ -683,6 +735,19 @@ def build_main(args) -> int:
                         timeout=ORACLE_TIMEOUT,
                     )
                 manifest["oracles"]["chat-4k"] = "oracle/chat-4k/chat-oracle.json"
+            if want_chat_example:
+                chat = oracles / "chat-2k"
+                if not (chat / "chat-oracle.json").is_file():
+                    run_logged(
+                        [
+                            sys.executable, source / "tests/boundary/tinyllama_chat_oracle.py",
+                            source, chat, "--user", CHAT_USER, "--next-user", CHAT_NEXT_USER,
+                            "--capacity", str(CHAT_EXAMPLE_CAPACITY),
+                        ],
+                        logs / "oracle-chat-2k.log", cwd=source, env=environment,
+                        timeout=ORACLE_TIMEOUT,
+                    )
+                manifest["oracles"]["chat-2k"] = "oracle/chat-2k/chat-oracle.json"
             write_manifest(out, {**manifest, "state": "built", "finished": now()})
         except BaseException:
             write_manifest(out, {**manifest, "state": "failed", "finished": now()})
@@ -720,9 +785,11 @@ def clean_main(args) -> int:
         if args.keep_artifacts and manifest.get("kind") == "build":
             # `run` still needs the exported source (its precommit gate and
             # Unity package), the artifacts and the oracles.
-            heavy = [item for item in heavy if item not in (manifest.get("example"), manifest.get("source"))]
+            trees = [manifest.get(key) for key in ("example", "example_chat") if manifest.get(key)]
+            heavy = [item for item in heavy if item not in (*trees, manifest.get("source"))]
             keep = [out / target["artifact"] for target in manifest.get("targets", {}).values()]
-            prune_except(out / manifest["example"], keep, out)
+            for tree in trees:
+                prune_except(out / tree, keep, out)
         for item in heavy:
             remove_heavy(Path(item), out)
         manifest["cleaned"] = now()
@@ -768,6 +835,14 @@ GATES = {
         "tinyllama_multi_turn_chat",
         "Udoncl.TinyLlama.Chat.Focused.Tests",
         "PublicTinyLlamaMultiTurnChatLifecycleTests.GeneratedUSharpBindingContinuesChatAcrossTurns",
+    ),
+    # The minimal chat example: its two-turn conversation, tokens checked
+    # against the chat oracle at its capacity.
+    "tinychat": (
+        "tinyllama-chat",
+        "tinyllama_minimal_chat",
+        "Udoncl.TinyLlama.MinimalChat.Focused.Tests",
+        "PublicTinyLlamaMinimalChatLifecycleTests.GeneratedUSharpBindingChatsAndMatchesOracleTokens",
     ),
 }
 # The 4096-token artifacts expose the same U# binding, so their gates run the
@@ -904,6 +979,16 @@ def session_artifacts(build: Path, manifest: dict, gates: list[str]) -> dict[str
             "tinyllama_conversation_oracle": oracle / "m1-oracle.json",
         }
         required = oracle / "m1-oracle.json"
+    elif target in CHAT_EXAMPLE_TARGETS:
+        result = {
+            "tinyllama_minimal_chat_artifact": artifact,
+            "tinyllama_minimal_chat_oracle": oracle,
+        }
+        required = oracle
+        if os.path.isfile(oracle) and not (
+            json.loads(Path(oracle).read_text(encoding="utf-8")).get("turns") or []
+        ):
+            raise GateError(f"{oracle} has no later turn for the tinychat gate")
     else:
         result = {"tinyllama_chat_artifact": artifact, "tinyllama_chat_oracle": oracle}
         required = oracle
