@@ -730,6 +730,8 @@ def run_unity_mcp_gate(
     tinyllama_step_oracles=None,
     tinyllama_chat_artifact=None,
     tinyllama_chat_oracle=None,
+    tinyllama_minimal_chat_artifact=None,
+    tinyllama_minimal_chat_oracle=None,
     prepare_standard_fixtures=True,
 ):
     require_unity_mcp(project)
@@ -859,6 +861,13 @@ def run_unity_mcp_gate(
         )
         environment["UDONCL_PUBLIC_TINYLLAMA_CHAT_ORACLE"] = str(
             tinyllama_chat_oracle
+        )
+    if tinyllama_minimal_chat_artifact is not None:
+        environment["UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_UNITY_BUNDLE"] = str(
+            tinyllama_minimal_chat_artifact
+        )
+        environment["UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_ORACLE"] = str(
+            tinyllama_minimal_chat_oracle
         )
     if tinyllama_conversation_artifact is not None:
         environment["UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_UNITY_BUNDLE"] = str(
@@ -1046,6 +1055,32 @@ def run_unity_mcp_gate(
             if missing:
                 raise RuntimeError(
                     "TinyLlama chat preparation did not complete: "
+                    + ", ".join(missing)
+                )
+        if tinyllama_minimal_chat_artifact is not None:
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public TinyLlama Minimal Chat Validation",
+                timeout=900,
+                reconnect_timeout=900,
+            )
+            focused_test = (
+                Path(project)
+                / "Assets/UdonclSampleValidation/Editor/"
+                "PublicTinyLlamaMinimalChatLifecycleTests.cs"
+            )
+            imported_program = (
+                Path(project)
+                / "Assets/udoncl-generated/tinyllama_chat/Programs/host_program.asset"
+            )
+            missing = [
+                str(path)
+                for path in (focused_test, imported_program)
+                if not path.is_file()
+            ]
+            if missing:
+                raise RuntimeError(
+                    "TinyLlama minimal chat preparation did not complete: "
                     + ", ".join(missing)
                 )
         for menu in final_preparation_menus(prepare_standard_fixtures):
@@ -1270,6 +1305,22 @@ def main():
         ),
     )
     parser.add_argument(
+        "--tinyllama-minimal-chat-artifact",
+        type=Path,
+        help=(
+            "focused diagnosis only: run the two-turn Unity test of the "
+            "examples/tinyllama-chat artifact"
+        ),
+    )
+    parser.add_argument(
+        "--tinyllama-minimal-chat-oracle",
+        type=Path,
+        help=(
+            "chat-oracle.json with a later turn, written by "
+            "tests/boundary/tinyllama_chat_oracle.py at the example's capacity"
+        ),
+    )
+    parser.add_argument(
         "--tinyllama-m1-step-oracles",
         type=Path,
         help="directory containing the ORT step-* sidecars for --tinyllama-m1-step-artifact",
@@ -1297,6 +1348,7 @@ def main():
                 args.tinyllama_conversation,
                 args.tinyllama_m1_step_artifact,
                 args.tinyllama_chat_artifact,
+                args.tinyllama_minimal_chat_artifact,
             )
         )
         > 1
@@ -1304,6 +1356,13 @@ def main():
         parser.error("run one focused TinyLlama Unity gate at a time")
     if bool(args.tinyllama_chat_artifact) != bool(args.tinyllama_chat_oracle):
         parser.error("--tinyllama-chat-artifact and --tinyllama-chat-oracle go together")
+    if bool(args.tinyllama_minimal_chat_artifact) != bool(
+        args.tinyllama_minimal_chat_oracle
+    ):
+        parser.error(
+            "--tinyllama-minimal-chat-artifact and --tinyllama-minimal-chat-oracle "
+            "go together"
+        )
     if bool(args.tinyllama_m1_step_artifact) != bool(args.tinyllama_m1_step_oracles):
         parser.error(
             "--tinyllama-m1-step-artifact and --tinyllama-m1-step-oracles go together"
@@ -1406,6 +1465,8 @@ def main():
     tinyllama_step_oracles = None
     tinyllama_chat_artifact = None
     tinyllama_chat_oracle = None
+    tinyllama_minimal_chat_artifact = None
+    tinyllama_minimal_chat_oracle = None
     unity_tests = list(args.unity_test)
     unity_test_assemblies = [TEST_ASSEMBLY]
     if args.tinyllama_prefill:
@@ -1512,6 +1573,30 @@ def main():
                     "GeneratedUSharpBindingContinuesChatAcrossTurns"
                 )
             unity_test_assemblies = ["Udoncl.TinyLlama.Chat.Focused.Tests"]
+    if args.tinyllama_minimal_chat_artifact:
+        tinyllama_minimal_chat_artifact = args.tinyllama_minimal_chat_artifact.resolve()
+        tinyllama_minimal_chat_oracle = args.tinyllama_minimal_chat_oracle.resolve()
+        if not (tinyllama_minimal_chat_artifact / "manifest.json").is_file():
+            parser.error(
+                "TinyLlama chat example artifact has no manifest: "
+                f"{tinyllama_minimal_chat_artifact}"
+            )
+        if not tinyllama_minimal_chat_oracle.is_file():
+            parser.error(
+                f"TinyLlama chat oracle is missing: {tinyllama_minimal_chat_oracle}"
+            )
+        if not tinyllama_chat_oracle_turns(tinyllama_minimal_chat_oracle):
+            parser.error(
+                "the TinyLlama minimal chat oracle needs a later turn (--next-user): "
+                f"{tinyllama_minimal_chat_oracle}"
+            )
+        if not unity_tests:
+            unity_tests.append(
+                "Lemolatoon.Udoncl.Editor.Tests."
+                "PublicTinyLlamaMinimalChatLifecycleTests."
+                "GeneratedUSharpBindingChatsAndMatchesOracleTokens"
+            )
+            unity_test_assemblies = ["Udoncl.TinyLlama.MinimalChat.Focused.Tests"]
     run_unity_mcp_gate(
         root,
         unity,
@@ -1531,6 +1616,8 @@ def main():
         tinyllama_step_oracles=tinyllama_step_oracles,
         tinyllama_chat_artifact=tinyllama_chat_artifact,
         tinyllama_chat_oracle=tinyllama_chat_oracle,
+        tinyllama_minimal_chat_artifact=tinyllama_minimal_chat_artifact,
+        tinyllama_minimal_chat_oracle=tinyllama_minimal_chat_oracle,
         prepare_standard_fixtures=not args.minimal_unity_fixtures,
     )
     if args.unity_only:

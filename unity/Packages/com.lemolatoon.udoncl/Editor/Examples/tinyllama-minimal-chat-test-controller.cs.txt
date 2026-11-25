@@ -1,0 +1,336 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    // Drives the binding of examples/tinyllama-chat through a conversation of
+    // userTexts.Length turns, then disposes it, initializes it again and
+    // disposes it once more.
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaMinimalChatTestController : UdonSharpBehaviour
+    {
+        // Controller phases. A failure leaves `phase` (and `turn`) at the step
+        // that failed; PhaseDone is reached only after every step passed.
+        public const int PhaseInitialize = 1;
+        public const int PhaseMessage = 2;
+        public const int PhaseGenerate = 3;
+        public const int PhaseGenerated = 4;
+        public const int PhaseDispose = 5;
+        public const int PhaseReinitialize = 6;
+        public const int PhaseDisposeAgain = 7;
+        public const int PhaseDone = 8;
+
+        // udononnxStatus_t value returned by the C Host as libraryStatus.
+        public const int LibraryStatusSuccess = 0;
+
+        public UdonclTinyllamaChatBinding binding;
+        public string[] userTexts;
+
+        // Per-turn results, flattened: turn t owns [t * tokenStride, ...) of
+        // generatedTokens and [t * textStride, ...) of streamedUnits.
+        public int tokenStride;
+        public int textStride;
+        public int[] generatedTokens;
+        public int[] generatedCounts;
+        public int[] streamedUnits;
+        public int[] streamedLengths;
+        public int[] messageCalls;
+
+        // Scratch of textStride and tokenStride elements.
+        public int[] streamChunk;
+        public int[] tokenChunk;
+
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int asyncDiagnostic;
+        public int phase;
+        public int turn;
+        // ReadStreamedText right after the second Initialize: a new
+        // conversation has no reply text.
+        public int textAfterReinitialize;
+
+        // Poll statistics: all polls, polls the binding refused as busy, polls
+        // that returned new text, and those of them made before the
+        // generation completed.
+        public int streamPolls;
+        public int streamBusyPolls;
+        public int streamUpdates;
+        public int streamMidGenerationUpdates;
+
+        // False once a polled length shrank or an already polled unit changed.
+        public bool streamMonotone;
+        public bool streamPrefixStable;
+
+        private bool polling;
+        private int streamedLength;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclTinyllamaChatBinding.StatusSuccess;
+            libraryStatus = LibraryStatusSuccess;
+            asyncDiagnostic = UdonclTinyllamaChatBinding.AsyncDiagnosticNone;
+            turn = 0;
+            textAfterReinitialize = -1;
+            streamPolls = 0;
+            streamBusyPolls = 0;
+            streamUpdates = 0;
+            streamMidGenerationUpdates = 0;
+            streamMonotone = true;
+            streamPrefixStable = true;
+            polling = false;
+            phase = PhaseInitialize;
+            if (
+                binding == null
+                || userTexts == null
+                || userTexts.Length == 0
+                || tokenStride <= 0
+                || textStride <= 0
+                || generatedTokens == null
+                || generatedTokens.Length < tokenStride * userTexts.Length
+                || generatedCounts == null
+                || generatedCounts.Length < userTexts.Length
+                || streamedUnits == null
+                || streamedUnits.Length < textStride * userTexts.Length
+                || streamedLengths == null
+                || streamedLengths.Length < userTexts.Length
+                || messageCalls == null
+                || messageCalls.Length < userTexts.Length
+                || streamChunk == null
+                || streamChunk.Length < textStride
+                || tokenChunk == null
+                || tokenChunk.Length < tokenStride
+            )
+            {
+                status = UdonclTinyllamaChatBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyllamaChatBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            BeginTurn();
+        }
+
+        // Text in: BeginMessage keeps the text in the C Host, and every frame
+        // ContinueMessage tokenizes a bounded slice of it until it returns 0.
+        private void BeginTurn()
+        {
+            phase = PhaseMessage;
+            messageCalls[turn] = 0;
+            status = binding.TryBeginMessage(userTexts[turn], out libraryStatus);
+            if (!Succeeded())
+                return;
+            ContinueMessage();
+        }
+
+        public void ContinueMessage()
+        {
+            if (completed || phase != PhaseMessage)
+                return;
+            messageCalls[turn] = messageCalls[turn] + 1;
+            int pending;
+            status = binding.TryContinueMessage(out pending);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                Fail();
+                return;
+            }
+            if (pending < 0)
+            {
+                libraryStatus = -pending;
+                Fail();
+                return;
+            }
+            if (pending != 0)
+            {
+                SendCustomEventDelayedFrames(nameof(ContinueMessage), 1);
+                return;
+            }
+
+            phase = PhaseGenerate;
+            streamedLength = 0;
+            status = binding.StartGenerate(this, nameof(OnGenerateComplete));
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                Fail();
+                return;
+            }
+            polling = true;
+            SendCustomEventDelayedFrames(nameof(PollStreamedText), 1);
+        }
+
+        // Text out while generating: once per frame, read the reply text that
+        // is final so far. ReadStreamedText is allowed while Generate runs.
+        public void PollStreamedText()
+        {
+            if (!polling || completed)
+                return;
+            if (!ReadStreamedText(true))
+            {
+                polling = false;
+                Fail();
+                return;
+            }
+            SendCustomEventDelayedFrames(nameof(PollStreamedText), 1);
+        }
+
+        // Reads the whole final text again: the part already polled must not
+        // change, and the text must never shrink.
+        private bool ReadStreamedText(bool generating)
+        {
+            int length;
+            ++streamPolls;
+            int pollStatus = binding.TryReadStreamedText(streamChunk, 0, out length);
+            if (pollStatus == UdonclTinyllamaChatBinding.StatusBusy)
+            {
+                ++streamBusyPolls;
+                return true;
+            }
+            if (pollStatus != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                status = pollStatus;
+                return false;
+            }
+            if (length < 0)
+            {
+                libraryStatus = -length;
+                return false;
+            }
+            if (length < streamedLength)
+            {
+                streamMonotone = false;
+                return true;
+            }
+            if (length > textStride)
+            {
+                status = UdonclTinyllamaChatBinding.StatusExecutionFailure;
+                return false;
+            }
+            int offset = turn * textStride;
+            for (int index = 0; index < streamedLength; ++index)
+            {
+                if (streamChunk[index] != streamedUnits[offset + index])
+                    streamPrefixStable = false;
+            }
+            if (length == streamedLength)
+                return true;
+            for (int index = streamedLength; index < length; ++index)
+                streamedUnits[offset + index] = streamChunk[index];
+            streamedLength = length;
+            ++streamUpdates;
+            if (generating)
+                ++streamMidGenerationUpdates;
+            return true;
+        }
+
+        public void OnGenerateComplete()
+        {
+            polling = false;
+            phase = PhaseGenerated;
+            status = binding.GetGenerateStatus();
+            if (status == UdonclTinyllamaChatBinding.StatusSuccess)
+                status = binding.TryGetGenerateResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+
+            // The token read-out: the greedy token IDs of the reply.
+            int count;
+            status = binding.TryReadGeneratedTokens(tokenChunk, out count);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                Fail();
+                return;
+            }
+            if (count < 0)
+            {
+                libraryStatus = -count;
+                Fail();
+                return;
+            }
+            if (count == 0 || count > tokenStride)
+            {
+                status = UdonclTinyllamaChatBinding.StatusExecutionFailure;
+                Fail();
+                return;
+            }
+            for (int index = 0; index < count; ++index)
+                generatedTokens[turn * tokenStride + index] = tokenChunk[index];
+            generatedCounts[turn] = count;
+
+            // The last poll: after completion the text is the whole reply.
+            if (!ReadStreamedText(false))
+            {
+                Fail();
+                return;
+            }
+            streamedLengths[turn] = streamedLength;
+
+            ++turn;
+            if (turn < userTexts.Length)
+            {
+                BeginTurn();
+                return;
+            }
+            turn = userTexts.Length - 1;
+
+            // Dispose, then a new conversation from Initialize again.
+            phase = PhaseDispose;
+            status = binding.TryDispose(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseReinitialize;
+            status = binding.StartInitialize(this, nameof(OnReinitializeComplete));
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+                Fail();
+        }
+
+        public void OnReinitializeComplete()
+        {
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyllamaChatBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            status = binding.TryReadStreamedText(streamChunk, 0, out textAfterReinitialize);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                Fail();
+                return;
+            }
+            phase = PhaseDisposeAgain;
+            status = binding.TryDispose(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseDone;
+            completed = true;
+        }
+
+        private bool Succeeded()
+        {
+            if (
+                status == UdonclTinyllamaChatBinding.StatusSuccess
+                && libraryStatus == LibraryStatusSuccess
+            )
+                return true;
+            Fail();
+            return false;
+        }
+
+        private void Fail()
+        {
+            asyncDiagnostic = binding.GetLastAsyncDiagnostic();
+            completed = true;
+        }
+    }
+}

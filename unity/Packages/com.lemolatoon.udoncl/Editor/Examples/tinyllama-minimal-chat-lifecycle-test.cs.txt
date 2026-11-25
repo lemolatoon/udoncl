@@ -1,0 +1,466 @@
+using System;
+using System.Collections;
+using System.IO;
+using System.Text;
+using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.TestTools;
+using VRC.Udon;
+
+namespace Lemolatoon.Udoncl.Editor.Tests
+{
+    // The minimal TinyLlama chat example (examples/tinyllama-chat) through its
+    // generated U# binding: a two-turn conversation of the chat oracle
+    // (tests/boundary/tinyllama_chat_oracle.py). Each turn's message is
+    // tokenized in slices (BeginMessage, then ContinueMessage every frame),
+    // Generate replies greedily while the reply text is polled every frame,
+    // and the reply's tokens (ReadGeneratedTokens) and text must equal the
+    // oracle's. Afterwards Dispose, Initialize and Dispose again must
+    // succeed, the second Initialize starting a conversation without text.
+    public sealed class PublicTinyLlamaMinimalChatLifecycleTests
+    {
+        private const string GeneratedRoot = "Assets/udoncl-generated/tinyllama_chat";
+        private const string BindingClass = "UdonclTinyllamaChatBinding";
+        private const string ControllerClass = "UdonclTinyLlamaMinimalChatTestController";
+        private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
+        private const string ControllerSource =
+            "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
+        private const string ControllerProgram =
+            GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
+
+        // Mirrors UdonclTinyLlamaMinimalChatTestController phases; the
+        // controller is generated U# and not referenced here.
+        private const int PhaseDone = 8;
+        private const int PhaseGenerate = 3;
+        private const int TextUnitsPerToken = 16;
+        private static readonly string[] PhaseNames =
+        {
+            "not-started",
+            "initialize",
+            "message",
+            "generate",
+            "generated",
+            "dispose",
+            "reinitialize",
+            "dispose-again",
+            "done",
+        };
+
+        private string artifactDirectory;
+        private string[] userTexts;
+        private int tokenStride;
+        // Per-turn expectations, flattened with turn offsets: the fixture is
+        // serialized across the play-mode domain reload, and Unity does not
+        // serialize jagged arrays.
+        private int[] expectedPromptCounts;
+        private int[] expectedTokenData;
+        private int[] expectedTokenOffsets;
+        private int[] expectedTextData;
+        private int[] expectedTextOffsets;
+        private string[] expectedTexts;
+        private string capturedVmError;
+
+        [OneTimeSetUp]
+        public void ImportMinimalChatArtifact()
+        {
+            artifactDirectory = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_UNITY_BUNDLE"
+            );
+            Assert.IsFalse(
+                string.IsNullOrWhiteSpace(artifactDirectory),
+                "The TinyLlama chat example artifact path is required."
+            );
+            artifactDirectory = Path.GetFullPath(artifactDirectory);
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(artifactDirectory);
+            Assert.AreEqual("tinyllama_chat", artifact.ProgramName);
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot))
+                Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
+            CollectionAssert.AreEqual(
+                File.ReadAllBytes(Path.Combine(artifactDirectory, "binding.cs")),
+                File.ReadAllBytes(GeneratedRoot + "/Bindings/" + BindingClass + ".cs")
+            );
+            Assert.NotNull(AssetDatabase.LoadAssetAtPath<MonoScript>(ControllerSource));
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot + "/Tests"))
+                AssetDatabase.CreateFolder(GeneratedRoot, "Tests");
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                GeneratedRoot + "/Bindings/" + BindingClass + ".cs",
+                GeneratedRoot + "/Bindings/" + BindingClass + ".asset"
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                ControllerSource,
+                ControllerProgram
+            );
+            GeneratedBindingFinalizer.FinalizeAvailableBindings();
+
+            string oracle = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_ORACLE"
+            );
+            Assert.IsFalse(
+                string.IsNullOrWhiteSpace(oracle),
+                "The TinyLlama chat oracle path is required."
+            );
+            Assert.IsTrue(File.Exists(oracle), "The TinyLlama chat oracle is required.");
+            TinyLlamaChatOracle parsed = JsonUtility.FromJson<TinyLlamaChatOracle>(
+                File.ReadAllText(oracle, Encoding.UTF8)
+            );
+            Assert.NotNull(parsed, "The TinyLlama chat oracle did not parse: " + oracle);
+            Assert.AreEqual("udoncl.tinyllama-chat-oracle.v1", parsed.schema);
+            Assert.IsTrue(
+                string.IsNullOrEmpty(parsed.system_text),
+                "The chat example has no system message: " + oracle
+            );
+            Assert.NotNull(parsed.turns, "The chat oracle has no later turns: " + oracle);
+            Assert.Greater(parsed.turns.Length, 0, "The chat oracle has no later turns: " + oracle);
+            int turnCount = parsed.turns.Length + 1;
+            userTexts = new string[turnCount];
+            expectedPromptCounts = new int[turnCount];
+            int[][] expectedTokens = new int[turnCount][];
+            int[][] expectedTextUnits = new int[turnCount][];
+            expectedTexts = new string[turnCount];
+            userTexts[0] = parsed.user_text ?? "";
+            expectedPromptCounts[0] = parsed.prompt_tokens.Length;
+            expectedTokens[0] = parsed.generated_tokens;
+            expectedTextUnits[0] = parsed.generated_text_utf16;
+            expectedTexts[0] = parsed.generated_text ?? "";
+            tokenStride = parsed.max_new_tokens;
+            for (int index = 1; index < turnCount; ++index)
+            {
+                TinyLlamaChatTurn turn = parsed.turns[index - 1];
+                userTexts[index] = turn.user_text ?? "";
+                expectedPromptCounts[index] = turn.prompt_tokens.Length;
+                expectedTokens[index] = turn.generated_tokens;
+                expectedTextUnits[index] = turn.generated_text_utf16;
+                expectedTexts[index] = turn.generated_text ?? "";
+                tokenStride = Math.Max(tokenStride, turn.max_new_tokens);
+            }
+            for (int index = 0; index < turnCount; ++index)
+            {
+                Assert.NotNull(expectedTokens[index]);
+                Assert.NotNull(expectedTextUnits[index]);
+                Assert.Greater(expectedTokens[index].Length, 0);
+                Assert.AreEqual(
+                    expectedTexts[index],
+                    UnitsToString(expectedTextUnits[index], expectedTextUnits[index].Length)
+                );
+            }
+            expectedTokenOffsets = Offsets(expectedTokens);
+            expectedTokenData = Join(expectedTokens, expectedTokenOffsets);
+            expectedTextOffsets = Offsets(expectedTextUnits);
+            expectedTextData = Join(expectedTextUnits, expectedTextOffsets);
+        }
+
+        // See PublicTinyLlamaConversationLifecycleTests: EnterPlayMode reloads
+        // the domain, so this iterator must not use lambdas or closures.
+        [UnityTest]
+        public IEnumerator GeneratedUSharpBindingChatsAndMatchesOracleTokens()
+        {
+            yield return new EnterPlayMode();
+
+            Assert.NotNull(expectedTokenData, "Oracle was not restored after the domain reload.");
+            int turnCount = userTexts.Length;
+            int[][] expectedTokens = Split(expectedTokenData, expectedTokenOffsets);
+            int[][] expectedTextUnits = Split(expectedTextData, expectedTextOffsets);
+            int textStride = tokenStride * TextUnitsPerToken;
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
+            );
+            Assert.NotNull(prefab, "The generated chat binding prefab is missing.");
+            GameObject instance = UnityEngine.Object.Instantiate(prefab);
+            UdonBehaviour controller = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
+                instance,
+                ControllerProgram
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + BindingClass
+            );
+            Assert.NotNull(binding, "The generated binding UdonBehaviour was not found.");
+            Assert.NotNull(controller, "The minimal chat test controller was not added.");
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "userTexts", userTexts);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "tokenStride", tokenStride);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "textStride", textStride);
+            SetInts(controller, "generatedTokens", tokenStride * turnCount);
+            SetInts(controller, "generatedCounts", turnCount);
+            SetInts(controller, "streamedUnits", textStride * turnCount);
+            SetInts(controller, "streamedLengths", turnCount);
+            SetInts(controller, "messageCalls", turnCount);
+            SetInts(controller, "streamChunk", textStride);
+            SetInts(controller, "tokenChunk", tokenStride);
+
+            capturedVmError = null;
+            bool ignoreFailingMessages = LogAssert.ignoreFailingMessages;
+            LogAssert.ignoreFailingMessages = true;
+            Application.logMessageReceived += CaptureVmError;
+
+            // Generous bound as in the chat tests: every model step at about
+            // 4,100 frames, plus the two Initialize calls and tokenization.
+            int generateSteps = 0;
+            for (int index = 0; index < turnCount; ++index)
+                generateSteps += expectedPromptCounts[index] + expectedTokens[index].Length - 1;
+            int timeoutFrames = (generateSteps + turnCount + 2) * 4100 + 3000 * turnCount;
+            UdonclFixtureTiming timing = new UdonclFixtureTiming("tinyllama_minimal_chat");
+            timing.TraceBinding(binding);
+            int frame = 0;
+            int lastPhase = -1;
+            int lastTurn = -1;
+            bool completed = false;
+            try
+            {
+                timing.Begin(PhaseName(1), 0);
+                UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+                while (frame < timeoutFrames && !completed && capturedVmError == null)
+                {
+                    ++frame;
+                    yield return null;
+                    timing.Frame();
+                    completed = ReadBool(controller, "completed");
+                    int currentPhase = ReadInt(controller, "phase");
+                    int currentTurn = ReadInt(controller, "turn");
+                    if (currentPhase != lastPhase || currentTurn != lastTurn)
+                    {
+                        lastPhase = currentPhase;
+                        lastTurn = currentTurn;
+                        timing.Phase(
+                            PhaseName(currentPhase) + "-" + currentTurn,
+                            currentPhase == PhaseGenerate && currentTurn < turnCount
+                                ? expectedPromptCounts[currentTurn]
+                                    + expectedTokens[currentTurn].Length
+                                    - 1
+                                : 0
+                        );
+                        Debug.Log(
+                            string.Format(
+                                "udoncl tinyllama_minimal_chat turn={0} phase={1} ({2}) frame={3} ms={4}",
+                                currentTurn,
+                                currentPhase,
+                                PhaseName(currentPhase),
+                                frame,
+                                timing.ElapsedMillisecondsText
+                            )
+                        );
+                    }
+                }
+            }
+            finally
+            {
+                timing.End();
+                Application.logMessageReceived -= CaptureVmError;
+                LogAssert.ignoreFailingMessages = ignoreFailingMessages;
+            }
+
+            int phase = ReadInt(controller, "phase");
+            int failedTurn = ReadInt(controller, "turn");
+            int status = ReadInt(controller, "status");
+            int libraryStatus = ReadInt(controller, "libraryStatus");
+            int asyncDiagnostic = ReadInt(controller, "asyncDiagnostic");
+            int textAfterReinitialize = ReadInt(controller, "textAfterReinitialize");
+            int[] generatedTokens = ReadInts(controller, "generatedTokens");
+            int[] generatedCounts = ReadInts(controller, "generatedCounts");
+            int[] streamedUnits = ReadInts(controller, "streamedUnits");
+            int[] streamedLengths = ReadInts(controller, "streamedLengths");
+            int[] messageCalls = ReadInts(controller, "messageCalls");
+            int streamPolls = ReadInt(controller, "streamPolls");
+            int streamBusyPolls = ReadInt(controller, "streamBusyPolls");
+            int streamMidGenerationUpdates = ReadInt(controller, "streamMidGenerationUpdates");
+            bool streamMonotone = ReadBool(controller, "streamMonotone");
+            bool streamPrefixStable = ReadBool(controller, "streamPrefixStable");
+            string vmError = capturedVmError;
+            UnityEngine.Object.Destroy(instance);
+            yield return new ExitPlayMode();
+
+            StringBuilder builder = new StringBuilder()
+                .Append("phase=").Append(phase).Append(" (").Append(PhaseName(phase)).Append(')')
+                .Append(" turn=").Append(failedTurn)
+                .Append(" status=").Append(status)
+                .Append(" libraryStatus=").Append(libraryStatus)
+                .Append(" asyncDiagnostic=").Append(asyncDiagnostic)
+                .Append(" textAfterReinitialize=").Append(textAfterReinitialize)
+                .Append(" frames=").Append(frame)
+                .Append(" streamPolls=").Append(streamPolls)
+                .Append(" streamBusyPolls=").Append(streamBusyPolls)
+                .Append(" streamMidGenerationUpdates=").Append(streamMidGenerationUpdates);
+            for (int index = 0; index < turnCount; ++index)
+            {
+                int[] tokens = Slice(generatedTokens, index * tokenStride, generatedCounts[index]);
+                int[] text = Slice(streamedUnits, index * textStride, streamedLengths[index]);
+                builder
+                    .Append(" turn").Append(index).Append(":")
+                    .Append(" messageCalls=").Append(messageCalls[index])
+                    .Append(" tokens=").Append(Tokens(tokens))
+                    .Append(" expectedTokens=").Append(Tokens(expectedTokens[index]))
+                    .Append(" text=\"").Append(UnitsToString(text, text.Length))
+                    .Append("\" expectedText=\"").Append(expectedTexts[index]).Append('"');
+            }
+            string state = builder
+                .Append(timing.Summary)
+                .Append(" generate_steps=").Append(generateSteps)
+                .ToString();
+            Debug.Log("udoncl tinyllama_minimal_chat result " + state);
+            Assert.IsNull(vmError, "Udon VM halted during " + state + "\n" + vmError);
+            Assert.IsTrue(completed, "TinyLlama minimal chat timed out: " + state);
+            Assert.AreEqual(0, status, "Generated binding failed: " + state);
+            Assert.AreEqual(0, libraryStatus, "C Host failed: " + state);
+            for (int index = 0; index < turnCount; ++index)
+            {
+                // The greedy tokens are the oracle's (Q61); the text is
+                // checked as well.
+                CollectionAssert.AreEqual(
+                    expectedTokens[index],
+                    Slice(generatedTokens, index * tokenStride, generatedCounts[index]),
+                    "turn " + index + " tokens: " + state
+                );
+                CollectionAssert.AreEqual(
+                    expectedTextUnits[index],
+                    Slice(streamedUnits, index * textStride, streamedLengths[index]),
+                    "turn " + index + " text: " + state
+                );
+                Assert.Greater(
+                    messageCalls[index],
+                    1,
+                    "Turn " + index + " was not tokenized in slices: " + state
+                );
+            }
+            Assert.AreEqual(0, streamBusyPolls, "A streamed-text poll was refused as busy: " + state);
+            Assert.Greater(streamMidGenerationUpdates, 0, "No text arrived during generation: " + state);
+            Assert.IsTrue(streamMonotone, "Streamed text length decreased: " + state);
+            Assert.IsTrue(streamPrefixStable, "Streamed text changed after being final: " + state);
+            Assert.AreEqual(0, textAfterReinitialize, "Initialize kept the old reply: " + state);
+            Assert.AreEqual(PhaseDone, phase, state);
+            Debug.Log("udoncl tinyllama_minimal_chat passed " + state);
+        }
+
+        private void CaptureVmError(string message, string stackTrace, LogType type)
+        {
+            if (
+                capturedVmError == null
+                && (type == LogType.Error || type == LogType.Exception)
+                && message.IndexOf("Udon", StringComparison.Ordinal) >= 0
+                && message.IndexOf("exception", StringComparison.OrdinalIgnoreCase) >= 0
+            )
+                capturedVmError = message;
+        }
+
+        private static void SetInts(UdonBehaviour controller, string symbol, int length)
+        {
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, symbol, new int[length]);
+        }
+
+        private static object ReadVariable(UdonBehaviour controller, string symbol)
+        {
+            object value = UdonclArtifactImporter.GetUdonProgramVariable(controller, symbol);
+            Assert.NotNull(value, "Minimal chat controller variable '" + symbol + "' is unset.");
+            return value;
+        }
+
+        private static int ReadInt(UdonBehaviour controller, string symbol)
+        {
+            object value = ReadVariable(controller, symbol);
+            Assert.IsInstanceOf<int>(value, "Controller variable '" + symbol + "' is not int.");
+            return (int)value;
+        }
+
+        private static bool ReadBool(UdonBehaviour controller, string symbol)
+        {
+            object value = ReadVariable(controller, symbol);
+            Assert.IsInstanceOf<bool>(value, "Controller variable '" + symbol + "' is not bool.");
+            return (bool)value;
+        }
+
+        private static int[] ReadInts(UdonBehaviour controller, string symbol)
+        {
+            object value = ReadVariable(controller, symbol);
+            Assert.IsInstanceOf<int[]>(value, "Controller variable '" + symbol + "' is not int[].");
+            return (int[])value;
+        }
+
+        private static string PhaseName(int phase)
+        {
+            return phase >= 0 && phase < PhaseNames.Length ? PhaseNames[phase] : "unknown";
+        }
+
+        private static int[] Offsets(int[][] parts)
+        {
+            int[] offsets = new int[parts.Length + 1];
+            for (int index = 0; index < parts.Length; ++index)
+                offsets[index + 1] = offsets[index] + parts[index].Length;
+            return offsets;
+        }
+
+        private static int[] Join(int[][] parts, int[] offsets)
+        {
+            int[] data = new int[offsets[parts.Length]];
+            for (int index = 0; index < parts.Length; ++index)
+                Array.Copy(parts[index], 0, data, offsets[index], parts[index].Length);
+            return data;
+        }
+
+        private static int[][] Split(int[] data, int[] offsets)
+        {
+            int[][] parts = new int[offsets.Length - 1][];
+            for (int index = 0; index < parts.Length; ++index)
+                parts[index] = Slice(data, offsets[index], offsets[index + 1] - offsets[index]);
+            return parts;
+        }
+
+        private static int[] Slice(int[] values, int offset, int count)
+        {
+            if (values == null || offset < 0 || offset > values.Length)
+                return new int[0];
+            int length = Math.Max(0, Math.Min(count, values.Length - offset));
+            int[] slice = new int[length];
+            Array.Copy(values, offset, slice, 0, length);
+            return slice;
+        }
+
+        private static string UnitsToString(int[] units, int count)
+        {
+            int[] prefix = Slice(units, 0, count);
+            char[] characters = new char[prefix.Length];
+            for (int index = 0; index < prefix.Length; ++index)
+                characters[index] = (char)prefix[index];
+            return new string(characters);
+        }
+
+        private static string Tokens(int[] values)
+        {
+            StringBuilder text = new StringBuilder("[");
+            for (int index = 0; values != null && index < values.Length; ++index)
+            {
+                if (index != 0)
+                    text.Append(',');
+                text.Append(values[index]);
+            }
+            return text.Append(']').ToString();
+        }
+
+        [Serializable]
+        private sealed class TinyLlamaChatTurn
+        {
+            public string user_text;
+            public int max_new_tokens;
+            public int[] prompt_tokens;
+            public int[] generated_tokens;
+            public string generated_text;
+            public int[] generated_text_utf16;
+        }
+
+        [Serializable]
+        private sealed class TinyLlamaChatOracle
+        {
+            public string schema;
+            public string system_text;
+            public string user_text;
+            public int max_new_tokens;
+            public int[] prompt_tokens;
+            public int[] generated_tokens;
+            public string generated_text;
+            public int[] generated_text_utf16;
+            public TinyLlamaChatTurn[] turns;
+        }
+    }
+}

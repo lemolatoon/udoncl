@@ -31,6 +31,10 @@ namespace Lemolatoon.Udoncl.Editor
             "tinyllama-multi-turn-chat-test-controller.cs.txt";
         private const string MultiTurnChatLifecycleTestTemplate =
             "tinyllama-multi-turn-chat-lifecycle-test.cs.txt";
+        private const string MinimalChatControllerTemplate =
+            "tinyllama-minimal-chat-test-controller.cs.txt";
+        private const string MinimalChatLifecycleTestTemplate =
+            "tinyllama-minimal-chat-lifecycle-test.cs.txt";
         private const string SampleValidationRoot = "Assets/UdonclSampleValidation";
         private const string TinyLlamaChatSample = "TinyLlama Chat";
         private const string TinyLlamaChatBindingStub = "tinyllama-chat-binding.cs.txt";
@@ -412,6 +416,93 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/Udoncl.TinyLlama.Chat.Focused.Tests.asmdef",
                 "{\n"
                     + "  \"name\": \"Udoncl.TinyLlama.Chat.Focused.Tests\",\n"
+                    + "  \"references\": [\"Udoncl.Editor\", "
+                    + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
+                    + "  \"includePlatforms\": [\"Editor\"],\n"
+                    + "  \"overrideReferences\": true,\n"
+                    + "  \"precompiledReferences\": [\"nunit.framework.dll\", "
+                    + "\"VRC.Udon.Common.dll\"],\n"
+                    + "  \"autoReferenced\": false,\n"
+                    + "  \"optionalUnityReferences\": [\"TestAssemblies\"]\n"
+                    + "}\n"
+            );
+            AssetDatabase.ImportAsset(
+                validationRoot,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        }
+
+        // The artifact of examples/tinyllama-chat, program tinyllama_chat.
+        [MenuItem("Tools/udoncl/Internal/Prepare Public TinyLlama Minimal Chat Validation")]
+        public static void PreparePublicTinyLlamaMinimalChatValidation()
+        {
+            string artifact = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_UNITY_BUNDLE"
+            );
+            if (string.IsNullOrWhiteSpace(artifact))
+                throw new InvalidOperationException(
+                    "UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_UNITY_BUNDLE is required."
+                );
+            artifact = Path.GetFullPath(artifact);
+            if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                throw new FileNotFoundException(
+                    "The TinyLlama chat example artifact is missing.",
+                    artifact
+                );
+            UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(
+                File.ReadAllText(Path.Combine(artifact, "manifest.json"))
+            );
+            if (
+                manifest == null
+                || manifest.program == null
+                || manifest.program.name != "tinyllama_chat"
+            )
+                throw new InvalidDataException(
+                    "The TinyLlama chat example artifact has an unexpected program."
+                );
+            const string root = "Assets/udoncl-generated/tinyllama_chat";
+            AssetDatabase.DeleteAsset(root);
+            if (UdonclArtifactImporter.Import(artifact) != root)
+                throw new InvalidDataException(
+                    "TinyLlama chat example validation imported to an unexpected path."
+                );
+            UnityEditor.PackageManager.PackageInfo package =
+                UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UdonclPackagedExampleImporter).Assembly
+                );
+            if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                throw new InvalidOperationException(
+                    "Could not resolve the installed UdonCL package."
+                );
+            const string validationRoot = "Assets/UdonclSampleValidation";
+            string editorRoot = validationRoot + "/Editor";
+            Directory.CreateDirectory(editorRoot);
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    MinimalChatControllerTemplate
+                ),
+                validationRoot + "/UdonclTinyLlamaMinimalChatTestController.cs",
+                true
+            );
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    MinimalChatLifecycleTestTemplate
+                ),
+                editorRoot + "/PublicTinyLlamaMinimalChatLifecycleTests.cs",
+                true
+            );
+            File.WriteAllText(
+                editorRoot + "/Udoncl.TinyLlama.MinimalChat.Focused.Tests.asmdef",
+                "{\n"
+                    + "  \"name\": \"Udoncl.TinyLlama.MinimalChat.Focused.Tests\",\n"
                     + "  \"references\": [\"Udoncl.Editor\", "
                     + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
                     + "  \"includePlatforms\": [\"Editor\"],\n"

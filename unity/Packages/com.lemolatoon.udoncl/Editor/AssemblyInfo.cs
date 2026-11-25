@@ -5,3 +5,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Udoncl.TinyLlama.Prefill.Focused.Tests")]
 [assembly: InternalsVisibleTo("Udoncl.TinyLlama.Step.Focused.Tests")]
 [assembly: InternalsVisibleTo("Udoncl.TinyLlama.Chat.Focused.Tests")]
+[assembly: InternalsVisibleTo("Udoncl.TinyLlama.MinimalChat.Focused.Tests")]
