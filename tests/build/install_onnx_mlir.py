@@ -223,6 +223,20 @@ class InstallONNXMLIRTests(unittest.TestCase):
         self.assertIn('if(NOT TARGET "${tool}")', include)
         self.assertIn('-E false', include)
 
+    def test_tablegen_headers_are_generated_before_sdk_libraries(self):
+        commands = installer.build_commands(
+            self.lock, Path('build'), 'cmake', 4)
+        self.assertEqual(commands, [
+            ['cmake', '--build', Path('build'), '--config', 'Release',
+             '--parallel', '4', '--target', 'udoncl-onnx-mlir-tablegen'],
+            ['cmake', '--build', Path('build'), '--config', 'Release',
+             '--parallel', '4', '--target', *self.lock['build_targets']],
+        ])
+        include = installer.PROJECT_INCLUDE.read_text(encoding='utf-8')
+        self.assertIn('add_custom_target(udoncl-onnx-mlir-tablegen)', include)
+        self.assertIn('"/Tablegenning$"', include)
+        self.assertIn('cmake_language(DEFER CALL', include)
+
     def test_sdk_without_cmake_exports_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, 'no CMake exports'):
             installer.missing_lit_tools(self.root / 'missing-llvm')

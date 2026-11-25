@@ -24,6 +24,8 @@ PROJECT_INCLUDE = ROOT / 'cmake/onnx-mlir-project-include.cmake'
 # suites are declared even with ONNX_MLIR_BUILD_TESTS=OFF, but the official
 # Linux LLVM release archive does not export every tool.
 LIT_TOOL_TARGETS = ('FileCheck', 'count', 'not', 'split-file', 'llvm-dis')
+# Umbrella over ONNX-MLIR's public TableGen targets, from PROJECT_INCLUDE.
+TABLEGEN_TARGET = 'udoncl-onnx-mlir-tablegen'
 
 
 def run(command, cwd=None):
@@ -239,6 +241,14 @@ def configure_command(lock, source, build, llvm_prefix, host, cmake,
     return command
 
 
+def build_commands(lock, build, cmake, jobs):
+    # Generate every TableGen header first: ONNX-MLIR libraries include
+    # generated headers whose generator they do not depend on.
+    return [[cmake, '--build', build, '--config', 'Release', '--parallel',
+             str(jobs), '--target', *targets]
+            for targets in ([TABLEGEN_TARGET], lock['build_targets'])]
+
+
 def install(lock, host, prefix, source, build, llvm_prefix, jobs):
     if prefix.exists():
         validate(prefix, lock, host)
@@ -261,8 +271,8 @@ def install(lock, host, prefix, source, build, llvm_prefix, jobs):
     ensure_source(lock, source)
     run(configure_command(lock, source, build, llvm_prefix, host, cmake,
                           missing_lit_tools(llvm_prefix)))
-    run([cmake, '--build', build, '--config', 'Release', '--parallel',
-         str(jobs), '--target', *lock['build_targets']])
+    for command in build_commands(lock, build, cmake, jobs):
+        run(command)
     library_root = build / 'Release/lib'
     if not library_root.is_dir():
         library_root = build / 'lib'
