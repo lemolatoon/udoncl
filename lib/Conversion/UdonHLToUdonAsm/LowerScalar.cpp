@@ -1822,7 +1822,14 @@ private:
       initial = integer.getValue().getSExtValue();
     else if (attribute && !isa<UnitAttr>(attribute))
       return global.emitError("Udon variable requires an integer initializer");
-    if ((!type.isInteger(32) && !(pointer && pointer.getAddressSpace() == 0)) ||
+    // A managed object reference (udon_string_t, udon_int32_array_t) is a
+    // slot of its Udon type that starts as null.
+    bool managed =
+        pointer &&
+        (pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE ||
+         pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE);
+    if ((!type.isInteger(32) && !(pointer && pointer.getAddressSpace() == 0) &&
+         !managed) ||
         initial == INT32_MIN || !llvm::isInt<32>(initial) ||
         (pointer && initial != 0))
       return global.emitError(
@@ -1835,7 +1842,14 @@ private:
     for (unsigned suffix = 1; !variableSlotNames.insert(unique).second;
          ++suffix)
       unique = name + "_" + std::to_string(suffix);
-    addSlot(unique, "SystemInt32", std::to_string(initial), false);
+    if (managed) {
+      auto udonType = hostStorageUdonType(type);
+      if (failed(udonType))
+        return global.emitError("Udon variable has no Udon type");
+      addSlot(unique, udonType->str(), "null", false);
+    } else {
+      addSlot(unique, "SystemInt32", std::to_string(initial), false);
+    }
     variableSlots.try_emplace(global.getSymName(), std::move(unique));
     return success();
   }

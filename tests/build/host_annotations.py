@@ -375,6 +375,54 @@ UDONCL_EXPORT int run(void) { return 0; }
     assert ('udonclc-static-resources: static Unity resource lowering was '
             'not assessed') in report.stderr, report.stderr
 
+    # A file-scope udon_string_t keeps the U# string of one export for
+    # another: it is a SystemString Udon variable, never raw heap memory.
+    kept_source = '''\
+#include <stdint.h>
+#include <udoncl/export.h>
+#include <udoncl/string.h>
+UDONCL_PROGRAM("kept_string");
+static udon_string_t message;
+static int32_t position;
+UDONCL_EXPORT int32_t begin_message(udon_string_t text) {
+  message = text;
+  position = 0;
+  return udonStringLength(text);
+}
+UDONCL_EXPORT int32_t continue_message(void) {
+  int32_t length = udonStringLength(message);
+  if (position >= length)
+    return 0;
+  int32_t unit = udonStringCodeUnitAt(message, position);
+  ++position;
+  return unit;
+}
+'''
+    kept = harness.host('kept-string', kept_source)
+    kept_artifact, kept_result = harness.compile(
+        'kept-string', None, '--host-llvm', kept)
+    assert kept_result.returncode == 0, kept_result.stderr
+    kept_assembly = (kept_artifact / 'host.uasm').read_text(encoding='utf-8')
+    assert '__vrc_variable_message: %SystemString, null' in kept_assembly, \
+        kept_assembly
+    assert ('PUSH, __0_text__param\n        PUSH, __vrc_variable_message\n'
+            '        COPY') in kept_assembly, kept_assembly
+    # continue_message reads its code unit from the variable.
+    lines = kept_assembly.splitlines()
+    chars = next(index for index, line in enumerate(lines)
+                 if 'SystemString.__ToCharArray' in line)
+    assert any('PUSH, __vrc_variable_message' in line
+               for line in lines[chars - 4:chars]), kept_assembly
+    # Its address is never observable: taking it is an error.
+    addressed = harness.host('kept-string-addressed', kept_source.replace(
+        'static int32_t position;', '''static int32_t position;
+static udon_string_t other;''').replace(
+        'message = text;', '*(text == other ? &other : &message) = text;'))
+    harness.rejected(
+        'kept-string-addressed', None,
+        'holds a udon_string_t but cannot be a Udon variable '
+        '(pointer_escape_or_alias)', '--host-llvm', addressed)
+
     print(f'host_annotations=passed exports={len(exports)}')
 
 

@@ -754,6 +754,13 @@ def PromoteHostGlobalsToUdonVariablesPass : Pass<"vrc-promote-host-globals-to-ud
     such a global a named heap slot initialized with the global's initializer
     instead of a raw heap cell.
 
+    A global holding a managed Udon object reference (a file-scope
+    `udon_string_t` or `udon_int32_array_t`, pointers of address spaces 200
+    and 201) is promoted the same way and becomes a null-initialized variable
+    of its Udon type (`SystemString`, `SystemInt32Array`); the byte memory of
+    the raw heap cannot hold it, so one that cannot be promoted is an error
+    naming the variable.
+
     Globals with any other address use (pointer arithmetic with a run-time
     offset, bulk memory operations, calls, comparisons, a stored address),
     with a partial or retyped access, or with an initializer the Udon

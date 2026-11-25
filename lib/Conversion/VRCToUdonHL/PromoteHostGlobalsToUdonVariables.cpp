@@ -20,6 +20,8 @@
 #include "VRC/Analysis/HostGlobalAccesses.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "udoncl/array.h"
+#include "udoncl/string.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/STLExtras.h"
@@ -34,6 +36,15 @@ namespace vrc {
 
 namespace {
 namespace host = ::vrc::udonhl;
+
+/// Whether `type` is a reference to a managed Udon object (udon_string_t,
+/// udon_int32_array_t), which the byte memory of the raw heap cannot hold.
+bool isManagedReference(Type type) {
+  auto pointer = dyn_cast<host::PtrType>(type);
+  return pointer &&
+         (pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE ||
+          pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE);
+}
 
 /// Why `global` must stay in the raw heap, or empty when it can be a Udon
 /// variable.
@@ -50,7 +61,8 @@ StringRef rawHeapReason(host::GlobalOp global,
     return "address_in_initializer";
   Type type = global.getStorageType();
   auto pointer = dyn_cast<host::PtrType>(type);
-  if (!type.isInteger(32) && !(pointer && pointer.getAddressSpace() == 0))
+  if (!type.isInteger(32) && !(pointer && pointer.getAddressSpace() == 0) &&
+      !isManagedReference(type))
     return "not_one_i32_slot";
   if (global.getAlignment() < 4)
     return "underaligned";
@@ -104,6 +116,21 @@ struct PromoteHostGlobalsToUdonVariablesPass
                      << " storage="
                      << (reason.empty() ? "udon_variable" : reason) << '\n';
       if (!reason.empty()) {
+        // A managed object reference has no byte representation: its
+        // global must be a Udon variable.
+        if (isManagedReference(global.getStorageType())) {
+          global.emitError("the Host variable ")
+              << global.getSymName() << " holds a "
+              << (cast<host::PtrType>(global.getStorageType())
+                              .getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE
+                      ? "udon_string_t"
+                      : "udon_int32_array_t")
+              << " but cannot be a Udon variable (" << reason
+              << "); keep it a file-scope variable that is only assigned "
+                 "and read, never addressed";
+          signalPassFailure();
+          return;
+        }
         ++numKeptInRawHeap;
         continue;
       }
