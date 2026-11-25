@@ -42,7 +42,7 @@ the compiler:
      MNIST binding.
    - **TinyLlama Chat** (`TinyLlamaChat`) chats with TinyLlama-1.1B. The model
      is too large to bundle, so this sample needs the artifact you build in
-     the [TinyLlama tutorial](#chat-with-tinyllama-4096-token-context).
+     the [TinyLlama tutorial](#chat-with-tinyllama).
 
 The [tutorials](#tutorials) below show how to build these artifacts
 yourself and call them from U#. See
@@ -189,7 +189,7 @@ udoncl_add_unity_library(my_unity_library
   the tensors. Every symbolic dimension needs one of the two; see the
   [MNIST tutorial](#compile-your-own-onnx-model-with-host-c-mnist) for a
   fixed dimension and the
-  [TinyLlama tutorial](#chat-with-tinyllama-4096-token-context) for a
+  [TinyLlama tutorial](#chat-with-tinyllama) for a
   bounded one.
 
 Build the target to write the importable artifact to
@@ -231,8 +231,8 @@ available as a Package Sample:
    launches an OpenCL C kernel of your own.
 2. [MNIST](#compile-your-own-onnx-model-with-host-c-mnist): an ONNX model
    driven by Host C.
-3. [TinyLlama](#chat-with-tinyllama-4096-token-context): a 1.1B-parameter
-   chat model with a 4096-token context.
+3. [TinyLlama](#chat-with-tinyllama): a 1.1B-parameter
+   chat model in one Host C file and one OpenCL C kernel.
 
 ### Write your own Host C and OpenCL C kernel (SAXPY)
 
@@ -790,7 +790,7 @@ udoncl_add_unity_library(onnx-mnist
   into the Host library `mnist_host`. `DIMENSIONS batch=1` fixes the
   model's symbolic `batch` dimension; every symbolic dimension needs a
   build-time value or, with `DIMENSION_BOUNDS`, a build-time bound (see the
-  [TinyLlama tutorial](#chat-with-tinyllama-4096-token-context)).
+  [TinyLlama tutorial](#chat-with-tinyllama)).
 - `mnist_user_host` is your Host C. `UdonONNXRuntime::UdonONNXRuntime` is the
   session API it calls, and `UdonDNN::OpenCLRuntime` is the linked OpenCL
   runtime with the UdonDNN kernels enabled.
@@ -1044,18 +1044,18 @@ disables the behaviour, which disposes the model.
 
 > **Screenshot (pending):** Unity Console in Play Mode showing "MNIST: predicted 7" — docs/images/getting-started/mnist-console-output.png
 
-### Chat with TinyLlama (4096-token context)
+### Chat with TinyLlama
 
-This tutorial builds the 4096-token Chat Artifact of
-[`examples/onnx-transformer-tiny`](examples/onnx-transformer-tiny/README.md)
-(target `onnx-transformer-tiny-chat-4k`) from the real TinyLlama-1.1B-Chat
-model and its tokenizer, and chats with it from U#. The C Host applies the
-chat template, tokenizes your message, runs the model on the GPU one position
-at a time, and decodes the reply, which U# streams while it is generated.
-Build the compiler first as described in [Install and build](#install-and-build),
-including `install_onnx_mlir.py`, and work through the
-[MNIST tutorial](#compile-your-own-onnx-model-with-host-c-mnist) first: this
-one uses the same ONNX workflow at a much larger scale.
+This tutorial builds [`examples/tinyllama-chat`](examples/tinyllama-chat/README.md)
+from the real TinyLlama-1.1B-Chat model and its tokenizer, and chats with it
+from U#. The whole chat is one Host C file and one OpenCL C kernel: the Host
+applies the chat template, tokenizes your message, runs the model on the GPU
+one position at a time, selects each next token with the kernel, and decodes
+the reply, which U# streams while it is generated. A conversation holds 2048
+tokens. Build the compiler first as described in
+[Install and build](#install-and-build), including `install_onnx_mlir.py`,
+and work through the [MNIST tutorial](#compile-your-own-onnx-model-with-host-c-mnist)
+first: this one uses the same ONNX workflow at a much larger scale.
 
 The model is too large to ship with the Unity package, so there is no bundled
 import; the **TinyLlama Chat** Package Sample needs the artifact you build
@@ -1063,262 +1063,210 @@ here. Keep these limits in mind:
 
 - The model download is the pinned 4-bit quantized
   `onnx-community/TinyLlama-1.1B-Chat-v1.0-ONNX` `model_q4.onnx` (about
-  910 MB). In the measurement recorded in
-  [TINYLLAMA_AOT_CONVERSATION_PLAN.md](TINYLLAMA_AOT_CONVERSATION_PLAN.md#4096-token-artifacts),
-  the 4096-token Conversation Artifact compiled to 37 kernels and 107 Device
-  buffers totalling 358 MB of GPU memory, before its key/value cache moved
-  to the bounded session binding described below.
-- Per position, attention loads and computes only the positions the
-  conversation holds, but its draws still cover all 4096 positions.
-- TinyLlama-1.1B was trained on 2048 positions (`max_position_embeddings`).
-  Longer conversations run, because its rotary embedding is computed from the
-  position, but replies past position 2048 may degrade.
+  910 MB). Its key/value cache takes 88 MB of GPU memory at 2048 tokens.
+- A conversation only grows. Every message continues after the previous reply
+  until the 2048 tokens are used up; then `ContinueMessage` fails with
+  `CAPACITY_EXCEEDED`. `Dispose` followed by `Initialize` starts a new one.
+- The message runs one token per model run (there is no batched prefill), and
+  a reply has at most 32 tokens.
+
+[`examples/onnx-transformer-tiny`](examples/onnx-transformer-tiny/README.md)
+is the advanced version of the same chat: a 4096-token context, a reset
+export, a token-array Host separated from its text layer, and a decode loop
+that overlaps the next model run with the token read-back.
 
 #### 1. The files you write
 
-The example keeps the model-independent parts in C files of its own and lets
-CMake derive the chat configuration:
+**The Host C file**
+([`tinyllama_chat.c`](examples/tinyllama-chat/tinyllama_chat.c)). It owns
+the OpenCL context and queue and every graph input and output, drives the
+model through the UdonONNX session API of the MNIST tutorial, and is the
+library's whole U# API:
 
-**The token-array Conversation Host**
-([`conversation_host.c`](examples/onnx-transformer-tiny/conversation_host.c),
-with [`conversation_host.h`](examples/onnx-transformer-tiny/conversation_host.h)).
-It owns the OpenCL context and queue and every graph input and output, drives
-the model through the UdonONNX session API of the MNIST tutorial, keeps the
-key/value cache on the GPU between positions, and selects each next token
-with an argmax on the GPU (greedy decoding).
+| C export | U# method | What it does |
+| --- | --- | --- |
+| `initialize()` | `StartInitialize` | Creates the OpenCL objects, the session and the ArgMax kernel |
+| `begin_message(text)` | `TryBeginMessage` | Starts tokenizing the next user message |
+| `continue_message()` | `TryContinueMessage` | Tokenizes a bounded slice: 1 while work is pending, 0 once the message is ready, -status on failure |
+| `generate()` | `StartGenerate` | Runs the message, then replies greedily until EOS or 32 tokens |
+| `read_streamed_text(destination, offset)` | `TryReadStreamedText` | Copies the reply text that is final so far; also while `Generate` runs |
+| `read_generated_tokens(destination)` | `TryReadGeneratedTokens` | Copies the token IDs of the last reply |
+| `dispose()` | `TryDispose` | Releases everything; `Initialize` may run again |
 
 The model library bounds `past_sequence_length` instead of fixing it (see
-the CMake project below), so one run is one position on a past of `position`
+the CMake project below), so one run is one position `t` on a past of `t`
 rows and costs as many rows as the conversation holds. Each of the 22 layers
-keeps its K and its V in one private `CL_MEM_READ_WRITE` buffer of the whole
-Context Capacity (`[1, 4, 4096, 64]` floats), 44 buffers in all. Every run
-binds the attention mask at `position + 1`, and each layer's past at
-`position` rows and present at `position + 1` rows, both in the same buffer
-with `buffer_dims` of the capacity. The past is then the leading block of the
-present, so the run writes only the new row (an in-place Concat; see
-[operator-ownership.md](docs/architecture/operator-ownership.md#in-place-concat)).
-Nothing is ever cleared: `reset` starts again at position 0, and a later turn
-continues at the position the conversation reached. Its exports are
-`initialize`, `reset`, `set_prompt_tokens`,
-`generate`, `generated_token_count`,
-`read_generated_tokens`, and `shutdown`:
+keeps its K and its V in one buffer of the whole capacity, `[1, 4, 2048, 64]`
+floats, in the arrays `keys[22]` and `values[22]` that `initialize` creates in
+a loop and `dispose` releases in a loop. Every run binds the attention mask
+at `t + 1`, and each layer's past at `t` rows and present at `t + 1` rows,
+both in the same buffer with `buffer_dims` of the capacity. The past is then
+the leading block of the present, so the run writes only the new row (an
+in-place Concat; see
+[operator-ownership.md](docs/architecture/operator-ownership.md#in-place-concat)):
 
 ```c
-/* Binds the tensors of a run at `position`. Bind copies the dimensions,
-   so every run binds them again. */
-static udononnxStatus_t bind_position(uint32_t position) {
-  int64_t mask_dims[2] = {1, (int64_t)position + 1};
-  int64_t past_dims[4] = {1, 4, (int64_t)position, 64};
-  int64_t present_dims[4] = {1, 4, (int64_t)position + 1, 64};
+static udononnxStatus_t bind_position(uint32_t t) {
+  int64_t mask_dims[2] = {1, (int64_t)t + 1};
+  int64_t past_dims[4] = {1, 4, (int64_t)t, 64};
+  int64_t present_dims[4] = {1, 4, (int64_t)t + 1, 64};
   udononnxStatus_t status;
-  int layer;
   status = udononnxBindInput(session, "attention_mask", attention_mask, 2,
                              mask_dims, mask_buffer_dims);
-  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
-    if (status == UDONONNX_STATUS_SUCCESS)
-      status = udononnxBindInput(session, past_key_names[layer], *keys[layer],
-                                 4, past_dims, cache_buffer_dims);
-    if (status == UDONONNX_STATUS_SUCCESS)
-      status = udononnxBindOutput(session, present_key_names[layer],
-                                  *keys[layer], 4, present_dims,
-                                  cache_buffer_dims);
-    /* ... and the same for the values ... */
-  }
-  return status;
-}
-
-UDONCL_EXPORT udononnxStatus_t initialize(void) {
-  /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
-     clCreateCommandQueue, create input_ids, attention_mask, position_ids,
-     logits, the 44 key/value buffers and the argmax buffers ... */
-  status = udononnxCreateSession(context, queue, &session);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status = bind_fixed(); /* input_ids, position_ids and logits */
-  /* ... fill the attention mask with ones once: every leading block of it
-     is then right ... */
-}
-
-UDONCL_EXPORT udononnxStatus_t generate(uint32_t max_new_tokens) {
-  /* ... check the state and the Context Capacity ... */
-  /* Run the prompt one position per run, then decode one token per run
-     until EOS or max_new_tokens. Each run uploads its token and position,
-     calls bind_position and udononnxRun. */
-  for (index = 0; index < prompt_tokens; ++index) {
-    status = enqueue_prompt_token(prompt[index], base + index);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  for (int layer = 0; layer < LAYERS; ++layer) {
+    status = udononnxBindInput(session, past_key_names[layer], keys[layer], 4,
+                               past_dims, cache_buffer_dims);
     if (status != UDONONNX_STATUS_SUCCESS)
-      break;
+      return status;
+    /* ... the past value, then the present key and value ... */
   }
-  for (output_index = 0; output_index < max_new_tokens; ++output_index) {
-    status = decode_token(base + prompt_tokens + output_index,
-                          output_index + 1u == max_new_tokens, &token);
-    generated[output_index] = (int32_t)token;
-    generated_count = output_index + 1u;
-    if (token == TINYLLAMA_EOS_TOKEN)
-      break;
-  }
-  /* ... */
+  return UDONONNX_STATUS_SUCCESS;
 }
 ```
 
-**The 4096-token Host file**
-([`conversation_host_4k.c`](examples/onnx-transformer-tiny/conversation_host_4k.c))
-pins the Context Capacity and includes the shared Host, so the graph, the Host
-and the text layer cannot drift apart:
+The token, its position and the logits keep their shape, so `initialize`
+binds them once; `generate` binds the rest at every run. Each tensor is bound
+from one export only. `generate` runs the message one token per run, then
+lets the ArgMax kernel pick each next token from the logits and reads that
+one word back:
 
 ```c
-#ifndef TINYLLAMA_CONTEXT_CAPACITY
-#define TINYLLAMA_CONTEXT_CAPACITY 4096u
-#endif
-#if TINYLLAMA_CONTEXT_CAPACITY != 4096u
-#error "conversation_host_4k.c is the Host of a 4096-token Context Capacity"
-#endif
-
-#include "conversation_host.c"
+  for (index = 0; index < count; ++index) {
+    status = run_token((uint32_t)message_words[index]);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      return fail(status);
+  }
+  for (index = 0; index < limit; ++index) {
+    /* The token selected last runs before the next one is selected. */
+    if (index > 0) {
+      status = run_token(selected);
+      if (status != UDONONNX_STATUS_SUCCESS)
+        return fail(status);
+    }
+    status = select_token(); /* the ArgMax kernel, then a 4-byte read */
+    /* ... record the token and decode it into the streamed text ... */
+    if (selected == (uint32_t)model.eos_token_id)
+      break;
+  }
 ```
 
-**The text layer**
-([`conversation_text.c`](examples/onnx-transformer-tiny/conversation_text.c)).
-It composes the Conversation Host with UdonTokenizers and the tokenizer tables
-compiled at build time (the chat template is compiled too, not interpreted).
-A message is tokenized in bounded slices so that a long message never has to
-fit in one Udon event, and decoded text is returned as UTF-16 code units, one
-per `int`:
-
-```c
-/* Starts a conversation; begin_chat_turn appends the next user
-   message after a completed reply. */
-UDONCL_EXPORT udononnxStatus_t begin_chat_prompt(void);
-
-/* Does at most max_work units of prompt work (about one UTF-16 code unit
-   each); the prompt is committed by the call that leaves nothing pending. */
-UDONCL_EXPORT udononnxStatus_t continue_chat_prompt(
-    udon_string_t system_text, udon_string_t user_text, uint32_t max_work);
-
-/* 1 while a begun chat prompt or turn still has work pending, else 0. */
-UDONCL_EXPORT uint32_t chat_prompt_pending(void);
-
-/* The number of UTF-16 code units of the reply that are final so far, valid
-   while the generation is still running. */
-UDONCL_EXPORT_WHILE_BUSY uint32_t streamed_text_length(void);
-
-/* Copies the final code units [offset, offset + count) of the reply to the
-   start of destination. */
-UDONCL_EXPORT_WHILE_BUSY udononnxStatus_t read_streamed_text(
-    udon_int32_array_t destination, uint32_t offset, uint32_t count);
-```
-
+The reply's last token is never run; the next message runs it first,
+followed by EOS when the reply was cut off. The message itself is kept in a
+file-scope `udon_string_t message` between `begin_message` and the
+`continue_message` calls, which tokenize it with the chat template compiled
+from the tokenizer files (UdonTokenizers) a bounded amount of work at a time.
 `udon_string_t` parameters become U# `string` parameters, and
 `udon_int32_array_t` becomes `int[]`.
 
+**The ArgMax kernel**
+([`argmax.cl`](examples/tinyllama-chat/argmax.cl)), launched with
+`clCreateKernel`, `clSetKernelArg` and a one-item `clEnqueueNDRangeKernel`:
+
+```c
+/* Greedy decoding: the index of the largest of the 32000 logits of the last
+ * run, ties to the lowest index. One work item reads every logit. */
+#define VOCABULARY 32000u
+
+__kernel void tinyllama_argmax(__global const float *logits,
+                               __global uint *token) {
+  uint best = 0u;
+  float value = 0.0f;
+  for (uint index = 0u; index < VOCABULARY; ++index) {
+    float candidate = logits[index];
+    if (index == 0u || candidate > value) {
+      value = candidate;
+      best = index;
+    }
+  }
+  token[get_global_id(0)] = best;
+}
+```
+
 **The CMake project**
-([`CMakeLists.txt`](examples/onnx-transformer-tiny/CMakeLists.txt)). Its
-helper functions build the 512-token and 4096-token variants from the same
-files. For `onnx-transformer-tiny-chat-4k` they amount to:
+([`CMakeLists.txt`](examples/tinyllama-chat/CMakeLists.txt)):
 
 ```cmake
-# The model, specialized to one position per run on a past of at most 4095
-# positions, whose extent the Host binds for every run.
-udoncl_add_onnx_host_library(transformer_conversation_model_host_4k
+math(EXPR past_length "${capacity} - 1")
+udoncl_add_onnx_host_library(tinyllama_model
   MODEL "${UDONCL_TINYLLAMA_ONNX_MODEL}"
-  DIMENSIONS
-    batch_size=1
-    sequence_length=1
-  DIMENSION_BOUNDS
-    past_sequence_length=4095)
+  DIMENSIONS batch_size=1 sequence_length=1
+  DIMENSION_BOUNDS past_sequence_length=${past_length})
 
-# The Conversation Host and the text layer, compiled with the same dimensions.
-udoncl_add_host_library(transformer_conversation_user_host_4k
-  conversation_host_4k.c)
-target_compile_definitions(transformer_conversation_user_host_4k INTERFACE
-  TINYLLAMA_CONTEXT_CAPACITY=4096u
-  TINYLLAMA_GENERATED_CAPACITY=32u)
-udontokenizers_add_huggingface_model(transformer_chat_tokenizer_4k
+# The Host C file, compiled next to the tokenizer tables.
+udontokenizers_add_huggingface_model(tinyllama_chat_host
   TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
   SYMBOL tinyllama_tokenizer
-  SOURCES conversation_text.c)
+  SOURCES tinyllama_chat.c)
+target_compile_definitions(tinyllama_chat_host INTERFACE
+  TINYLLAMA_CAPACITY=${capacity}u
+  TINYLLAMA_MAX_NEW_TOKENS=${max_new_tokens}u)
 
-udoncl_add_unity_library(onnx-transformer-tiny-chat-4k
-  BINDING_CLASS UdonclTinyLlamaChatBinding
+udoncl_add_device_library(tinyllama_argmax argmax.cl)
+
+udoncl_add_unity_library(tinyllama-chat
   DEVICE_TEXEL_FORMAT rgba32_float
   OMIT_INTERMEDIATE_IR
   HOST_LIBRARIES
-    transformer_conversation_model_host_4k
-    transformer_conversation_user_host_4k
-    transformer_chat_tokenizer_4k
+    tinyllama_model
+    tinyllama_chat_host
     UdonONNXRuntime::UdonONNXRuntime
     UdonTokenizers::UdonTokenizers
+  DEVICE_LIBRARIES
+    tinyllama_argmax
   LIBRARIES
     UdonONNXOperators::UdonONNXOperators
     UdonATen::UdonATen
     UdonBLAS::UdonBLAS)
 ```
 
-The real CMake file also sets the include directories and the same
-definitions on the tokenizer target. These cache variables control the build:
+The real file also finds the packages, sets the include directories and
+checks these cache variables:
 
-- `UDONCL_TINYLLAMA_ONNX_MODEL`: the downloaded ONNX model. Without it the
-  project builds only the small synthetic transformer.
-- `UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY`: the downloaded tokenizer files. The
-  Chat Artifacts need it; without it only the token-array Conversation
-  Artifacts are configured.
-- `UDONCL_TINYLLAMA_CONTEXT_4K` (default `ON`): also configure the 4096-token
-  `-4k` targets next to the 512-token ones
-  (`UDONCL_TINYLLAMA_CONTEXT_CAPACITY`, default 512). The 4096-token
-  programs are `tinyllama_real_conversation_4k` and `tinyllama_real_chat_4k`;
-  both variants have the same binding class and U# API, so a project imports
-  one of the two.
-- `UDONCL_TINYLLAMA_MAX_NEW_TOKENS` (default 32): the most tokens one
-  generation may request.
+- `UDONCL_TINYLLAMA_ONNX_MODEL` and `UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY`
+  (required): the downloaded model and tokenizer files.
+- `UDONCL_TINYLLAMA_CONTEXT_CAPACITY` (default 2048): the tokens one
+  conversation holds. TinyLlama-1.1B was trained on 2048 positions.
+- `UDONCL_TINYLLAMA_MAX_NEW_TOKENS` (default 32): the most tokens of one
+  reply.
 
-**The public API description.** No config file describes the artifact. The
-CMake project passes three `udoncl_add_unity_library` arguments:
-
-- `BINDING_CLASS UdonclTinyLlamaChatBinding`; the namespace is the default
-  `Lemolatoon.Udoncl.Generated`.
-- `DEVICE_TEXEL_FORMAT rgba32_float`, which stores four words per RGBA32
-  float texel in the real model's Device buffers and weights (cache variable
-  `UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT`).
-- `OMIT_INTERMEDIATE_IR`.
-
-No tensor is public: text goes in as U# strings and comes out through
-`int[]` arrays of the exports, and the compiler derives the Device buffers
-from the ONNX and C Hosts.
-
-The Host C source names the rest. `UDONCL_PROGRAM("tinyllama_real_chat")`
-in [`chat_host.c`](examples/onnx-transformer-tiny/chat_host.c) names the
-program; Unity imports the artifact under
-`Assets/udoncl-generated/tinyllama_real_chat`. The 21 Conversation and
-text-layer exports are U# methods named after the PascalCase of their C
-names (`continue_chat_prompt` -> `ContinueChatPrompt`), with the C parameter
-names. `streamed_text_length` and `read_streamed_text` are
-`UDONCL_EXPORT_WHILE_BUSY`, so U# can poll them while `Generate` runs.
+**The public API description.** No config file describes the artifact.
+`UDONCL_PROGRAM("tinyllama_chat")` in the Host names the program, so Unity
+imports it under `Assets/udoncl-generated/tinyllama_chat` and the binding is
+the default `UdonclTinyllamaChatBinding` in `Lemolatoon.Udoncl.Generated`.
+The exports are U# methods named after the PascalCase of their C names
+(`continue_message` -> `ContinueMessage`), with the C parameter names.
+`read_streamed_text` is `UDONCL_EXPORT_WHILE_BUSY`, so U# can poll it while
+`Generate` runs. No tensor is public: text goes in as a U# string and comes
+out through `int[]` arrays, and the compiler derives the Device buffers from
+the ONNX and C Hosts. `DEVICE_TEXEL_FORMAT rgba32_float` stores four words per
+RGBA32 float texel in the real model's Device buffers and weights.
 
 #### 2. Build
 
 From the repository root, fetch and verify the pinned model and tokenizer.
 Each script downloads into `.deps/models` once (set `UDONCL_MODEL_CACHE` to
 use another directory) and prints the cached path, so the output can be
-captured directly. Then configure the example with both paths and build the
-4096-token Chat Artifact:
+captured directly. Then configure the example with both paths and build it:
 
 ```powershell
 cmake --preset udoncl
 python scripts/build.py
 $model = python scripts/fetch_tinyllama_onnx.py
 $tokenizer = python scripts/fetch_tinyllama_tokenizer.py
-cmake -S examples/onnx-transformer-tiny -B build/tinyllama-cmake -G Ninja `
+cmake -S examples/tinyllama-chat -B build/tinyllama-chat -G Ninja `
   -DCMAKE_PREFIX_PATH="$PWD" `
   -DUDONCL_TINYLLAMA_ONNX_MODEL="$model" `
   -DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY="$tokenizer"
-cmake --build build/tinyllama-cmake --target onnx-transformer-tiny-chat-4k
+cmake --build build/tinyllama-chat --target tinyllama-chat
 ```
 
-Configuring compiles the real model once for every configured variant, so it
-takes much longer than the MNIST project. The importable artifact is written
-to:
+Configuring compiles the real model once, so it takes much longer than the
+MNIST project. The importable artifact is written to:
 
 ```text
-build/tinyllama-cmake/udoncl/onnx-transformer-tiny-chat-4k/artifact
+build/tinyllama-chat/udoncl/tinyllama-chat/artifact
 ```
 
 #### 3. Import into Unity
@@ -1326,17 +1274,16 @@ build/tinyllama-cmake/udoncl/onnx-transformer-tiny-chat-4k/artifact
 1. In a Unity 2022.3 VRChat Worlds project with the
    **UdonCL Runtime and ONNX Importer** package, choose
    **Tools → udoncl → Import Artifacts...** and select the
-   `build/tinyllama-cmake/udoncl/onnx-transformer-tiny-chat-4k/artifact`
-   directory.
+   `build/tinyllama-chat/udoncl/tinyllama-chat/artifact` directory.
 
-   > **Screenshot (pending):** Tools → udoncl → Import Artifacts… with the onnx-transformer-tiny-chat-4k artifact folder selected — docs/images/getting-started/tinyllama-import-artifacts.png
+   > **Screenshot (pending):** Tools → udoncl → Import Artifacts… with the tinyllama-chat artifact folder selected — docs/images/getting-started/tinyllama-import-artifacts.png
 
 2. In the **udoncl Library Import** dialog, choose **Add after Compile**.
    After the generated U# wrapper compiles, Unity creates
-   `Assets/udoncl-generated/tinyllama_real_chat/Prefabs/UdonclTinyLlamaChatBinding.prefab`
+   `Assets/udoncl-generated/tinyllama_chat/Prefabs/UdonclTinyllamaChatBinding.prefab`
    and places an instance in the active scene.
 
-   > **Screenshot (pending):** Project window showing Assets/udoncl-generated/tinyllama_real_chat with its Bindings and Prefabs folders — docs/images/getting-started/tinyllama-generated-assets.png
+   > **Screenshot (pending):** Project window showing Assets/udoncl-generated/tinyllama_chat with its Bindings and Prefabs folders — docs/images/getting-started/tinyllama-generated-assets.png
 
 3. Choose **Create → U# Script**, name it `TinyLlamaChat`, and replace its
    contents with the script in the next step, or import the same script as
@@ -1344,11 +1291,10 @@ build/tinyllama-cmake/udoncl/onnx-transformer-tiny-chat-4k/artifact
    ONNX Importer** → **Samples** → **Import**).
 4. Create a GameObject (for example a Cube, whose Collider lets you interact
    with it), add the **Tiny Llama Chat** component, and drag the
-   `UdonclTinyLlamaChatBinding` scene instance into its **Binding** field.
-   Edit **System Text** and **User Text** as you like. **Max New Tokens** must
-   not exceed `UDONCL_TINYLLAMA_MAX_NEW_TOKENS` (32 by default).
+   `UdonclTinyllamaChatBinding` scene instance into its **Binding** field.
+   Edit **User Text** as you like.
 
-   > **Screenshot (pending):** Inspector of the TinyLlamaChat GameObject with Binding, System Text, User Text, Max New Tokens and Prompt Work Per Frame — docs/images/getting-started/tinyllama-inspector.png
+   > **Screenshot (pending):** Inspector of the TinyLlamaChat GameObject with Binding and User Text — docs/images/getting-started/tinyllama-inspector.png
 
 5. Enter Play Mode and watch the Console.
 
@@ -1357,18 +1303,16 @@ build/tinyllama-cmake/udoncl/onnx-transformer-tiny-chat-4k/artifact
 The generated binding follows the same rules as before: an export that
 launches GPU work becomes `Start<Name>(..., receiver, completionEvent)` with
 `Get<Name>Status()` and `TryGet<Name>Result(out ...)`, and any other export
-becomes `Try<Name>(..., out result)`. `TinyLlamaChat` uses:
+becomes `Try<Name>(..., out result)`. `TinyLlamaChat` follows the lifecycle of
+the other tutorials:
 
-- `StartInitialize` (spans many frames while the weights are uploaded) and
-  `StartGenerate(int maxNewTokens, ...)`.
-- `TryBeginChatPrompt` and `TryContinueChatPrompt(systemText, userText,
-  maxWork, out status)` for the first message, `TryBeginChatTurn` and
-  `TryContinueChatTurn(userText, maxWork, out status)` for every later one,
-  and `TryChatPromptPending(out pending)`: the message is encoded with a
-  bounded amount of work per frame.
-- `TryStreamedTextLength(out length)` and
-  `TryReadStreamedText(int[] destination, int offset, int count, out status)`:
-  the final part of the reply, read every frame while `Generate` runs.
+- `OnEnable` starts `Initialize` one frame later, and `OnDisable` calls
+  `TryDispose`, which ends the conversation.
+- `Interact` sends **User Text**: `TryBeginMessage(userText, out status)`,
+  then `TryContinueMessage(out pending)` once per frame until it returns 0,
+  then `StartGenerate`.
+- While `Generate` runs, `TryReadStreamedText(textChunk, replyLength, out
+  count)` reads the part of the reply that is final, every frame.
 
 The exports that return a `udononnxStatus_t` report `0` on success; the
 sample checks it next to the binding status.
@@ -1383,57 +1327,58 @@ using UnityEngine;
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class TinyLlamaChat : UdonSharpBehaviour
 {
-    // The status the C Host returns from every export (udononnxStatus_t).
+    // The status the C Host returns from its exports (udononnxStatus_t).
     private const int OnnxSuccess = 0;
 
     [SerializeField]
-    private UdonclTinyLlamaChatBinding binding;
-
-    [SerializeField]
-    private string systemText = "You are a friendly assistant in a VRChat world.";
+    private UdonclTinyllamaChatBinding binding;
 
     [SerializeField]
     private string userText = "What is your name?";
 
-    // At most the generated-token capacity the artifact was built with
-    // (UDONCL_TINYLLAMA_MAX_NEW_TOKENS, 32 by default).
-    [SerializeField]
-    private int maxNewTokens = 32;
-
-    // Tokenizer work per frame while a message is encoded, about one UTF-16
-    // code unit each; a long message is spread over several frames.
-    [SerializeField]
-    private int promptWorkPerFrame = 32;
-
     private bool initialized;
     private bool busy;
-    private bool conversationStarted;
-    private bool encodingTurn;
-    private bool generating;
     private int[] textChunk;
     private int replyLength;
     private string reply;
 
-    private void Start()
+    private void OnEnable()
     {
-        // Initialize one frame after start-up so every behaviour is ready.
-        SendCustomEventDelayedFrames("InitializeChat", 1);
+        // One frame later every behaviour, the binding included, is ready.
+        SendCustomEventDelayedFrames(nameof(InitializeChat), 1);
+    }
+
+    private void OnDisable()
+    {
+        if (!initialized)
+            return;
+        initialized = false;
+        // Dispose releases the model and ends the conversation; the next
+        // OnEnable starts a new one.
+        int onnxStatus;
+        int status = binding.TryDispose(out onnxStatus);
+        if (status != UdonclTinyllamaChatBinding.StatusSuccess || onnxStatus != OnnxSuccess)
+            Debug.LogError(
+                "TinyLlama: Dispose failed with status " + status + " and ONNX status " + onnxStatus
+            );
     }
 
     public void InitializeChat()
     {
+        if (initialized || busy)
+            return;
         if (binding == null)
         {
-            Debug.LogError("TinyLlama: assign the UdonclTinyLlamaChatBinding instance.");
+            Debug.LogError("TinyLlama: assign the UdonclTinyllamaChatBinding instance.");
             return;
         }
 
         textChunk = new int[256];
         busy = true;
-        // Initialize creates the OpenCL context and the ONNX session in the
-        // C Host and uploads the model weights; it spans many frames.
-        int status = binding.StartInitialize(this, "OnChatInitialized");
-        if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+        // Initialize creates the OpenCL objects, the model session and the
+        // ArgMax kernel in the C Host; it spans a few frames.
+        int status = binding.StartInitialize(this, nameof(OnChatInitialized));
+        if (status != UdonclTinyllamaChatBinding.StatusSuccess)
             Fail("StartInitialize", status, OnnxSuccess);
     }
 
@@ -1441,14 +1386,12 @@ public class TinyLlamaChat : UdonSharpBehaviour
     {
         int onnxStatus = OnnxSuccess;
         int status = binding.GetInitializeStatus();
-        if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess)
             status = binding.TryGetInitializeResult(out onnxStatus);
         if (!Succeeded("Initialize", status, onnxStatus))
             return;
-
         initialized = true;
         busy = false;
-        Send();
     }
 
     public override void Interact()
@@ -1456,80 +1399,59 @@ public class TinyLlamaChat : UdonSharpBehaviour
         Send();
     }
 
-    // Sends userText: the first message starts the conversation with the
-    // system text, every later one is appended to it as the next turn.
+    // Sends userText as the next message of the conversation.
     public void Send()
     {
         if (!initialized || busy)
             return;
 
         busy = true;
-        encodingTurn = conversationStarted;
         int onnxStatus;
-        int status;
-        if (encodingTurn)
-            status = binding.TryBeginChatTurn(out onnxStatus);
-        else
-            status = binding.TryBeginChatPrompt(out onnxStatus);
-        if (!Succeeded("BeginChatPrompt", status, onnxStatus))
+        int status = binding.TryBeginMessage(userText, out onnxStatus);
+        if (!Succeeded("BeginMessage", status, onnxStatus))
             return;
         Debug.Log("TinyLlama: you: " + userText);
         EncodeMessage();
     }
 
     // The C Host applies the chat template and tokenizes the message, a
-    // bounded amount of work per frame, until nothing is pending.
+    // bounded amount of work per frame: ContinueMessage returns 1 while work
+    // is pending and 0 once the message is ready.
     public void EncodeMessage()
     {
-        int onnxStatus;
-        int status;
-        if (encodingTurn)
-            status = binding.TryContinueChatTurn(userText, promptWorkPerFrame, out onnxStatus);
-        else
-            status = binding.TryContinueChatPrompt(
-                systemText,
-                userText,
-                promptWorkPerFrame,
-                out onnxStatus
-            );
-        if (!Succeeded("ContinueChatPrompt", status, onnxStatus))
-            return;
-
         int pending;
-        status = binding.TryChatPromptPending(out pending);
-        if (!Succeeded("ChatPromptPending", status, OnnxSuccess))
+        int status = binding.TryContinueMessage(out pending);
+        if (!Succeeded("ContinueMessage", status, pending < 0 ? -pending : OnnxSuccess))
             return;
         if (pending != 0)
         {
-            SendCustomEventDelayedFrames("EncodeMessage", 1);
+            SendCustomEventDelayedFrames(nameof(EncodeMessage), 1);
             return;
         }
 
-        conversationStarted = true;
         reply = "";
         replyLength = 0;
-        status = binding.StartGenerate(maxNewTokens, this, "OnReplyGenerated");
+        status = binding.StartGenerate(this, nameof(OnReplyGenerated));
         if (!Succeeded("StartGenerate", status, OnnxSuccess))
             return;
-        generating = true;
-        SendCustomEventDelayedFrames("StreamReply", 1);
+        SendCustomEventDelayedFrames(nameof(StreamReply), 1);
     }
 
     // While the reply is generated, read the part of it that is final.
     public void StreamReply()
     {
-        if (!generating)
+        if (!busy)
             return;
         ReadReplyText();
-        SendCustomEventDelayedFrames("StreamReply", 1);
+        SendCustomEventDelayedFrames(nameof(StreamReply), 1);
     }
 
     public void OnReplyGenerated()
     {
-        generating = false;
+        busy = false;
         int onnxStatus = OnnxSuccess;
         int status = binding.GetGenerateStatus();
-        if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess)
             status = binding.TryGetGenerateResult(out onnxStatus);
         if (!Succeeded("Generate", status, onnxStatus))
             return;
@@ -1537,23 +1459,18 @@ public class TinyLlamaChat : UdonSharpBehaviour
         // After the generation completed the streamed text is the whole reply.
         ReadReplyText();
         Debug.Log("TinyLlama: assistant: " + reply);
-        busy = false;
     }
 
     // Appends the reply text that became final since the last call. The
-    // binding returns UTF-16 code units, one per int.
+    // binding returns UTF-16 code units, one per int, at most textChunk's
+    // length per call.
     private void ReadReplyText()
     {
-        int length;
-        // StatusBusy while the model runs a step: try again next frame.
-        if (binding.TryStreamedTextLength(out length) != UdonclTinyLlamaChatBinding.StatusSuccess)
-            return;
-        while (replyLength < length)
+        int count = textChunk.Length;
+        while (count == textChunk.Length)
         {
-            int count = Mathf.Min(length - replyLength, textChunk.Length);
-            int onnxStatus;
-            int status = binding.TryReadStreamedText(textChunk, replyLength, count, out onnxStatus);
-            if (status != UdonclTinyLlamaChatBinding.StatusSuccess || onnxStatus != OnnxSuccess)
+            int status = binding.TryReadStreamedText(textChunk, replyLength, out count);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess || count < 0)
                 return;
             for (int i = 0; i < count; i++)
                 reply += (char)textChunk[i];
@@ -1563,7 +1480,7 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
     private bool Succeeded(string step, int status, int onnxStatus)
     {
-        if (status == UdonclTinyLlamaChatBinding.StatusSuccess && onnxStatus == OnnxSuccess)
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess && onnxStatus == OnnxSuccess)
             return true;
         Fail(step, status, onnxStatus);
         return false;
@@ -1571,7 +1488,6 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
     private void Fail(string step, int status, int onnxStatus)
     {
-        generating = false;
         busy = false;
         Debug.LogError(
             "TinyLlama: "
@@ -1587,11 +1503,12 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
 #### 5. Expected result
 
-After the model is initialized, the sample sends **User Text** and logs
-`TinyLlama: you: What is your name?`, then streams the reply and logs it as
-`TinyLlama: assistant: ...` once the generation completes. Decoding is greedy,
-so the same conversation gives the same reply. Interact with the object to
-send **User Text** again as the next turn of the same conversation.
+Interact with the object: the sample logs `TinyLlama: you: What is your
+name?`, then streams the reply and logs it as `TinyLlama: assistant: ...`
+once the generation completes. Decoding is greedy, so the same conversation
+gives the same reply. Interact again to send **User Text** as the next turn
+of the same conversation. Leaving Play Mode disables the behaviour, which
+disposes the model.
 
 > **Screenshot (pending):** Unity Console in Play Mode showing the "TinyLlama: you:" and "TinyLlama: assistant:" lines — docs/images/getting-started/tinyllama-console-output.png
 

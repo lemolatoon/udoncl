@@ -27,12 +27,13 @@ ONNX models compile into ordinary UdonCL libraries: a C Host built with
 `udoncl_add_onnx_host_library` and `UdonONNXRuntime` runs the model's
 operators as fragment-shader kernels, and its `UDONCL_EXPORT` functions become
 methods of a generated U# binding like any other library. See
-`examples/onnx-mnist` and `examples/onnx-transformer-tiny`. The package
+`examples/onnx-mnist`, `examples/tinyllama-chat` and
+`examples/onnx-transformer-tiny`. The package
 imports these artifacts through **Tools → udoncl → Import Artifacts...**.
 
 The **ONNX MNIST** Package Sample classifies a hand-drawn digit with the
 MNIST binding; the **TinyLlama Chat** Package Sample chats through the binding
-of a user-built 4096-token TinyLlama Chat Artifact.
+of the user-built TinyLlama chat example (`examples/tinyllama-chat`).
 
 ## Import
 

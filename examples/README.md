@@ -4,8 +4,7 @@ The examples are ordered from the smallest supported user workflow to the
 largest ONNX model. They use public CMake, compiler, artifact, VPM, and Unity
 importer interfaces; test-only fixture commands are not required. The
 [README tutorials](../README.md#tutorials) walk through `saxpy`, `onnx-mnist`,
-and the TinyLlama chat of `onnx-transformer-tiny` step by step, including the
-U# code that calls them.
+and `tinyllama-chat` step by step, including the U# code that calls them.
 
 ## Common setup
 
@@ -29,7 +28,8 @@ are imported with **Tools → udoncl → Import Artifacts...**.
 | [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + OpenCL C kernel on `UdonCL::OpenCLRuntime` | Asynchronous `UDONCL_EXPORT` method, buffers `x`, `y` and `result`, public Write/Read API; **Import C and OpenCL SAXPY** and the **C and OpenCL SAXPY** Package Sample | Fixed buffers; constant NDRange derived from the Host C |
 | [`udonblas-sgemm`](udonblas-sgemm/README.md) | Host C calling the cuBLAS-shaped UdonBLAS API | Asynchronous `RunUdonBlasSgemm` export and per-column result getter | MNIST Dense dimensions (`m=1, n=10, k=144`) |
 | [`onnx-mnist`](../README.md#compile-your-own-onnx-model-with-host-c-mnist) | Standard ONNX MNIST CNN + C Host on `UdonONNXRuntime` | Generated U# binding; **Import ONNX MNIST** and the **ONNX MNIST** Package Sample | Fixed batch of one image |
-| [`onnx-transformer-tiny`](onnx-transformer-tiny/README.md) | Synthetic transformer, or the real TinyLlama-1.1B with its tokenizer | Generated U# bindings; the 4096-token Chat Artifact backs the **TinyLlama Chat** Package Sample | The real model is built from user-downloaded files |
+| [`tinyllama-chat`](tinyllama-chat/README.md) | The real TinyLlama-1.1B-Chat with its tokenizer, one Host C file + an OpenCL C ArgMax kernel on `UdonONNXRuntime` | Generated U# binding with streamed reply text; backs the **TinyLlama Chat** Package Sample | 2048-token conversations, built from user-downloaded files |
+| [`onnx-transformer-tiny`](onnx-transformer-tiny/README.md) | Synthetic transformer, or the real TinyLlama-1.1B with its tokenizer | Generated U# bindings; the advanced 512- and 4096-token Conversation and Chat Artifacts | The real model is built from user-downloaded files |
 | [`mnist-cnn`](mnist-cnn/README.md) | Trained CNN | Native C reference and the ONNX model of `onnx-mnist` | Reference only |
 
 `onnx-q4-component`, `onnx-rms-component`, and `onnx-transpose-component` are
@@ -57,8 +57,8 @@ that calls a generated binding:
 
 - **C and OpenCL SAXPY** (`SaxpyCaller`) and **ONNX MNIST**
   (`MnistClassifier`) work with the two bundled imports above.
-- **TinyLlama Chat** (`TinyLlamaChat`) needs a 4096-token Chat Artifact that
-  you build from the downloaded model; the model is too large to bundle.
+- **TinyLlama Chat** (`TinyLlamaChat`) needs the `tinyllama-chat` artifact
+  that you build from the downloaded model; the model is too large to bundle.
 
 To build the artifacts yourself instead, follow the
 [README tutorials](../README.md#tutorials): configure the example as a CMake
