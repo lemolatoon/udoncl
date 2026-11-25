@@ -15,7 +15,7 @@ namespace Lemolatoon.Udoncl.Generated
         public const int PhaseWriteInputs = 2;
         public const int PhaseRun = 3;
         public const int PhaseReadOutputs = 4;
-        public const int PhaseShutdown = 5;
+        public const int PhaseDispose = 5;
         public const int PhaseDone = 6;
 
         // input_ids, attention_mask, position_ids and the past key and value
@@ -324,8 +324,8 @@ namespace Lemolatoon.Udoncl.Generated
                 StartNextOutput();
                 return;
             }
-            phase = PhaseShutdown;
-            status = binding.TryShutdown(out libraryStatus);
+            phase = PhaseDispose;
+            status = binding.TryDispose(out libraryStatus);
             if (!Succeeded())
                 return;
             phase = PhaseDone;

@@ -45,7 +45,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "write-inputs",
             "run",
             "read-outputs",
-            "shutdown",
+            "dispose",
             "done",
         };
         // Mirrors UdonclTinyLlamaStepTestController's tensor counts.

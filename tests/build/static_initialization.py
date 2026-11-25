@@ -78,7 +78,7 @@ def main():
     dynamic_manifest = manifest_of(dynamic)
     assert 'static_initialization' not in dynamic_manifest
     dynamic_exports = exports_of(dynamic_manifest)
-    assert set(dynamic_exports) == {'Initialize', 'Run', 'Shutdown'}
+    assert set(dynamic_exports) == {'Initialize', 'Run', 'Dispose'}
     dynamic_assembly = (dynamic / 'host.uasm').read_text(encoding='utf-8')
     dynamic_heap = (dynamic / 'raw-heap.bytes').read_bytes()
     recovered = (dynamic / 'frontend.recovered.mlir').read_text(
@@ -124,9 +124,9 @@ def main():
     manifest, evaluated, assembly = check_static(static, {'Initialize', 'Run'})
     assert 'vrc.evaluated_static_constructor' in evaluated
     assert manifest['static_initialization']['omitted_exports'] == [
-        'shutdown']
-    assert '.export Shutdown' not in assembly
-    assert '.export Shutdown' in dynamic_assembly
+        'dispose']
+    assert '.export Dispose' not in assembly
+    assert '.export Dispose' in dynamic_assembly
     assert instructions(assembly) * 2 < instructions(dynamic_assembly)
     assert exports_of(manifest)['Initialize']['c_symbol'] == 'initialize'
 

@@ -180,14 +180,14 @@ def main():
     # A variable must hold the buffer of exactly one clCreateBuffer.
     rejected(
         'two-sites',
-        host.replace('UDONCL_EXPORT int shutdown(void) {', '''\
+        host.replace('UDONCL_EXPORT int dispose(void) {', '''\
 UDONCL_EXPORT int recreate(void) {
   cl_int status;
   x = create(CL_MEM_READ_ONLY, &status);
   return status;
 }
 
-UDONCL_EXPORT int shutdown(void) {'''),
+UDONCL_EXPORT int dispose(void) {'''),
         'UDONCL_PUBLIC variable x holds the Device buffers of 2 allocation '
         'contexts')
     rejected(
@@ -209,7 +209,7 @@ UDONCL_EXPORT int shutdown(void) {'''),
     # Device resource analysis rejects it.
     rejected(
         'dynamic-size',
-        host.replace('UDONCL_EXPORT int shutdown(void) {', '''\
+        host.replace('UDONCL_EXPORT int dispose(void) {', '''\
 UDONCL_EXPORT int scratch(int bytes) {
   cl_int status;
   cl_mem buffer =
@@ -219,7 +219,7 @@ UDONCL_EXPORT int scratch(int bytes) {
   return status;
 }
 
-UDONCL_EXPORT int shutdown(void) {'''),
+UDONCL_EXPORT int dispose(void) {'''),
         'static allocation flags and capacity must be constant and valid')
     print(f'public_buffers=passed buffers={len(buffers)}')
 

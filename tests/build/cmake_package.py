@@ -1385,7 +1385,7 @@ def main():
         'initialize': 'Initialize',
         'run': 'Run',
         'commit_kv': 'CommitKv',
-        'shutdown': 'Shutdown',
+        'dispose': 'Dispose',
     }
     assert [
         (item['name'], item.get('logical_bytes'),
@@ -1439,7 +1439,7 @@ def main():
     assert 'public int StartReadLogits(' in transformer_binding
     assert 'public int StartReadPresentKey(' in transformer_binding
     assert 'public int StartReadPresentValue(' in transformer_binding
-    assert 'public int TryShutdown(out int result)' in transformer_binding
+    assert 'public int TryDispose(out int result)' in transformer_binding
     assert transformer_binding.count('if (busy || readbackBusy)') >= 2
     assert 'return StatusBusy;' in transformer_binding
     assert 'BindOnnxTensorPhysical' not in transformer_binding
@@ -1467,7 +1467,7 @@ def main():
         'status = StartReadPresent(presentIndex);',
         'binding.GetLastReadbackStatus()',
         'presentKv[presentIndex * PresentValues + index]',
-        'binding.TryShutdown(',
+        'binding.TryDispose(',
     ]:
         assert source_contract in prefill_controller, source_contract
     # Every present is read through the method named after its Host

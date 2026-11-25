@@ -93,7 +93,7 @@ fail:
 
 UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+UDONCL_EXPORT udononnxStatus_t dispose(void) {
   if (!session)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return release_resources();

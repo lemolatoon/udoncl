@@ -176,7 +176,7 @@ UDONCL_EXPORT udononnxStatus_t commit_kv(void) {
 }
 #endif
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+UDONCL_EXPORT udononnxStatus_t dispose(void) {
   if (!transformer_session)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return release_resources();

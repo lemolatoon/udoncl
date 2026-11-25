@@ -70,7 +70,7 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
 
 UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+UDONCL_EXPORT udononnxStatus_t dispose(void) {
   udononnxStatus_t status = udononnxReleaseSession(session);
   session = 0;
   clReleaseMemObject(sum);

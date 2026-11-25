@@ -1,7 +1,7 @@
 // The Host of the transpose component, written to be compiled three ways:
 // by default `initialize` is a plain export; with UDONCL_TEST_CONSTRUCTOR it
 // is also an __attribute__((constructor)) function, so the compiler runs it
-// as static initialization, and `shutdown` an __attribute__((destructor))
+// as static initialization, and `dispose` an __attribute__((destructor))
 // one, which no U# export calls; UDONCL_TEST_HIDDEN_CONSTRUCTOR additionally
 // takes `initialize` out of the exports.
 #define CL_TARGET_OPENCL_VERSION 120
@@ -14,13 +14,13 @@ UDONCL_PROGRAM("static_initialization");
 
 #if defined(UDONCL_TEST_HIDDEN_CONSTRUCTOR)
 #define TEST_INITIALIZE static __attribute__((constructor))
-#define TEST_SHUTDOWN UDONCL_EXPORT __attribute__((destructor))
+#define TEST_DISPOSE UDONCL_EXPORT __attribute__((destructor))
 #elif defined(UDONCL_TEST_CONSTRUCTOR)
 #define TEST_INITIALIZE UDONCL_EXPORT __attribute__((constructor))
-#define TEST_SHUTDOWN UDONCL_EXPORT __attribute__((destructor))
+#define TEST_DISPOSE UDONCL_EXPORT __attribute__((destructor))
 #else
 #define TEST_INITIALIZE UDONCL_EXPORT
-#define TEST_SHUTDOWN UDONCL_EXPORT
+#define TEST_DISPOSE UDONCL_EXPORT
 #endif
 
 /* The graph input and output ([1, 4, 32, 64] -> [1, 32, 4, 64]): U# writes
@@ -108,7 +108,7 @@ fail:
 
 UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
-TEST_SHUTDOWN udononnxStatus_t shutdown(void) {
+TEST_DISPOSE udononnxStatus_t dispose(void) {
   if (!session)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return release_resources();

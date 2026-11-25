@@ -75,7 +75,7 @@ def main():
     # The functions of the generated ONNX binding are not U# exports; only
     # the component's own C exports are.
     assert sorted(item['public_name'] for item in manifest['exports']) == [
-        'Initialize', 'Run', 'Shutdown']
+        'Dispose', 'Initialize', 'Run']
     print('onnx_transpose_component=passed assigned_buffers=2 words=8192')
 
 
