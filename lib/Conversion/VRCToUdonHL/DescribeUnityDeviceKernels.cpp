@@ -8,6 +8,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -256,6 +257,81 @@ std::optional<int64_t> constantArgument(runtime::DispatchOp dispatch,
   return value.getSExtValue();
 }
 
+/// The words of each input buffer of user OpenCL C kernel `id` with the
+/// argument `kinds`: the largest capacity of the allocations its launches
+/// (`__vrc_enqueue_user_<id>_*` calls, whose operand i + 1 is kernel
+/// argument i) pass for it, by their static Device resource provenance and
+/// requirements. Empty when a launch passes an unknown buffer. The last
+/// buffer argument is the output.
+std::vector<int64_t> userKernelInputWords(ModuleOp module, int64_t id,
+                                          ArrayRef<Attribute> kinds) {
+  std::map<int64_t, int64_t> capacities;
+  if (auto requirements = module->getAttrOfType<DictionaryAttr>(
+          "vrc.static_device_resource_requirements"))
+    if (auto resources = requirements.getAs<ArrayAttr>("resources"))
+      for (Attribute attribute : resources)
+        if (auto resource = dyn_cast<DictionaryAttr>(attribute)) {
+          auto resourceId = resource.getAs<IntegerAttr>("resource_id");
+          auto bytes = resource.getAs<IntegerAttr>("capacity_bytes");
+          if (resourceId && bytes)
+            capacities[resourceId.getInt()] = bytes.getInt();
+        }
+  SmallVector<unsigned> inputs;
+  for (auto [index, kind] : llvm::enumerate(kinds))
+    if (cast<StringAttr>(kind).getValue() == "buffer")
+      inputs.push_back(index);
+  if (inputs.empty())
+    return {};
+  inputs.pop_back();
+  std::string prefix = "__vrc_enqueue_user_" + std::to_string(id) + "_";
+  std::vector<int64_t> words(inputs.size(), 0);
+  bool launched = false, known = true;
+  module.walk([&](func::CallOp call) {
+    if (!known || !call.getCallee().starts_with(prefix))
+      return;
+    launched = true;
+    auto provenance =
+        call->getAttrOfType<ArrayAttr>("vrc.static_device_operand_provenance");
+    for (auto [input, argument] : llvm::enumerate(inputs)) {
+      bool found = false;
+      for (Attribute attribute : provenance ? provenance : ArrayAttr()) {
+        auto entry = dyn_cast<DictionaryAttr>(attribute);
+        auto index = entry ? entry.getAs<IntegerAttr>("index") : nullptr;
+        auto cases = entry ? entry.getAs<ArrayAttr>("cases") : nullptr;
+        if (!index || !cases || index.getInt() != argument + 1)
+          continue;
+        found = true;
+        for (Attribute value : cases) {
+          auto item = dyn_cast<DictionaryAttr>(value);
+          auto ids = item ? item.getAs<ArrayAttr>("resource_ids") : nullptr;
+          auto unknown = item ? item.getAs<BoolAttr>("unknown") : nullptr;
+          if (!ids || ids.empty() || !unknown || unknown.getValue()) {
+            known = false;
+            return;
+          }
+          for (Attribute resource : ids) {
+            auto capacity =
+                capacities.find(cast<IntegerAttr>(resource).getInt());
+            if (capacity == capacities.end()) {
+              known = false;
+              return;
+            }
+            words[input] =
+                std::max<int64_t>(words[input], (capacity->second + 3) / 4);
+          }
+        }
+      }
+      if (!found) {
+        known = false;
+        return;
+      }
+    }
+  });
+  if (!launched || !known)
+    return {};
+  return words;
+}
+
 /// The dispatch sites of one kernel id, which must agree on its launch.
 struct KernelSites {
   SmallVector<runtime::DispatchOp> dispatches;
@@ -335,6 +411,10 @@ struct DescribeUnityDeviceKernelsPass
                  << ") disagree on its argument kinds or NDRange";
       std::vector<int64_t> inputWords = contract->inputWords;
       std::vector<ArgumentBound> bounds = contract->bounds;
+      // A user kernel may read every word of the buffers its launches pass.
+      if (userContract)
+        inputWords = userKernelInputWords(module, id,
+                                          first.getArgumentKinds().getValue());
       if (contract->site == SiteContract::GatherAxis0) {
         // (data, indices, output, output words, inner words, axis extent,
         //  index words): at most 16384 output words and INT64 indices.

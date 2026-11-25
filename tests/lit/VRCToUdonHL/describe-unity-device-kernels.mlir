@@ -84,3 +84,36 @@ module {
 // CHECK-LABEL: module attributes {vrc.unity_device_kernels = []}
 module {
 }
+
+// -----
+
+// A user kernel may read every word of the buffers its launches pass: its
+// input_words are their capacities, from the static Device resource
+// provenance of the launch calls (operand i + 1 is kernel argument i) and
+// the inferred requirements. Its output words stay its NDRange.
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.unity_device_kernels = [{argument_kinds = ["buffer", "buffer"], global_offset = [0, 0, 0], global_size = [1, 1, 1], input_words = [32000], kernel = "scale", kernel_id = 600 : i64, local_size = [1, 1, 1], profile = "gather-f32", schema_version = 1 : i64, words = 1 : i64}]
+module attributes {
+  vrc.static_device_resource_requirements = {resources = [
+    {capacity_bytes = 128000 : i64, format = "rgba8_unorm", memory_flags = 4 : i64, resource_id = 0 : i32, resource_kind = "allocation", usage = "storage"},
+    {capacity_bytes = 4 : i64, format = "rgba8_unorm", memory_flags = 2 : i64, resource_id = 1 : i32, resource_kind = "allocation", usage = "storage"}
+  ], schema_version = 1 : i32}
+} {
+  func.func private @__vrc_enqueue_user_600_2_scale(!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+  func.func @run(%queue: !udonhl.ptr<0>, %logits: !udonhl.ptr<0>, %token: !udonhl.ptr<0>, %x: !vrc.buffer, %y: !vrc.buffer) -> i32 {
+    %status = func.call @__vrc_enqueue_user_600_2_scale(%queue, %logits, %token) {vrc.static_device_operand_provenance = [{cases = [{call_path = [], may_be_null = true, resource_ids = [0 : i32], root = @run, unknown = false}], index = 1 : i32}, {cases = [{call_path = [], may_be_null = true, resource_ids = [1 : i32], root = @run, unknown = false}], index = 2 : i32}]} : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    %desc = vrc.dispatch_desc_create {
+      kernel_id = 600 : i32, scalar_kinds = []
+    } : () -> !vrc.dispatch_desc
+    %event = vrc.dispatch %desc(%x, %y) {
+      argument_kinds = ["buffer", "buffer"],
+      resource_accesses = ["read", "write"],
+      global_offset = array<i32: 0, 0, 0>,
+      global_size = array<i32: 1, 1, 1>,
+      kernel_id = 600 : i32,
+      local_size = array<i32: 1, 1, 1>
+    } : (!vrc.dispatch_desc, !vrc.buffer, !vrc.buffer) -> !vrc.event
+    return %status : i32
+  }
+}

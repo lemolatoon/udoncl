@@ -593,7 +593,11 @@ def DescribeUnityDeviceKernelsPass : Pass<"vrc-describe-unity-device-kernels", "
 
     A user OpenCL C kernel (`user-kernel-ids` with the matching
     `user-kernel-names`) has only its launch; one that reads fewer than two
-    buffers is one invocation and no gather.
+    buffers is one invocation and no gather. Its `input_words` are the
+    capacities of the buffers its launches (`__vrc_enqueue_user_<id>_*`
+    calls) pass, by their static Device resource provenance and
+    requirements, so it may read every word of them; without that
+    provenance its inputs are bounded by its output words.
 
     Fails when a dispatched kernel id has neither a library contract nor a
     user kernel, when the dispatch sites of one kernel disagree on its
