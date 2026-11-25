@@ -53,7 +53,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "generated",
             "read-text",
             "reset-chat",
-            "shutdown",
+            "dispose",
             "done",
         };
 

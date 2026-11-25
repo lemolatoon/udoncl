@@ -47,7 +47,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "generate",
             "generated",
             "read-text",
-            "shutdown",
+            "dispose",
             "done",
         };
 

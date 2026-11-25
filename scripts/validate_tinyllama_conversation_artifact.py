@@ -88,7 +88,7 @@ def validate_exports(manifest: dict, profile: str = "conversation") -> None:
         "ReadGeneratedTokens": (
             "read_generated_tokens", ["i32_array"], False,
         ),
-        "Shutdown": ("shutdown", [], False),
+        "Dispose": ("dispose", [], False),
     }
     if profile == "chat":
         expected.update(CHAT_EXPORTS)
@@ -192,7 +192,7 @@ def validate_artifact(
         "GetGenerateStatus(", "TryGetGenerateResult(",
         "TryGeneratedTokenCount(out int result)",
         "TryReadGeneratedTokens(int[] destination, out int result)",
-        "TryShutdown(out int result)",
+        "TryDispose(out int result)",
     )
     if profile == "chat":
         required_methods += (

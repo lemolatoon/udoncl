@@ -17,8 +17,8 @@ namespace Lemolatoon.Udoncl.Generated
         public const int PhaseResetCompleted = 7;
         public const int PhaseSecondGenerate = 8;
         public const int PhaseSecondGenerated = 9;
-        public const int PhaseShutdown = 10;
-        public const int PhaseRejectAfterShutdown = 11;
+        public const int PhaseDispose = 10;
+        public const int PhaseRejectAfterDispose = 11;
         public const int PhaseDone = 12;
 
         // udononnxStatus_t values returned by the C Host as libraryStatus.
@@ -137,12 +137,12 @@ namespace Lemolatoon.Udoncl.Generated
             if (!Succeeded())
                 return;
 
-            phase = PhaseShutdown;
-            status = binding.TryShutdown(out libraryStatus);
+            phase = PhaseDispose;
+            status = binding.TryDispose(out libraryStatus);
             if (!Succeeded())
                 return;
 
-            phase = PhaseRejectAfterShutdown;
+            phase = PhaseRejectAfterDispose;
             status = binding.TrySetPromptTokens(
                 promptTokens,
                 promptTokens.Length,

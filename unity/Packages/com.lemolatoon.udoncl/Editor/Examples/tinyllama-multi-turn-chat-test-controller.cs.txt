@@ -17,7 +17,7 @@ namespace Lemolatoon.Udoncl.Generated
         public const int PhaseGenerated = 6;
         public const int PhaseReadText = 7;
         public const int PhaseResetChat = 8;
-        public const int PhaseShutdown = 9;
+        public const int PhaseDispose = 9;
         public const int PhaseDone = 10;
 
         // udononnxStatus_t values returned by the C Host as libraryStatus.
@@ -408,8 +408,8 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
 
-            phase = PhaseShutdown;
-            status = binding.TryShutdown(out libraryStatus);
+            phase = PhaseDispose;
+            status = binding.TryDispose(out libraryStatus);
             if (!Succeeded())
                 return;
             phase = PhaseDone;

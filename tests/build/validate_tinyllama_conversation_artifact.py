@@ -80,7 +80,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "StartReset(",
             "GetResetStatus(",
             "TryGetResetResult(",
-            "TryShutdown(",
+            "TryDispose(",
             "LibraryStatusInvalidState = 12",
             "LibraryStatusDisposed = 8",
         ):
@@ -256,7 +256,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                        "generated_token_count"),
                 export("ReadGeneratedTokens",
                        "read_generated_tokens", ("i32_array",)),
-                export("Shutdown", "shutdown"),
+                export("Dispose", "dispose"),
             ],
             "onnx_binding": {
                 "inputs": inputs,
@@ -290,7 +290,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 "GetGenerateStatus(", "TryGetGenerateResult(",
                 "TryGeneratedTokenCount(out int result)",
                 "TryReadGeneratedTokens(int[] destination, out int result)",
-                "TryShutdown(out int result)",
+                "TryDispose(out int result)",
             )) + "\n", encoding="utf-8")
         return root
 
@@ -353,7 +353,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 export("Initialize", "tinyllama_conversation_initialize",
                        is_async=True),
                 export("Run", "tinyllama_conversation_run", is_async=True),
-                export("Shutdown", "tinyllama_conversation_dispose"),
+                export("Dispose", "tinyllama_conversation_dispose"),
             ]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unexpected public API"):
@@ -476,7 +476,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "TryReadGeneratedTokens(",
             "TryGeneratedTextLength(",
             "TryReadGeneratedText(",
-            "TryShutdown(",
+            "TryDispose(",
         ):
             self.assertIn(required, controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
@@ -541,7 +541,7 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "TryReadGeneratedText(",
             "StartResetChat(",
             "TryGetResetChatResult(",
-            "TryShutdown(",
+            "TryDispose(",
         ):
             self.assertIn(required, controller)
         for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",

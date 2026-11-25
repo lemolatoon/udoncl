@@ -659,7 +659,8 @@ read_generated_tokens(udon_int32_array_t destination) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+/* Releases everything initialize created; the Host stays disposed. */
+UDONCL_EXPORT udononnxStatus_t dispose(void) {
   udononnxStatus_t status, opencl;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;

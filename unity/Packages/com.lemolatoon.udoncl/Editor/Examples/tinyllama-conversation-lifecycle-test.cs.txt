@@ -39,8 +39,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "reset-completed",
             "second-generate",
             "second-generated",
-            "shutdown",
-            "reject-after-shutdown",
+            "dispose",
+            "reject-after-dispose",
             "done",
         };
         private const int LibraryStatusDisposed = 8;
@@ -118,7 +118,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         // must stop exactly at the limit (or earlier only at an EOS that the
         // oracle also produced). Reset must restore the empty sequence state so
         // that a second identical request reproduces the same tokens, and
-        // Shutdown must leave the instance disposed.
+        // Dispose must leave the instance disposed.
         //
         // EnterPlayMode reloads the script domain. The Unity Test Framework
         // then re-creates this iterator and restores only its state number,
@@ -300,7 +300,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(
                 LibraryStatusDisposed,
                 disposedPromptStatus,
-                "Shutdown must leave the instance disposed: " + state
+                "Dispose must leave the instance disposed: " + state
             );
             Assert.AreEqual(PhaseDone, phase, state);
             Debug.Log("udoncl tinyllama_conversation passed " + state);

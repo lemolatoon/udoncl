@@ -19,7 +19,7 @@ extern udononnxStatus_t set_prompt_tokens(udon_int32_array_t, uint32_t);
 extern udononnxStatus_t generate(uint32_t);
 extern uint32_t generated_token_count(void);
 extern udononnxStatus_t read_generated_tokens(udon_int32_array_t);
-extern udononnxStatus_t shutdown(void);
+extern udononnxStatus_t dispose(void);
 extern udononnxStatus_t
 tinyllamaConversationGenerationProgress(const int32_t **tokens,
                                         uint32_t *token_count, uint32_t *serial,
@@ -650,7 +650,7 @@ int main(void) {
   if (i)
     return i;
 
-  EXPECT(shutdown() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(dispose() == UDONONNX_STATUS_SUCCESS);
   EXPECT(!fake_session.live);
   EXPECT(tinyllamaConversationGenerationProgress(
              &progress_tokens, &progress_count, &serial, &is_completed) ==
