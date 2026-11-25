@@ -97,7 +97,7 @@ jobs:
         id: onnx-mlir
         with:
           path: .deps/onnx-mlir
-          key: onnx-mlir-frontend-v2-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('cmake/onnx-mlir-lock.json', 'cmake/onnx-mlir-project-include.cmake', 'cmake/patches/onnx-mlir-*.patch', 'lib/Conversion/ONNXToUdonHost/**', 'scripts/install_onnx_mlir.py') }}
+          key: onnx-mlir-frontend-v2-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('cmake/onnx-mlir-lock.json', 'cmake/ONNXMLIRConfig.cmake', 'cmake/onnx-mlir-project-include.cmake', 'cmake/patches/onnx-mlir-*.patch', 'lib/Conversion/ONNXToUdonHost/**', 'scripts/install_onnx_mlir.py') }}
       - name: Build pinned ONNX MLIR frontend
         if: steps.onnx-mlir.outputs.cache-hit != 'true'
         run: python scripts/install_onnx_mlir.py
