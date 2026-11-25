@@ -40,9 +40,10 @@ the compiler:
    - **C and OpenCL SAXPY** (`SaxpyCaller`) calls the SAXPY binding.
    - **ONNX MNIST** (`MnistClassifier`) classifies a hand-drawn seven with the
      MNIST binding.
-   - **TinyLlama Chat** (`TinyLlamaChat`) chats with TinyLlama-1.1B. The model
-     is too large to bundle, so this sample needs the artifact you build in
-     the [TinyLlama tutorial](#chat-with-tinyllama).
+   - **TinyLlama Chat** (`TinyLlamaChat`) chats with TinyLlama-1.1B, one
+     conversation shared by the players of an instance. The model is too
+     large to bundle, so this sample needs the artifact you build in the
+     [TinyLlama tutorial](#chat-with-tinyllama).
 
 The [tutorials](#tutorials) below show how to build these artifacts
 yourself and call them from U#. See
@@ -1065,9 +1066,10 @@ here. Keep these limits in mind:
 - The model download is the pinned 4-bit quantized
   `onnx-community/TinyLlama-1.1B-Chat-v1.0-ONNX` `model_q4.onnx` (about
   910 MB). Its key/value cache takes 88 MB of GPU memory at 2048 tokens.
-- A conversation only grows. Every message continues after the previous reply
+- A conversation grows. Every message continues after the previous reply
   until the 2048 tokens are used up; then `ContinueMessage` fails with
-  `CAPACITY_EXCEEDED`. `Dispose` followed by `Initialize` starts a new one.
+  `CAPACITY_EXCEEDED`. `Dispose` followed by `Initialize` starts a new one,
+  and `RestoreConversation` continues one from its token history.
 - The message runs one token per model run (there is no batched prefill), and
   a reply has at most 32 tokens.
 
@@ -1092,6 +1094,8 @@ library's whole U# API:
 | `generate()` | `StartGenerate` | Runs the message, then replies greedily until EOS or 32 tokens |
 | `read_streamed_text(destination, offset)` | `TryReadStreamedText` | Copies the reply text that is final so far; also while `Generate` runs |
 | `read_generated_tokens(destination)` | `TryReadGeneratedTokens` | Copies the token IDs of the last reply |
+| `read_conversation_tokens(destination)` | `TryReadConversationTokens` | Copies the committed history: every token so far, the last reply closed |
+| `restore_conversation(tokens, count)` | `StartRestoreConversation` | Continues the conversation from a committed history; `count` 0 starts a new one |
 | `dispose()` | `TryDispose` | Releases everything; `Initialize` may run again |
 
 The model library bounds `past_sequence_length` instead of fixing it (see
@@ -1308,12 +1312,24 @@ becomes `Try<Name>(..., out result)`. `TinyLlamaChat` follows the lifecycle of
 the other tutorials:
 
 - `OnEnable` starts `Initialize` one frame later, and `OnDisable` calls
-  `TryDispose`, which ends the conversation.
-- `Interact` sends **User Text**: `TryBeginMessage(userText, out status)`,
-  then `TryContinueMessage(out pending)` once per frame until it returns 0,
-  then `StartGenerate`.
+  `TryDispose`, which releases the model.
+- `Interact` sends **User Text**: `StartRestoreConversation` with the synced
+  history, then `TryBeginMessage(message, out status)`,
+  `TryContinueMessage(out pending)` once per frame until it returns 0, and
+  `StartGenerate`.
 - While `Generate` runs, `TryReadStreamedText(textChunk, replyLength, out
   count)` reads the part of the reply that is final, every frame.
+
+The players of an instance share one conversation
+(`BehaviourSyncMode.Manual`). It syncs the conversation's token history
+(`TryReadConversationTokens`), its text log and a `busy` flag, never the KV
+cache. The player who sends a message takes ownership, restores the history
+into their own Host (only the tokens it does not hold yet run), generates the
+reply and calls `RequestSerialization` once with the new history and log;
+the others only show the log. A sender that leaves drops the reply, and
+`Clear` syncs an empty conversation. Alone in an instance it is a plain
+chat. The sample's README describes the flow; multi-player sync is checked
+by hand only.
 
 The exports that return a `udononnxStatus_t` report `0` on success; the
 sample checks it next to the binding status.
@@ -1324,12 +1340,22 @@ sample checks it next to the binding status.
 using Lemolatoon.Udoncl.Generated;
 using UdonSharp;
 using UnityEngine;
+using UnityEngine.UI;
+using VRC.SDKBase;
 
-[UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+// One conversation shared by every player of the instance. The player who
+// sends the next message generates its reply on their own GPU: they take
+// ownership, restore the synced history into their Host, generate, and sync
+// the new history and text log once. Everyone else only shows the log.
+[UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
 public class TinyLlamaChat : UdonSharpBehaviour
 {
     // The status the C Host returns from its exports (udononnxStatus_t).
     private const int OnnxSuccess = 0;
+    private const int OnnxCapacityExceeded = 13;
+
+    // UDONCL_TINYLLAMA_CONTEXT_CAPACITY of the artifact: the longest history.
+    private const int Capacity = 2048;
 
     [SerializeField]
     private UdonclTinyllamaChatBinding binding;
@@ -1337,11 +1363,31 @@ public class TinyLlamaChat : UdonSharpBehaviour
     [SerializeField]
     private string userText = "What is your name?";
 
-    private bool initialized;
+    // Optional: shows the conversation log.
+    [SerializeField]
+    private Text logText;
+
+    // The committed history of the conversation (ReadConversationTokens),
+    // its text, and whether a player is generating the next reply.
+    [UdonSynced]
+    private int[] conversationTokens = new int[0];
+
+    [UdonSynced]
+    private string conversationLog = "";
+
+    [UdonSynced]
     private bool busy;
+
+    private bool initialized;
+
+    // This player's Host is initializing, restoring or replying.
+    private bool working;
+    private string message;
     private int[] textChunk;
+    private int[] historyChunk;
     private int replyLength;
     private string reply;
+    private int shownLength;
 
     private void OnEnable()
     {
@@ -1354,8 +1400,8 @@ public class TinyLlamaChat : UdonSharpBehaviour
         if (!initialized)
             return;
         initialized = false;
-        // Dispose releases the model and ends the conversation; the next
-        // OnEnable starts a new one.
+        // Dispose releases the model and this player's copy of the
+        // conversation; the synced history stays.
         int onnxStatus;
         int status = binding.TryDispose(out onnxStatus);
         if (status != UdonclTinyllamaChatBinding.StatusSuccess || onnxStatus != OnnxSuccess)
@@ -1366,7 +1412,7 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
     public void InitializeChat()
     {
-        if (initialized || busy)
+        if (initialized || working)
             return;
         if (binding == null)
         {
@@ -1375,7 +1421,8 @@ public class TinyLlamaChat : UdonSharpBehaviour
         }
 
         textChunk = new int[256];
-        busy = true;
+        historyChunk = new int[Capacity];
+        working = true;
         // Initialize creates the OpenCL objects, the model session and the
         // ArgMax kernel in the C Host; it spans a few frames.
         int status = binding.StartInitialize(this, nameof(OnChatInitialized));
@@ -1392,7 +1439,8 @@ public class TinyLlamaChat : UdonSharpBehaviour
         if (!Succeeded("Initialize", status, onnxStatus))
             return;
         initialized = true;
-        busy = false;
+        working = false;
+        ShowLog();
     }
 
     public override void Interact()
@@ -1400,18 +1448,49 @@ public class TinyLlamaChat : UdonSharpBehaviour
         Send();
     }
 
-    // Sends userText as the next message of the conversation.
+    // Sends userText as the next message of the shared conversation.
     public void Send()
     {
-        if (!initialized || busy)
+        if (!initialized || working)
+            return;
+        if (busy)
+        {
+            Debug.Log("TinyLlama: another player's reply is being generated.");
+            return;
+        }
+
+        // Take the conversation: the busy flag keeps the other players from
+        // sending until this reply is synced.
+        working = true;
+        Networking.SetOwner(Networking.LocalPlayer, gameObject);
+        busy = true;
+        RequestSerialization();
+        message = userText;
+
+        // Rebuild this player's KV cache from the synced history. Only what
+        // follows the tokens the Host already holds runs, so the player who
+        // sent the last message restores almost nothing.
+        int status = binding.StartRestoreConversation(
+            conversationTokens,
+            conversationTokens.Length,
+            this,
+            nameof(OnConversationRestored)
+        );
+        Succeeded("StartRestoreConversation", status, OnnxSuccess);
+    }
+
+    public void OnConversationRestored()
+    {
+        int onnxStatus = OnnxSuccess;
+        int status = binding.GetRestoreConversationStatus();
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess)
+            status = binding.TryGetRestoreConversationResult(out onnxStatus);
+        if (!Succeeded("RestoreConversation", status, onnxStatus))
             return;
 
-        busy = true;
-        int onnxStatus;
-        int status = binding.TryBeginMessage(userText, out onnxStatus);
+        status = binding.TryBeginMessage(message, out onnxStatus);
         if (!Succeeded("BeginMessage", status, onnxStatus))
             return;
-        Debug.Log("TinyLlama: you: " + userText);
         EncodeMessage();
     }
 
@@ -1441,15 +1520,16 @@ public class TinyLlamaChat : UdonSharpBehaviour
     // While the reply is generated, read the part of it that is final.
     public void StreamReply()
     {
-        if (!busy)
+        if (!working)
             return;
         ReadReplyText();
+        if (logText != null)
+            logText.text = conversationLog + Turn();
         SendCustomEventDelayedFrames(nameof(StreamReply), 1);
     }
 
     public void OnReplyGenerated()
     {
-        busy = false;
         int onnxStatus = OnnxSuccess;
         int status = binding.GetGenerateStatus();
         if (status == UdonclTinyllamaChatBinding.StatusSuccess)
@@ -1459,7 +1539,93 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
         // After the generation completed the streamed text is the whole reply.
         ReadReplyText();
-        Debug.Log("TinyLlama: assistant: " + reply);
+
+        // The new history: the old one, the message and the reply.
+        int count;
+        status = binding.TryReadConversationTokens(historyChunk, out count);
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess && count == -OnnxCapacityExceeded)
+        {
+            // The reply filled the conversation: no message can follow it,
+            // so it is not synced.
+            Debug.LogWarning(
+                "TinyLlama: the conversation is full; Clear starts a new one." + Turn()
+            );
+            Release();
+            return;
+        }
+        if (!Succeeded("ReadConversationTokens", status, count < 0 ? -count : OnnxSuccess))
+            return;
+        if (!Networking.IsOwner(gameObject))
+        {
+            // Another player sent a message at the same time and took the
+            // conversation; theirs is synced.
+            Debug.Log("TinyLlama: another player took the conversation." + Turn());
+            working = false;
+            return;
+        }
+
+        int[] tokens = new int[count];
+        for (int i = 0; i < count; i++)
+            tokens[i] = historyChunk[i];
+        conversationTokens = tokens;
+        conversationLog = conversationLog + Turn();
+        busy = false;
+        working = false;
+        RequestSerialization();
+        ShowLog();
+    }
+
+    // Starts a new conversation for everyone: an empty history and log.
+    public void Clear()
+    {
+        if (busy || working)
+            return;
+        Networking.SetOwner(Networking.LocalPlayer, gameObject);
+        conversationTokens = new int[0];
+        conversationLog = "";
+        RequestSerialization();
+        ShowLog();
+    }
+
+    public override void OnDeserialization()
+    {
+        ShowLog();
+    }
+
+    // When the player generating a reply leaves, another player becomes the
+    // owner with the busy flag still set: the reply is dropped and the last
+    // synced history stays.
+    public override void OnOwnershipTransferred(VRCPlayerApi player)
+    {
+        if (!Utilities.IsValid(player) || !player.isLocal || working || !busy)
+            return;
+        busy = false;
+        RequestSerialization();
+    }
+
+    // The log lines of this player's message and the reply so far.
+    private string Turn()
+    {
+        VRCPlayerApi player = Networking.LocalPlayer;
+        string name = Utilities.IsValid(player) ? player.displayName : "you";
+        return (conversationLog.Length == 0 ? "" : "\n")
+            + name
+            + ": "
+            + message
+            + "\nTinyLlama: "
+            + reply;
+    }
+
+    // Logs the part of the synced log this player has not seen yet.
+    private void ShowLog()
+    {
+        if (conversationLog.Length < shownLength)
+            Debug.Log("TinyLlama: the conversation was cleared.");
+        else if (conversationLog.Length > shownLength)
+            Debug.Log("TinyLlama: " + conversationLog.Substring(shownLength));
+        shownLength = conversationLog.Length;
+        if (logText != null)
+            logText.text = conversationLog;
     }
 
     // Appends the reply text that became final since the last call. The
@@ -1487,9 +1653,10 @@ public class TinyLlamaChat : UdonSharpBehaviour
         return false;
     }
 
+    // A failed step drops the reply: the synced history stays as it was.
     private void Fail(string step, int status, int onnxStatus)
     {
-        busy = false;
+        Release();
         Debug.LogError(
             "TinyLlama: "
                 + step
@@ -1499,19 +1666,30 @@ public class TinyLlamaChat : UdonSharpBehaviour
                 + onnxStatus
         );
     }
+
+    // Lets the other players send again.
+    private void Release()
+    {
+        working = false;
+        if (busy && Networking.IsOwner(gameObject))
+        {
+            busy = false;
+            RequestSerialization();
+        }
+    }
 }
 ```
 
 #### 5. Expected result
 
-Interact with the object: the sample logs `TinyLlama: you: What is your
-name?`, then streams the reply and logs it as `TinyLlama: assistant: ...`
-once the generation completes. Decoding is greedy, so the same conversation
-gives the same reply. Interact again to send **User Text** as the next turn
-of the same conversation. Leaving Play Mode disables the behaviour, which
-disposes the model.
+Interact with the object: the sample streams the reply and, once the
+generation completes, logs the new lines of the conversation, `<your name>:
+What is your name?` and `TinyLlama: ...`. Decoding is greedy, so the same
+conversation gives the same reply. Interact again to send **User Text** as
+the next turn of the same conversation. Leaving Play Mode disables the
+behaviour, which disposes the model.
 
-> **Screenshot (pending):** Unity Console in Play Mode showing the "TinyLlama: you:" and "TinyLlama: assistant:" lines — docs/images/getting-started/tinyllama-console-output.png
+> **Screenshot (pending):** Unity Console in Play Mode showing the conversation lines — docs/images/getting-started/tinyllama-console-output.png
 
 ## More examples
 

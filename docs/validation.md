@@ -37,6 +37,16 @@ Worlds SDK (D3D11): both replies matched the oracle token for token
 never changed, no poll was refused as busy, and the second Initialize started
 an empty conversation. The advanced `chat` gate passed in the same run.
 
+Since the conversation sync of the chat example (2026-11-26), the fixture
+also syncs the conversation between the two turns as between players: it
+reads the committed history (`ReadConversationTokens`, which must be the
+first prompt and reply), disposes, initializes, restores the history
+(`RestoreConversation`) and checks that the restored Host reads back the same
+history. The restored Host then answers the second turn, whose tokens must
+still be the oracle's `[29903, 279, 801, 29889, 2]`. The gate also compiles
+the synced TinyLlama Chat Package Sample against the generated binding; real
+multi-player sync between VRChat clients is checked by hand only.
+
 ## Public ONNX Package Sample lifecycle (2026-11-03)
 
 Unity 2022.3.22f1 with Worlds SDK 3.10.5 passed all 85 Editor tests. The
