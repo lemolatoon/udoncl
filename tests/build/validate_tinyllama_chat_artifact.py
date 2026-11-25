@@ -174,6 +174,9 @@ class TinyLlamaChatArtifactValidatorTests(unittest.TestCase):
             "StartInitialize(", "TryBeginMessage(", "TryContinueMessage(",
             "StartGenerate(", "TryReadStreamedText(", "TryReadGeneratedTokens(",
             "TryDispose(", "GetLastAsyncDiagnostic(",
+            # The conversation sync between the turns.
+            "TryReadConversationTokens(", "StartRestoreConversation(",
+            "GetRestoreConversationStatus(", "TryGetRestoreConversationResult(",
         ):
             self.assertIn(required, source)
         test = (
@@ -182,6 +185,8 @@ class TinyLlamaChatArtifactValidatorTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('"Assets/udoncl-generated/tinyllama_chat"', test)
         self.assertIn("UDONCL_PUBLIC_TINYLLAMA_MINIMAL_CHAT_ORACLE", test)
+        self.assertIn('"committed history: "', test)
+        self.assertIn('"historyRestored"', test)
         # The focused test assembly reads Editor internals, and the gate
         # prepares and runs it.
         editor = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor"

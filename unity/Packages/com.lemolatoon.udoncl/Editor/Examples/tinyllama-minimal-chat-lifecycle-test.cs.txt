@@ -16,8 +16,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     // tokenized in slices (BeginMessage, then ContinueMessage every frame),
     // Generate replies greedily while the reply text is polled every frame,
     // and the reply's tokens (ReadGeneratedTokens) and text must equal the
-    // oracle's. Afterwards Dispose, Initialize and Dispose again must
-    // succeed, the second Initialize starting a conversation without text.
+    // oracle's. Between the turns the conversation is synced as between
+    // players: the committed history (ReadConversationTokens) is the first
+    // prompt and reply, and after Dispose and Initialize,
+    // RestoreConversation rebuilds the Host from it, which then answers the
+    // second turn with the oracle's tokens. Afterwards Dispose, Initialize and
+    // Dispose again must succeed, the second Initialize starting a
+    // conversation without text.
     public sealed class PublicTinyLlamaMinimalChatLifecycleTests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/tinyllama_chat";
@@ -31,9 +36,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 
         // Mirrors UdonclTinyLlamaMinimalChatTestController phases; the
         // controller is generated U# and not referenced here.
-        private const int PhaseDone = 8;
+        private const int PhaseDone = 12;
         private const int PhaseGenerate = 3;
+        private const int PhaseRestore = 8;
         private const int TextUnitsPerToken = 16;
+        // The context capacity of the chat example and TinyLlama's EOS.
+        private const int HistoryCapacity = 2048;
+        private const int EosToken = 2;
         private static readonly string[] PhaseNames =
         {
             "not-started",
@@ -41,6 +50,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "message",
             "generate",
             "generated",
+            "read-history",
+            "sync-dispose",
+            "sync-initialize",
+            "restore",
             "dispose",
             "reinitialize",
             "dispose-again",
@@ -59,6 +72,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private int[] expectedTextData;
         private int[] expectedTextOffsets;
         private string[] expectedTexts;
+        // The committed history after the first turn: its prompt and reply,
+        // then EOS when the reply was cut off.
+        private int[] expectedHistory;
         private string capturedVmError;
 
         [OneTimeSetUp]
@@ -148,6 +164,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             expectedTokenData = Join(expectedTokens, expectedTokenOffsets);
             expectedTextOffsets = Offsets(expectedTextUnits);
             expectedTextData = Join(expectedTextUnits, expectedTextOffsets);
+            int[] firstReply = expectedTokens[0];
+            bool closed = firstReply[firstReply.Length - 1] == EosToken;
+            expectedHistory = new int[
+                parsed.prompt_tokens.Length + firstReply.Length + (closed ? 0 : 1)
+            ];
+            Array.Copy(parsed.prompt_tokens, expectedHistory, parsed.prompt_tokens.Length);
+            Array.Copy(firstReply, 0, expectedHistory, parsed.prompt_tokens.Length, firstReply.Length);
+            if (!closed)
+                expectedHistory[expectedHistory.Length - 1] = EosToken;
         }
 
         // See PublicTinyLlamaConversationLifecycleTests: EnterPlayMode reloads
@@ -191,6 +216,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             SetInts(controller, "messageCalls", turnCount);
             SetInts(controller, "streamChunk", textStride);
             SetInts(controller, "tokenChunk", tokenStride);
+            SetInts(controller, "historyTokens", HistoryCapacity);
+            SetInts(controller, "restoredTokens", HistoryCapacity);
 
             capturedVmError = null;
             bool ignoreFailingMessages = LogAssert.ignoreFailingMessages;
@@ -198,11 +225,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Application.logMessageReceived += CaptureVmError;
 
             // Generous bound as in the chat tests: every model step at about
-            // 4,100 frames, plus the two Initialize calls and tokenization.
-            int generateSteps = 0;
+            // 4,100 frames, plus the three Initialize calls and tokenization.
+            // The restore runs every token of the history.
+            int generateSteps = expectedHistory.Length;
             for (int index = 0; index < turnCount; ++index)
                 generateSteps += expectedPromptCounts[index] + expectedTokens[index].Length - 1;
-            int timeoutFrames = (generateSteps + turnCount + 2) * 4100 + 3000 * turnCount;
+            int timeoutFrames = (generateSteps + turnCount + 3) * 4100 + 3000 * turnCount;
             UdonclFixtureTiming timing = new UdonclFixtureTiming("tinyllama_minimal_chat");
             timing.TraceBinding(binding);
             int frame = 0;
@@ -231,7 +259,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                                 ? expectedPromptCounts[currentTurn]
                                     + expectedTokens[currentTurn].Length
                                     - 1
-                                : 0
+                                : currentPhase == PhaseRestore ? expectedHistory.Length : 0
                         );
                         Debug.Log(
                             string.Format(
@@ -259,6 +287,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int libraryStatus = ReadInt(controller, "libraryStatus");
             int asyncDiagnostic = ReadInt(controller, "asyncDiagnostic");
             int textAfterReinitialize = ReadInt(controller, "textAfterReinitialize");
+            int historyCount = ReadInt(controller, "historyCount");
+            int[] historyTokens = ReadInts(controller, "historyTokens");
+            bool historyRestored = ReadBool(controller, "historyRestored");
             int[] generatedTokens = ReadInts(controller, "generatedTokens");
             int[] generatedCounts = ReadInts(controller, "generatedCounts");
             int[] streamedUnits = ReadInts(controller, "streamedUnits");
@@ -280,6 +311,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 .Append(" libraryStatus=").Append(libraryStatus)
                 .Append(" asyncDiagnostic=").Append(asyncDiagnostic)
                 .Append(" textAfterReinitialize=").Append(textAfterReinitialize)
+                .Append(" history=").Append(Tokens(Slice(historyTokens, 0, historyCount)))
+                .Append(" expectedHistory=").Append(Tokens(expectedHistory))
+                .Append(" historyRestored=").Append(historyRestored)
                 .Append(" frames=").Append(frame)
                 .Append(" streamPolls=").Append(streamPolls)
                 .Append(" streamBusyPolls=").Append(streamBusyPolls)
@@ -305,6 +339,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsTrue(completed, "TinyLlama minimal chat timed out: " + state);
             Assert.AreEqual(0, status, "Generated binding failed: " + state);
             Assert.AreEqual(0, libraryStatus, "C Host failed: " + state);
+            // The conversation sync after the first turn: the history read is
+            // the first prompt and reply, and the restored Host has the same
+            // one. The second turn's tokens below come from that Host.
+            CollectionAssert.AreEqual(
+                expectedHistory,
+                Slice(historyTokens, 0, historyCount),
+                "committed history: " + state
+            );
+            Assert.IsTrue(historyRestored, "The restored history differs: " + state);
             for (int index = 0; index < turnCount; ++index)
             {
                 // The greedy tokens are the oracle's (Q61); the text is

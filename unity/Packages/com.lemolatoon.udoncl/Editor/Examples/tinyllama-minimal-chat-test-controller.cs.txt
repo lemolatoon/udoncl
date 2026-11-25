@@ -5,7 +5,10 @@ namespace Lemolatoon.Udoncl.Generated
 {
     // Drives the binding of examples/tinyllama-chat through a conversation of
     // userTexts.Length turns, then disposes it, initializes it again and
-    // disposes it once more.
+    // disposes it once more. After the first turn the conversation is synced
+    // as between players: ReadConversationTokens, Dispose, Initialize, then
+    // RestoreConversation of the history read, and the next turn continues
+    // from the restored Host.
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public sealed class UdonclTinyLlamaMinimalChatTestController : UdonSharpBehaviour
     {
@@ -15,10 +18,14 @@ namespace Lemolatoon.Udoncl.Generated
         public const int PhaseMessage = 2;
         public const int PhaseGenerate = 3;
         public const int PhaseGenerated = 4;
-        public const int PhaseDispose = 5;
-        public const int PhaseReinitialize = 6;
-        public const int PhaseDisposeAgain = 7;
-        public const int PhaseDone = 8;
+        public const int PhaseReadHistory = 5;
+        public const int PhaseSyncDispose = 6;
+        public const int PhaseSyncInitialize = 7;
+        public const int PhaseRestore = 8;
+        public const int PhaseDispose = 9;
+        public const int PhaseReinitialize = 10;
+        public const int PhaseDisposeAgain = 11;
+        public const int PhaseDone = 12;
 
         // udononnxStatus_t value returned by the C Host as libraryStatus.
         public const int LibraryStatusSuccess = 0;
@@ -39,6 +46,13 @@ namespace Lemolatoon.Udoncl.Generated
         // Scratch of textStride and tokenStride elements.
         public int[] streamChunk;
         public int[] tokenChunk;
+
+        // The committed history read after the first turn (historyCount
+        // tokens), and whether the restored Host reads back the same history.
+        public int[] historyTokens;
+        public int[] restoredTokens;
+        public int historyCount;
+        public bool historyRestored;
 
         public bool completed;
         public int status;
@@ -73,6 +87,8 @@ namespace Lemolatoon.Udoncl.Generated
             asyncDiagnostic = UdonclTinyllamaChatBinding.AsyncDiagnosticNone;
             turn = 0;
             textAfterReinitialize = -1;
+            historyCount = -1;
+            historyRestored = false;
             streamPolls = 0;
             streamBusyPolls = 0;
             streamUpdates = 0;
@@ -101,6 +117,9 @@ namespace Lemolatoon.Udoncl.Generated
                 || streamChunk.Length < textStride
                 || tokenChunk == null
                 || tokenChunk.Length < tokenStride
+                || historyTokens == null
+                || restoredTokens == null
+                || restoredTokens.Length < historyTokens.Length
             )
             {
                 status = UdonclTinyllamaChatBinding.StatusInvalidArgument;
@@ -277,6 +296,11 @@ namespace Lemolatoon.Udoncl.Generated
             streamedLengths[turn] = streamedLength;
 
             ++turn;
+            if (turn == 1 && turn < userTexts.Length)
+            {
+                SyncConversation();
+                return;
+            }
             if (turn < userTexts.Length)
             {
                 BeginTurn();
@@ -293,6 +317,71 @@ namespace Lemolatoon.Udoncl.Generated
             status = binding.StartInitialize(this, nameof(OnReinitializeComplete));
             if (status != UdonclTinyllamaChatBinding.StatusSuccess)
                 Fail();
+        }
+
+        // Conversation sync: the history of this Host is restored into a new
+        // Host session, which then answers the next turn.
+        private void SyncConversation()
+        {
+            phase = PhaseReadHistory;
+            status = binding.TryReadConversationTokens(historyTokens, out historyCount);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                Fail();
+                return;
+            }
+            if (historyCount < 0)
+            {
+                libraryStatus = -historyCount;
+                Fail();
+                return;
+            }
+            phase = PhaseSyncDispose;
+            status = binding.TryDispose(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseSyncInitialize;
+            status = binding.StartInitialize(this, nameof(OnSyncInitializeComplete));
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+                Fail();
+        }
+
+        public void OnSyncInitializeComplete()
+        {
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyllamaChatBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseRestore;
+            status = binding.StartRestoreConversation(
+                historyTokens,
+                historyCount,
+                this,
+                nameof(OnRestoreComplete)
+            );
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+                Fail();
+        }
+
+        public void OnRestoreComplete()
+        {
+            status = binding.GetRestoreConversationStatus();
+            if (status == UdonclTinyllamaChatBinding.StatusSuccess)
+                status = binding.TryGetRestoreConversationResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            int count;
+            status = binding.TryReadConversationTokens(restoredTokens, out count);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess)
+            {
+                Fail();
+                return;
+            }
+            historyRestored = count == historyCount;
+            for (int index = 0; historyRestored && index < count; ++index)
+                historyRestored = restoredTokens[index] == historyTokens[index];
+            BeginTurn();
         }
 
         public void OnReinitializeComplete()
