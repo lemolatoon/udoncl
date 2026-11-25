@@ -47,6 +47,8 @@ past_sequence_length=<capacity - 1>`) and is compiled into the Host as
 | `generate()` | `StartGenerate` | Runs the message one token per run, then replies greedily until EOS or the reply limit |
 | `read_streamed_text(destination, offset)` | `TryReadStreamedText` | Copies the reply text that is final so far (UTF-16 code units, one per `int`); also while `Generate` runs |
 | `read_generated_tokens(destination)` | `TryReadGeneratedTokens` | Copies the token IDs of the last reply |
+| `read_conversation_tokens(destination)` | `TryReadConversationTokens` | Copies the committed history of the conversation; returns its length or -status |
+| `restore_conversation(tokens, count)` | `StartRestoreConversation` | Continues the conversation from a committed history, one token per run; `count` 0 starts a new one |
 | `dispose()` | `TryDispose` | Releases everything; `Initialize` may run again |
 
 The exports return a `udononnxStatus_t` (0 is success), except where the
@@ -67,10 +69,21 @@ calls `TryDispose`.
   of the whole capacity (`keys[22]`, `values[22]`, created, bound and released
   in loops). A run binds the past at `t` rows and the present at `t + 1` rows
   of the same buffer, so it writes only its own row (in-place Concat).
-- **Multi-turn.** A conversation only grows: a later message continues after
-  the previous reply. The reply's last token, which no run computed, runs
-  first, followed by EOS when the reply was cut off. `Dispose` followed by
+- **Multi-turn.** A conversation grows: a later message continues after the
+  previous reply. The reply's last token, which no run computed, runs first,
+  followed by EOS when the reply was cut off. `Dispose` followed by
   `Initialize` starts a new conversation.
+- **Conversation sync.** The *committed history* is every token the KV cache
+  holds followed by the tokens that close the last reply (its last token, and
+  EOS when it was cut off): the whole conversation as the next message sees
+  it. `ReadConversationTokens` copies it; `RestoreConversation` on another
+  Host rebuilds that Host's KV cache from it, so its next message, reply and
+  history are exactly those of the Host that read it. The restore keeps the
+  leading tokens its KV cache already holds and runs the rest, one per run
+  (up to 2048 runs for a full conversation); a shorter history only moves the
+  position back. The closing tokens are in the KV cache after a restore, so
+  the next message does not run them again. Only token IDs travel, never the
+  KV cache itself (88 MiB at 2048 tokens).
 - **Text.** The chat template and the tokenizer tables are compiled from the
   tokenizer files at build time (UdonTokenizers). A long message is spread
   over several `ContinueMessage` calls. The reply is decoded while it is
@@ -81,7 +94,13 @@ calls `TryDispose`.
 
 - A message that does not fit the rest of the capacity fails with
   `CAPACITY_EXCEEDED` (13) and leaves the conversation unchanged; a reply ends
-  early once the capacity is full.
+  early once the capacity is full. Its history no longer fits the capacity
+  either: `ReadConversationTokens` then fails with `CAPACITY_EXCEEDED`.
+- `RestoreConversation` rejects a history beyond the capacity with
+  `CAPACITY_EXCEEDED` and a token outside the vocabulary with
+  `INVALID_VALUE` (1), leaving the conversation unchanged. A successful restore
+  drops a message that was tokenized but not generated, and the last reply's
+  text and tokens.
 - After a failed `Generate`, only `Dispose` and `Initialize` recover.
 - Each graph tensor is bound from one export: the token, its position and the
   logits in `initialize`, the mask and the KV cache in `generate`.

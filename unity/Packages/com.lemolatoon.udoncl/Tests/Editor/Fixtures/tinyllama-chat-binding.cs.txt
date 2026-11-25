@@ -102,6 +102,28 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
+        public int StartRestoreConversation(int[] tokens, int count, UdonSharpBehaviour receiver, string completionEvent)
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetRestoreConversationStatus()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int TryGetRestoreConversationResult(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryReadConversationTokens(int[] destination, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
         public int TryContinueMessage(out int result)
         {
             result = 0;

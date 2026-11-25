@@ -16,7 +16,11 @@ tests/boundary/tinyllama_chat_oracle.py does for the model:
 * the streamed text after every token is what Hugging Face decodes from the
   tokens that can no longer change, and the whole reply at the end;
 * a message beyond the capacity fails with CAPACITY_EXCEEDED and changes
-  nothing, and Dispose + Initialize starts a new conversation at position 0.
+  nothing, and Dispose + Initialize starts a new conversation at position 0;
+* the committed history after a turn is every token run so far followed by
+  the tokens that close the reply; a history beyond the capacity cannot be
+  read. RestoreConversation of a history runs the tokens the KV cache does
+  not hold yet, and the next turn then runs without its closing tokens.
 
 usage: tinyllama_chat_host.py ROOT OUTPUT C_COMPILER
 """
@@ -118,6 +122,7 @@ def stable_units(ids: list[int], count: int) -> list[int]:
 def simulate(turns: list[dict]) -> list[dict]:
     """What the Host runs and replies per turn, from position 0."""
     position, last = 0, None
+    ran: list[int] = []
     results = []
     for index, turn in enumerate(turns):
         if index == 0:
@@ -142,6 +147,9 @@ def simulate(turns: list[dict]) -> list[dict]:
         runs += reply[:-1]
         position += len(reply) - 1
         last = reply[-1]
+        ran += runs
+        assert len(ran) == position
+        history = ran + [last] + ([EOS] if last != EOS else [])
         stable = [stable_units(reply, count) for count in range(len(reply))]
         final = utf16_units(tokenizer.decode(reply, skip_special_tokens=True))
         for units in stable:
@@ -152,6 +160,8 @@ def simulate(turns: list[dict]) -> list[dict]:
                 "message": message,
                 "runs": runs,
                 "first_position": start,
+                "closing": len(closing),
+                "history": history,
                 "limit": limit,
                 "reply": reply,
                 "stable": stable,
@@ -192,6 +202,11 @@ first_turns.append({"user": filler, "script": long_reply})
 first = simulate(first_turns)
 assert first[-1]["limit"] < MAX_NEW_TOKENS and len(first[-1]["reply"]) == first[-1]["limit"]
 assert first[1]["reply"] == long_reply[:MAX_NEW_TOKENS]
+# The sync test restores the history after the first turn (its reply ended
+# with EOS) and after the second (cut off, closed by an extra EOS); the
+# history after the last turn no longer fits the capacity.
+assert first[1]["closing"] == 1 and first[2]["closing"] == 2
+assert len(first[-1]["history"]) > CAPACITY
 
 # Conversation 2, after Dispose + Initialize: a message beyond the capacity
 # fails first, then a new conversation starts at position 0.
@@ -219,6 +234,9 @@ lines = [
     "  const int32_t *stable_units, *stable_offsets, *stable_lengths;",
     "  const int32_t *final_units;",
     "  int32_t final_count;",
+    "  int closing_count;",
+    "  const int32_t *history;",
+    "  int history_count;",
     "};",
     "struct conversation {",
     "  const struct turn *turns;",
@@ -248,13 +266,15 @@ for conversation_index, (turns, overflow) in enumerate(conversations):
             f"static const int32_t {name}_stable_offsets[] = {{{c_values(stable_offsets)}}};",
             f"static const int32_t {name}_stable_lengths[] = {{{c_values(stable_lengths)}}};",
             f"static const int32_t {name}_final[] = {{{c_values(turn['final'])}}};",
+            f"static const int32_t {name}_history[] = {{{c_values(turn['history'])}}};",
         ]
         turn_entries.append(
             f"  {{{name}_user, {name}_too_long, {len(user)}, {len(too_long_units)}, "
             f"{name}_runs, {len(turn['runs'])}, {turn['first_position']}, "
             f"{name}_script, {len(turn['script'])}, {len(turn['reply'])}, "
             f"{name}_stable_units, {name}_stable_offsets, {name}_stable_lengths, "
-            f"{name}_final, {len(turn['final'])}}},"
+            f"{name}_final, {len(turn['final'])}, {turn['closing']}, "
+            f"{name}_history, {len(turn['history'])}}},"
         )
     lines += [f"static const struct turn c{conversation_index}_turns[] = {{"] + turn_entries + ["};"]
     overflow_entry = "0"

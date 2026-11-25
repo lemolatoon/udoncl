@@ -12,6 +12,11 @@
  *   ReadStreamedText    copy the reply text that is final so far, also
  *                       while Generate runs
  *   ReadGeneratedTokens copy the token IDs of the last reply
+ *   ReadConversationTokens
+ *                       copy the committed history of the conversation
+ *   RestoreConversation(tokens, count)
+ *                       continue the conversation of another Host from its
+ *                       committed history
  *   Dispose             release everything; Initialize may run again
  *
  * The model runs one position per udononnxRun: its past is a bounded
@@ -19,9 +24,11 @@
  * DIMENSION_BOUNDS), bound at the extent the conversation reached. Each
  * layer keeps its K and V in one buffer of the whole capacity, bound both as
  * the past (t rows) and as the present (t + 1 rows), so a run writes only
- * its own row (in-place Concat). A conversation only grows: every message
+ * its own row (in-place Concat). A conversation grows: every message
  * continues after the previous reply, and Dispose + Initialize starts a new
- * one.
+ * one. RestoreConversation replaces it with the committed history of another
+ * Host, so that players can take turns in one conversation: only its tokens
+ * travel, and each Host rebuilds its KV cache from them.
  *
  * Every function stays within what udonclc lowers statically: each buffer
  * is created once in initialize, the loops over the layers have a constant
@@ -103,9 +110,12 @@ static cl_program program;
 static cl_kernel argmax;
 static int initialized;
 
-/* The conversation: the KV cache holds the positions [0, position). The
- * last token of the previous reply was selected but never run; the next
- * message runs it first, followed by EOS when the reply was cut off. */
+/* The conversation: the KV cache holds the positions [0, position), whose
+ * tokens are staged_tokens[0, position) below. The last token of the
+ * previous reply was selected but never run; the next message runs it
+ * first, followed by EOS when the reply was cut off. Those closing tokens
+ * after the KV cache's tokens are the committed history: a Host whose KV
+ * cache holds exactly them continues the conversation the same way. */
 static uint32_t position;
 static int has_reply;
 static uint32_t last_token;
@@ -327,6 +337,7 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
 UDONCL_EXPORT udononnxStatus_t begin_message(udon_string_t text) {
   udontokenizers_model_t model;
   udononnxStatus_t status;
+  int first;
   if (!initialized)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (failed)
@@ -334,14 +345,16 @@ UDONCL_EXPORT udononnxStatus_t begin_message(udon_string_t text) {
   message_stage = STAGE_IDLE;
   message_count = 0;
   tinyllama_tokenizerInitializeModel(&model);
-  /* Only the first message starts with BOS. */
+  /* Only the first message starts with BOS. After a restore the reply is
+   * already in the KV cache. */
+  first = !has_reply && position == 0;
   status = tokenizer_status(udontokenizersEncoderBeginRaw(
-      &model, &encoder, message_words, MESSAGE_WORDS, !has_reply));
+      &model, &encoder, message_words, MESSAGE_WORDS, first));
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   message = text;
   message_cursor = 0;
-  message_stage = has_reply ? STAGE_TURN : STAGE_FIRST;
+  message_stage = first ? STAGE_FIRST : STAGE_TURN;
   return UDONONNX_STATUS_SUCCESS;
 }
 
@@ -515,6 +528,95 @@ UDONCL_EXPORT int32_t read_generated_tokens(udon_int32_array_t destination) {
   for (index = 0; index < count; ++index)
     udonInt32ArraySet(destination, (int32_t)index, reply_tokens[index]);
   return (int32_t)count;
+}
+
+/* Copies the committed history of the conversation to `destination`: the
+ * tokens of the KV cache, then the tokens that close the last reply (its
+ * last token, and EOS when it was cut off). RestoreConversation continues
+ * the conversation from it on another Host. Returns the number of tokens or
+ * -status; a history beyond the capacity, which no message could follow,
+ * fails with CAPACITY_EXCEEDED. */
+UDONCL_EXPORT int32_t read_conversation_tokens(udon_int32_array_t destination) {
+  udontokenizers_model_t model;
+  uint32_t count = position, closing = 0, index;
+  if (!initialized)
+    return -(int32_t)UDONONNX_STATUS_NOT_INITIALIZED;
+  if (failed)
+    return -(int32_t)UDONONNX_STATUS_INVALID_STATE;
+  if (count > TINYLLAMA_CAPACITY)
+    return -(int32_t)UDONONNX_STATUS_EXECUTION_FAILURE;
+  tinyllama_tokenizerInitializeModel(&model);
+  if (has_reply)
+    closing = last_token == (uint32_t)model.eos_token_id ? 1u : 2u;
+  if (closing > TINYLLAMA_CAPACITY - count)
+    return -(int32_t)UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  if (udonInt32ArrayLength(destination) < (int32_t)(count + closing))
+    return -(int32_t)UDONONNX_STATUS_INVALID_VALUE;
+  for (index = 0; index < count; ++index)
+    udonInt32ArraySet(destination, (int32_t)index,
+                      (int32_t)staged_tokens[index]);
+  if (closing > 0)
+    udonInt32ArraySet(destination, (int32_t)count, (int32_t)last_token);
+  if (closing > 1)
+    udonInt32ArraySet(destination, (int32_t)count + 1, model.eos_token_id);
+  return (int32_t)(count + closing);
+}
+
+/* Replaces the conversation with the committed history tokens[0, count)
+ * that ReadConversationTokens copied, usually on another Host. The KV cache
+ * keeps the leading tokens it already holds in the same order; the rest run
+ * one token per run. Count 0 starts a new conversation. A history beyond
+ * the capacity fails with CAPACITY_EXCEEDED and a token outside the
+ * vocabulary with INVALID_VALUE, both leaving the conversation unchanged.
+ * Otherwise a message that was not generated yet and the last reply's text
+ * and tokens are dropped. */
+UDONCL_EXPORT udononnxStatus_t restore_conversation(udon_int32_array_t tokens,
+                                                    int32_t count) {
+  udontokenizers_model_t model;
+  udononnxStatus_t status;
+  uint32_t total, kept, index;
+  if (!initialized)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (failed)
+    return UDONONNX_STATUS_INVALID_STATE;
+  if (count < 0)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if ((uint32_t)count > TINYLLAMA_CAPACITY)
+    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  if (count > udonInt32ArrayLength(tokens))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  total = (uint32_t)count;
+  for (index = 0; index < total; ++index) {
+    int32_t value = udonInt32ArrayGet(tokens, (int32_t)index);
+    if (value < 0 || value >= (int32_t)VOCABULARY)
+      return UDONONNX_STATUS_INVALID_VALUE;
+  }
+  /* The common prefix with the KV cache stays. */
+  kept = position < total ? position : total;
+  for (index = 0; index < kept; ++index)
+    if (staged_tokens[index] != udonInt32ArrayGet(tokens, (int32_t)index))
+      break;
+  kept = index;
+  tinyllama_tokenizerInitializeModel(&model);
+  status = tokenizer_status(udontokenizersDecoderBeginRaw(
+      &model, &decoder, reply_units, REPLY_UNITS, 1));
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return fail(status);
+  message_stage = STAGE_IDLE;
+  message_count = 0;
+  reply_count = 0;
+  has_reply = 0;
+  position = kept;
+  /* A run may suspend the export until a later frame: the rest of the
+   * history is staged first, so `tokens` is only read before the first run. */
+  for (index = kept; index < total; ++index)
+    staged_tokens[index] = udonInt32ArrayGet(tokens, (int32_t)index);
+  for (index = kept; index < total; ++index) {
+    status = run_token((uint32_t)staged_tokens[index]);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      return fail(status);
+  }
+  return UDONONNX_STATUS_SUCCESS;
 }
 
 /* Releases everything initialize created. Initialize may run again, which

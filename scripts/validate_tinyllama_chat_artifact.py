@@ -1,8 +1,9 @@
 """Validate the artifact of the minimal TinyLlama chat example.
 
 examples/tinyllama-chat builds program tinyllama_chat with the binding
-UdonclTinyllamaChatBinding. Its public API is exactly the seven exports of
-tinyllama_chat.c; only ReadStreamedText may run while Generate is pending.
+UdonclTinyllamaChatBinding. Its public API is exactly the nine exports of
+tinyllama_chat.c (the conversation sync ones included); only ReadStreamedText
+may run while Generate is pending.
 The model runs one position per run on a past bounded by capacity - 1 rows,
 every present is an in-place Concat of its past, every graph tensor stays a
 private buffer, and the Host launches its own ArgMax kernel
@@ -40,6 +41,8 @@ EXPORTS = {
     "Generate": ("generate", [], True),
     "ReadStreamedText": ("read_streamed_text", ["i32_array", "i32"], False),
     "ReadGeneratedTokens": ("read_generated_tokens", ["i32_array"], False),
+    "ReadConversationTokens": ("read_conversation_tokens", ["i32_array"], False),
+    "RestoreConversation": ("restore_conversation", ["i32_array", "i32"], True),
     "Dispose": ("dispose", [], False),
 }
 ALLOWED_WHILE_BUSY = ("ReadStreamedText",)
@@ -54,6 +57,11 @@ BINDING_METHODS = (
     "TryGetGenerateResult(out int result)",
     "TryReadStreamedText(int[] destination, int offset, out int result)",
     "TryReadGeneratedTokens(int[] destination, out int result)",
+    "TryReadConversationTokens(int[] destination, out int result)",
+    "StartRestoreConversation(int[] tokens, int count, UdonSharpBehaviour receiver, "
+    "string completionEvent)",
+    "GetRestoreConversationStatus(",
+    "TryGetRestoreConversationResult(out int result)",
     "TryDispose(out int result)",
 )
 ARGMAX_KERNEL = "tinyllama_argmax"

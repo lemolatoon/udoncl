@@ -6,7 +6,9 @@
  * one position t: the token and its position (1 x 1), the attention mask of
  * t + 1 ones in its buffer of the capacity, and each layer's past of t rows
  * and present of t + 1 rows in one buffer of the capacity. The ArgMax launch
- * replays a token script of the test. tests/boundary/tinyllama_chat_host.py
+ * replays a token script of the test. A second Host session restores the
+ * committed history of the first (the conversation sync of the example).
+ * tests/boundary/tinyllama_chat_host.py
  * generates the expectations (tinyllama_chat_expected.h) from the pinned
  * tokenizer with Hugging Face `tokenizers`, compiles this file with the Host,
  * the tokenizer tables and UdonTokenizers, and runs it. */
@@ -39,6 +41,8 @@ int32_t continue_message(void);
 udononnxStatus_t generate(void);
 int32_t read_streamed_text(udon_int32_array_t destination, uint32_t offset);
 int32_t read_generated_tokens(udon_int32_array_t destination);
+int32_t read_conversation_tokens(udon_int32_array_t destination);
+udononnxStatus_t restore_conversation(udon_int32_array_t tokens, int32_t count);
 udononnxStatus_t dispose(void);
 
 /* ------------------------------------------------------------------------ */
@@ -277,8 +281,8 @@ static struct binding bindings[96];
 static int binding_count, sessions;
 
 /* What every run saw: its token and position. */
-static int32_t run_tokens[4 * TINYLLAMA_CAPACITY];
-static int64_t run_positions[4 * TINYLLAMA_CAPACITY];
+static int32_t run_tokens[16 * TINYLLAMA_CAPACITY];
+static int64_t run_positions[16 * TINYLLAMA_CAPACITY];
 static int runs;
 
 udononnxStatus_t udononnxCreateSession(cl_context context,
@@ -419,7 +423,7 @@ udononnxStatus_t udononnxRun(udononnxSession_t *session) {
   memcpy(&uploaded, bound_memory("position_ids")->data, sizeof(uploaded));
   EXPECT(uploaded == position);
   EXPECT(token >= 0 && token < VOCABULARY);
-  EXPECT(runs < 4 * TINYLLAMA_CAPACITY);
+  EXPECT(runs < 16 * TINYLLAMA_CAPACITY);
   run_tokens[runs] = (int32_t)token;
   run_positions[runs] = position;
   ++runs;
@@ -483,18 +487,12 @@ static int32_t tokenize(const struct turn *turn) {
   return tokenize_units(turn->user, turn->user_length);
 }
 
-static void run_turn(const struct turn *turn) {
-  int32_t calls, index, count;
+/* Generates the reply to the tokenized message of `turn`. The first `skip`
+ * runs of the turn already ran: the closing tokens of the previous reply
+ * when the conversation was restored from a committed history. */
+static void generate_turn(const struct turn *turn, int skip) {
+  int32_t index, count;
   int first = runs;
-  if (turn->too_long_length) {
-    /* A message beyond the capacity fails and changes nothing. */
-    EXPECT(tokenize_units(turn->too_long, turn->too_long_length) ==
-           -UDONONNX_STATUS_CAPACITY_EXCEEDED);
-    EXPECT(generate() == UDONONNX_STATUS_INVALID_STATE);
-    EXPECT(runs == first);
-  }
-  calls = tokenize(turn);
-  EXPECT(calls > 1);
   current = turn;
   launches = 0;
   EXPECT(generate() == UDONONNX_STATUS_SUCCESS);
@@ -503,10 +501,10 @@ static void run_turn(const struct turn *turn) {
   EXPECT(launches == turn->reply_count);
   /* The closing tokens, the message, then every reply token but the last,
    * each at the next position. */
-  EXPECT(runs - first == turn->run_count);
-  for (index = 0; index < turn->run_count; ++index) {
-    EXPECT(run_tokens[first + index] == turn->runs[index]);
-    EXPECT(run_positions[first + index] == turn->first_position + index);
+  EXPECT(runs - first == turn->run_count - skip);
+  for (index = skip; index < turn->run_count; ++index) {
+    EXPECT(run_tokens[first + index - skip] == turn->runs[index]);
+    EXPECT(run_positions[first + index - skip] == turn->first_position + index);
   }
   EXPECT(read_generated_tokens(&short_array) ==
          (turn->reply_count > 1 ? -UDONONNX_STATUS_INVALID_VALUE : 1));
@@ -528,6 +526,136 @@ static void run_turn(const struct turn *turn) {
   }
 }
 
+static void run_turn(const struct turn *turn, int skip) {
+  int first = runs;
+  if (turn->too_long_length) {
+    /* A message beyond the capacity fails and changes nothing. */
+    EXPECT(tokenize_units(turn->too_long, turn->too_long_length) ==
+           -UDONONNX_STATUS_CAPACITY_EXCEEDED);
+    EXPECT(generate() == UDONONNX_STATUS_INVALID_STATE);
+    EXPECT(runs == first);
+  }
+  EXPECT(tokenize(turn) > 1);
+  generate_turn(turn, skip);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Conversation sync: ReadConversationTokens on one Host session, then      */
+/* RestoreConversation on another.                                          */
+
+static int32_t history[TINYLLAMA_CAPACITY + 1];
+static udon_int32_array_native_t history_array = {history,
+                                                  TINYLLAMA_CAPACITY + 1};
+static int32_t restored[TINYLLAMA_CAPACITY + 1];
+static udon_int32_array_native_t restored_array = {restored,
+                                                   TINYLLAMA_CAPACITY + 1};
+
+/* The committed history is `expected`, or no longer fits the capacity. */
+static void expect_history(const int32_t *expected, int count) {
+  int index;
+  if (count > TINYLLAMA_CAPACITY) {
+    EXPECT(read_conversation_tokens(&history_array) ==
+           -UDONONNX_STATUS_CAPACITY_EXCEEDED);
+    return;
+  }
+  EXPECT(read_conversation_tokens(&history_array) == count);
+  for (index = 0; index < count; ++index)
+    EXPECT(history[index] == expected[index]);
+}
+
+/* Restores tokens[0, count), of which the KV cache holds the first `kept`:
+ * only the rest runs, each at its own position, and the history is then
+ * `tokens`. The last reply is gone. */
+static void restore(const int32_t *tokens, int count, int kept) {
+  int first = runs, index;
+  if (count)
+    memcpy(restored, tokens, sizeof(int32_t) * (size_t)count);
+  EXPECT(restore_conversation(&restored_array, count) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(runs - first == count - kept);
+  for (index = kept; index < count; ++index) {
+    EXPECT(run_tokens[first + index - kept] == tokens[index]);
+    EXPECT(run_positions[first + index - kept] == index);
+  }
+  expect_history(tokens, count);
+  EXPECT(read_generated_tokens(&tokens_array) == 0);
+  EXPECT(read_streamed_text(&chunk_array, 0) == 0);
+}
+
+/* An invalid restore fails with `status` and changes nothing. */
+static void reject_restore(udon_int32_array_t tokens, int32_t count,
+                           udononnxStatus_t status) {
+  int first = runs;
+  EXPECT(restore_conversation(tokens, count) == status);
+  EXPECT(runs == first);
+}
+
+/* The first three turns of a conversation: the history after the first
+ * ends with one closing token, the one after the second with two. */
+static void sync_conversation(const struct turn *turns) {
+  const struct turn *one = &turns[0], *two = &turns[1], *three = &turns[2];
+  int kept = one->history_count;
+  EXPECT(two->closing_count == 1 && three->closing_count == 2);
+  /* The Host session that generates the first turn. */
+  EXPECT(initialize() == UDONONNX_STATUS_SUCCESS);
+  run_turn(one, 0);
+  expect_history(one->history, one->history_count);
+  EXPECT(dispose() == UDONONNX_STATUS_SUCCESS);
+
+  /* A new Host session restores that history; a message begun before is
+   * dropped. Then the second turn runs as if the conversation continued,
+   * without the closing tokens that already ran. */
+  EXPECT(initialize() == UDONONNX_STATUS_SUCCESS);
+  expect_history(0, 0);
+  EXPECT(tokenize(one) > 1);
+  restore(one->history, one->history_count, 0);
+  EXPECT(generate() == UDONONNX_STATUS_INVALID_STATE);
+  run_turn(two, two->closing_count);
+  expect_history(two->history, two->history_count);
+
+  /* A shorter history moves the position back without a run, and the
+   * second turn runs again exactly as before. */
+  restore(one->history, one->history_count, kept);
+  run_turn(two, two->closing_count);
+  /* A longer history runs only what follows the common prefix: after the
+   * history of the first turn, and after the second turn's KV cache (only
+   * the closing tokens). */
+  restore(one->history, one->history_count, kept);
+  restore(two->history, two->history_count, kept);
+  restore(one->history, one->history_count, kept);
+  run_turn(two, two->closing_count);
+  restore(two->history, two->history_count,
+          two->history_count - three->closing_count);
+
+  /* Invalid histories and reads change nothing, not even the message that
+   * is ready. */
+  EXPECT(tokenize(three) > 1);
+  memcpy(restored, two->history, sizeof(int32_t) * (size_t)two->history_count);
+  restored[1] = VOCABULARY;
+  reject_restore(&restored_array, two->history_count,
+                 UDONONNX_STATUS_INVALID_VALUE);
+  restored[1] = -1;
+  reject_restore(&restored_array, two->history_count,
+                 UDONONNX_STATUS_INVALID_VALUE);
+  restored[1] = two->history[1];
+  reject_restore(&restored_array, -1, UDONONNX_STATUS_INVALID_VALUE);
+  reject_restore(&short_array, 2, UDONONNX_STATUS_INVALID_VALUE);
+  reject_restore(&restored_array, TINYLLAMA_CAPACITY + 1,
+                 UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(read_conversation_tokens(&short_array) ==
+         -UDONONNX_STATUS_INVALID_VALUE);
+  expect_history(two->history, two->history_count);
+  generate_turn(three, three->closing_count);
+  expect_history(three->history, three->history_count);
+
+  /* Count 0 starts a new conversation: the first message again. */
+  restore(0, 0, 0);
+  run_turn(one, 0);
+  expect_history(one->history, one->history_count);
+  EXPECT(dispose() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(live_objects == 0 && !fake_session.live);
+}
+
 int main(void) {
   int index;
   /* Nothing works before Initialize. */
@@ -538,6 +666,10 @@ int main(void) {
          -UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(read_generated_tokens(&tokens_array) ==
          -UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(read_conversation_tokens(&history_array) ==
+         -UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(restore_conversation(&restored_array, 0) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(dispose() == UDONONNX_STATUS_NOT_INITIALIZED);
 
   for (index = 0; index < CONVERSATIONS; ++index) {
@@ -552,8 +684,12 @@ int main(void) {
     EXPECT(generate() == UDONONNX_STATUS_INVALID_STATE);
     EXPECT(read_streamed_text(&chunk_array, 0) == 0);
     EXPECT(read_generated_tokens(&tokens_array) == 0);
-    for (turn = 0; turn < conversation->turn_count; ++turn)
-      run_turn(&conversation->turns[turn]);
+    expect_history(0, 0);
+    for (turn = 0; turn < conversation->turn_count; ++turn) {
+      const struct turn *each = &conversation->turns[turn];
+      run_turn(each, 0);
+      expect_history(each->history, each->history_count);
+    }
     if (conversation->overflow) {
       /* A message beyond the capacity fails and changes nothing. */
       int before = runs;
@@ -569,6 +705,11 @@ int main(void) {
     EXPECT(dispose() == UDONONNX_STATUS_NOT_INITIALIZED);
     EXPECT(begin_message(0) == UDONONNX_STATUS_NOT_INITIALIZED);
   }
+  sync_conversation(conversations[0].turns);
+  EXPECT(read_conversation_tokens(&history_array) ==
+         -UDONONNX_STATUS_NOT_INITIALIZED);
+  EXPECT(restore_conversation(&restored_array, 0) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
   printf("tinyllama_chat_host=passed conversations=%d runs=%d buffers=%d\n",
          CONVERSATIONS, runs, created_buffers);
   return 0;
