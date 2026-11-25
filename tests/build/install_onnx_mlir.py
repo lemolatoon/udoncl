@@ -185,6 +185,47 @@ class InstallONNXMLIRTests(unittest.TestCase):
         self.assertFalse(any(
             str(part).startswith('-DUDONCL_ONNX_EXTENSION_SOURCE_DIR=')
             for part in command))
+        self.assertIn('-DUDONCL_ONNX_MLIR_LIT_TOOL_STUBS=', command)
+
+    def write_llvm_exports(self, *tools):
+        exports = self.root / 'llvm/lib/cmake/llvm/LLVMExports.cmake'
+        exports.parent.mkdir(parents=True)
+        exports.write_text(''.join(
+            f'# Create imported target {tool}\n'
+            f'add_executable({tool} IMPORTED)\n' for tool in tools) +
+            'add_library(LLVMSupport STATIC IMPORTED)\n', encoding='utf-8')
+        return self.root / 'llvm'
+
+    def test_sdk_exporting_lit_tools_needs_no_stubs(self):
+        llvm = self.write_llvm_exports(
+            'FileCheck', 'count', 'not', 'split-file', 'llvm-dis', 'opt')
+        self.assertEqual(installer.missing_lit_tools(llvm), [])
+
+    def test_release_archive_without_lit_tools_gets_stubs(self):
+        # The official Linux release archive exports llvm-dis but none of
+        # the lit utilities that ONNX-MLIR's check-* suites depend on.
+        llvm = self.write_llvm_exports('llvm-dis', 'opt')
+        missing = installer.missing_lit_tools(llvm)
+        self.assertEqual(missing, ['FileCheck', 'count', 'not', 'split-file'])
+        command = installer.configure_command(
+            self.lock, Path('source'), Path('build'), llvm, 'linux', 'cmake',
+            missing)
+        self.assertIn(
+            '-DCMAKE_PROJECT_onnx-mlir_INCLUDE=' +
+            installer.PROJECT_INCLUDE.as_posix(), command)
+        self.assertIn(
+            '-DUDONCL_ONNX_MLIR_LIT_TOOL_STUBS=FileCheck;count;not;split-file',
+            command)
+
+    def test_project_include_defines_requested_lit_tool_stubs(self):
+        include = installer.PROJECT_INCLUDE.read_text(encoding='utf-8')
+        self.assertIn('IN LISTS UDONCL_ONNX_MLIR_LIT_TOOL_STUBS', include)
+        self.assertIn('if(NOT TARGET "${tool}")', include)
+        self.assertIn('-E false', include)
+
+    def test_sdk_without_cmake_exports_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'no CMake exports'):
+            installer.missing_lit_tools(self.root / 'missing-llvm')
 
     def test_linux_configuration_does_not_use_msvc_flag(self):
         command = installer.configure_command(

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / 'cmake/onnx-mlir-lock.json'
 RECEIPT = '.udoncl-onnx-mlir.json'
 SDK_CONFIG = ROOT / 'cmake/ONNXMLIRConfig.cmake'
+PROJECT_INCLUDE = ROOT / 'cmake/onnx-mlir-project-include.cmake'
+# LLVM tools that ONNX-MLIR's lit suites name as target dependencies. The
+# suites are declared even with ONNX_MLIR_BUILD_TESTS=OFF, but the official
+# Linux LLVM release archive does not export every tool.
+LIT_TOOL_TARGETS = ('FileCheck', 'count', 'not', 'split-file', 'llvm-dis')
 
 
 def run(command, cwd=None):
@@ -203,7 +209,21 @@ def ensure_source(lock, source):
         run(['git', 'apply', '-C0', patch], cwd=source)
 
 
-def configure_command(lock, source, build, llvm_prefix, host, cmake):
+def exported_llvm_executables(llvm_prefix):
+    exports = llvm_prefix / 'lib/cmake/llvm/LLVMExports.cmake'
+    if not exports.is_file():
+        raise RuntimeError(f'LLVM/MLIR SDK has no CMake exports: {exports}')
+    return set(re.findall(r'add_executable\(\s*([^\s)]+)\s+IMPORTED',
+                          exports.read_text(encoding='utf-8')))
+
+
+def missing_lit_tools(llvm_prefix):
+    exported = exported_llvm_executables(llvm_prefix)
+    return [tool for tool in LIT_TOOL_TARGETS if tool not in exported]
+
+
+def configure_command(lock, source, build, llvm_prefix, host, cmake,
+                      lit_tool_stubs=()):
     command = [cmake, '-S', source, '-B', build, '-G', 'Ninja',
                f'-DMLIR_DIR={llvm_prefix / "lib/cmake/mlir"}',
                '-DCMAKE_BUILD_TYPE=Release']
@@ -211,6 +231,11 @@ def configure_command(lock, source, build, llvm_prefix, host, cmake):
                 for name, value in lock['cmake_options'].items()]
     if host == 'windows':
         command.append('-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES')
+    # The project include stubs lit tools the SDK lacks, so the unused
+    # check-* suites stay generatable.
+    command += [
+        f'-DCMAKE_PROJECT_onnx-mlir_INCLUDE={PROJECT_INCLUDE.as_posix()}',
+        '-DUDONCL_ONNX_MLIR_LIT_TOOL_STUBS=' + ';'.join(lit_tool_stubs)]
     return command
 
 
@@ -234,7 +259,8 @@ def install(lock, host, prefix, source, build, llvm_prefix, jobs):
     if not cmake or not ninja:
         raise RuntimeError('cmake and ninja must be available on PATH')
     ensure_source(lock, source)
-    run(configure_command(lock, source, build, llvm_prefix, host, cmake))
+    run(configure_command(lock, source, build, llvm_prefix, host, cmake,
+                          missing_lit_tools(llvm_prefix)))
     run([cmake, '--build', build, '--config', 'Release', '--parallel',
          str(jobs), '--target', *lock['build_targets']])
     library_root = build / 'Release/lib'
