@@ -29,7 +29,7 @@
     },
     {
       "displayName": "TinyLlama Chat",
-      "description": "Chat with TinyLlama-1.1B through a user-built 4096-token Chat Artifact and stream its replies.",
+      "description": "Chat with TinyLlama-1.1B through the user-built artifact of examples/tinyllama-chat and stream its replies.",
       "path": "Samples~/TinyLlama Chat"
     }
   ]

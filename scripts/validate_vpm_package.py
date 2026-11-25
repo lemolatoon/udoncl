@@ -65,7 +65,8 @@ def fixture_binding(fixture_name: str):
 
 # Each Package Sample, its U# script, and the binding it compiles against in
 # the Editor gate: the one the bundled example imports, or the stand-in for
-# the TinyLlama Chat Artifact, which is too large to bundle.
+# the binding of the TinyLlama chat example, whose model is too large to
+# bundle.
 SAMPLES = (
     ("C and OpenCL SAXPY", "SaxpyCaller.cs", archived_binding("saxpy.zip.bytes")),
     ("ONNX MNIST", "MnistClassifier.cs", archived_binding("onnx-mnist.zip.bytes")),

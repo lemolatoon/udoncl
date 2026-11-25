@@ -5,57 +5,58 @@ using UnityEngine;
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class TinyLlamaChat : UdonSharpBehaviour
 {
-    // The status the C Host returns from every export (udononnxStatus_t).
+    // The status the C Host returns from its exports (udononnxStatus_t).
     private const int OnnxSuccess = 0;
 
     [SerializeField]
-    private UdonclTinyLlamaChatBinding binding;
-
-    [SerializeField]
-    private string systemText = "You are a friendly assistant in a VRChat world.";
+    private UdonclTinyllamaChatBinding binding;
 
     [SerializeField]
     private string userText = "What is your name?";
 
-    // At most the generated-token capacity the artifact was built with
-    // (UDONCL_TINYLLAMA_MAX_NEW_TOKENS, 32 by default).
-    [SerializeField]
-    private int maxNewTokens = 32;
-
-    // Tokenizer work per frame while a message is encoded, about one UTF-16
-    // code unit each; a long message is spread over several frames.
-    [SerializeField]
-    private int promptWorkPerFrame = 32;
-
     private bool initialized;
     private bool busy;
-    private bool conversationStarted;
-    private bool encodingTurn;
-    private bool generating;
     private int[] textChunk;
     private int replyLength;
     private string reply;
 
-    private void Start()
+    private void OnEnable()
     {
-        // Initialize one frame after start-up so every behaviour is ready.
-        SendCustomEventDelayedFrames("InitializeChat", 1);
+        // One frame later every behaviour, the binding included, is ready.
+        SendCustomEventDelayedFrames(nameof(InitializeChat), 1);
+    }
+
+    private void OnDisable()
+    {
+        if (!initialized)
+            return;
+        initialized = false;
+        // Dispose releases the model and ends the conversation; the next
+        // OnEnable starts a new one.
+        int onnxStatus;
+        int status = binding.TryDispose(out onnxStatus);
+        if (status != UdonclTinyllamaChatBinding.StatusSuccess || onnxStatus != OnnxSuccess)
+            Debug.LogError(
+                "TinyLlama: Dispose failed with status " + status + " and ONNX status " + onnxStatus
+            );
     }
 
     public void InitializeChat()
     {
+        if (initialized || busy)
+            return;
         if (binding == null)
         {
-            Debug.LogError("TinyLlama: assign the UdonclTinyLlamaChatBinding instance.");
+            Debug.LogError("TinyLlama: assign the UdonclTinyllamaChatBinding instance.");
             return;
         }
 
         textChunk = new int[256];
         busy = true;
-        // Initialize creates the OpenCL context and the ONNX session in the
-        // C Host and uploads the model weights; it spans many frames.
-        int status = binding.StartInitialize(this, "OnChatInitialized");
-        if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+        // Initialize creates the OpenCL objects, the model session and the
+        // ArgMax kernel in the C Host; it spans a few frames.
+        int status = binding.StartInitialize(this, nameof(OnChatInitialized));
+        if (status != UdonclTinyllamaChatBinding.StatusSuccess)
             Fail("StartInitialize", status, OnnxSuccess);
     }
 
@@ -63,14 +64,12 @@ public class TinyLlamaChat : UdonSharpBehaviour
     {
         int onnxStatus = OnnxSuccess;
         int status = binding.GetInitializeStatus();
-        if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess)
             status = binding.TryGetInitializeResult(out onnxStatus);
         if (!Succeeded("Initialize", status, onnxStatus))
             return;
-
         initialized = true;
         busy = false;
-        Send();
     }
 
     public override void Interact()
@@ -78,80 +77,59 @@ public class TinyLlamaChat : UdonSharpBehaviour
         Send();
     }
 
-    // Sends userText: the first message starts the conversation with the
-    // system text, every later one is appended to it as the next turn.
+    // Sends userText as the next message of the conversation.
     public void Send()
     {
         if (!initialized || busy)
             return;
 
         busy = true;
-        encodingTurn = conversationStarted;
         int onnxStatus;
-        int status;
-        if (encodingTurn)
-            status = binding.TryBeginChatTurn(out onnxStatus);
-        else
-            status = binding.TryBeginChatPrompt(out onnxStatus);
-        if (!Succeeded("BeginChatPrompt", status, onnxStatus))
+        int status = binding.TryBeginMessage(userText, out onnxStatus);
+        if (!Succeeded("BeginMessage", status, onnxStatus))
             return;
         Debug.Log("TinyLlama: you: " + userText);
         EncodeMessage();
     }
 
     // The C Host applies the chat template and tokenizes the message, a
-    // bounded amount of work per frame, until nothing is pending.
+    // bounded amount of work per frame: ContinueMessage returns 1 while work
+    // is pending and 0 once the message is ready.
     public void EncodeMessage()
     {
-        int onnxStatus;
-        int status;
-        if (encodingTurn)
-            status = binding.TryContinueChatTurn(userText, promptWorkPerFrame, out onnxStatus);
-        else
-            status = binding.TryContinueChatPrompt(
-                systemText,
-                userText,
-                promptWorkPerFrame,
-                out onnxStatus
-            );
-        if (!Succeeded("ContinueChatPrompt", status, onnxStatus))
-            return;
-
         int pending;
-        status = binding.TryChatPromptPending(out pending);
-        if (!Succeeded("ChatPromptPending", status, OnnxSuccess))
+        int status = binding.TryContinueMessage(out pending);
+        if (!Succeeded("ContinueMessage", status, pending < 0 ? -pending : OnnxSuccess))
             return;
         if (pending != 0)
         {
-            SendCustomEventDelayedFrames("EncodeMessage", 1);
+            SendCustomEventDelayedFrames(nameof(EncodeMessage), 1);
             return;
         }
 
-        conversationStarted = true;
         reply = "";
         replyLength = 0;
-        status = binding.StartGenerate(maxNewTokens, this, "OnReplyGenerated");
+        status = binding.StartGenerate(this, nameof(OnReplyGenerated));
         if (!Succeeded("StartGenerate", status, OnnxSuccess))
             return;
-        generating = true;
-        SendCustomEventDelayedFrames("StreamReply", 1);
+        SendCustomEventDelayedFrames(nameof(StreamReply), 1);
     }
 
     // While the reply is generated, read the part of it that is final.
     public void StreamReply()
     {
-        if (!generating)
+        if (!busy)
             return;
         ReadReplyText();
-        SendCustomEventDelayedFrames("StreamReply", 1);
+        SendCustomEventDelayedFrames(nameof(StreamReply), 1);
     }
 
     public void OnReplyGenerated()
     {
-        generating = false;
+        busy = false;
         int onnxStatus = OnnxSuccess;
         int status = binding.GetGenerateStatus();
-        if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess)
             status = binding.TryGetGenerateResult(out onnxStatus);
         if (!Succeeded("Generate", status, onnxStatus))
             return;
@@ -159,23 +137,18 @@ public class TinyLlamaChat : UdonSharpBehaviour
         // After the generation completed the streamed text is the whole reply.
         ReadReplyText();
         Debug.Log("TinyLlama: assistant: " + reply);
-        busy = false;
     }
 
     // Appends the reply text that became final since the last call. The
-    // binding returns UTF-16 code units, one per int.
+    // binding returns UTF-16 code units, one per int, at most textChunk's
+    // length per call.
     private void ReadReplyText()
     {
-        int length;
-        // StatusBusy while the model runs a step: try again next frame.
-        if (binding.TryStreamedTextLength(out length) != UdonclTinyLlamaChatBinding.StatusSuccess)
-            return;
-        while (replyLength < length)
+        int count = textChunk.Length;
+        while (count == textChunk.Length)
         {
-            int count = Mathf.Min(length - replyLength, textChunk.Length);
-            int onnxStatus;
-            int status = binding.TryReadStreamedText(textChunk, replyLength, count, out onnxStatus);
-            if (status != UdonclTinyLlamaChatBinding.StatusSuccess || onnxStatus != OnnxSuccess)
+            int status = binding.TryReadStreamedText(textChunk, replyLength, out count);
+            if (status != UdonclTinyllamaChatBinding.StatusSuccess || count < 0)
                 return;
             for (int i = 0; i < count; i++)
                 reply += (char)textChunk[i];
@@ -185,7 +158,7 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
     private bool Succeeded(string step, int status, int onnxStatus)
     {
-        if (status == UdonclTinyLlamaChatBinding.StatusSuccess && onnxStatus == OnnxSuccess)
+        if (status == UdonclTinyllamaChatBinding.StatusSuccess && onnxStatus == OnnxSuccess)
             return true;
         Fail(step, status, onnxStatus);
         return false;
@@ -193,7 +166,6 @@ public class TinyLlamaChat : UdonSharpBehaviour
 
     private void Fail(string step, int status, int onnxStatus)
     {
-        generating = false;
         busy = false;
         Debug.LogError(
             "TinyLlama: "

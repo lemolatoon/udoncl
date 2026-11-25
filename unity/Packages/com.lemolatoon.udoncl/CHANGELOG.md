@@ -29,6 +29,11 @@ All notable changes to this package are recorded here.
 
 ### Changed
 
+- The TinyLlama Chat Package Sample uses the minimal TinyLlama chat example
+  (`examples/tinyllama-chat`, binding `UdonclTinyllamaChatBinding`): `OnEnable`
+  starts `Initialize`, `Interact` sends a message (`BeginMessage`,
+  `ContinueMessage` once per frame, `StartGenerate`) and streams the reply
+  with `ReadStreamedText`, and `OnDisable` calls `TryDispose`.
 - The packaged ONNX MNIST example binds its `image` and `logits` buffers
   through the UdonONNX session API (`udononnxCreateSession`,
   `udononnxBindInput`, `udononnxBindOutput`, `udononnxRun`,

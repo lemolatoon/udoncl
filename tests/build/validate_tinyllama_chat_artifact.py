@@ -197,6 +197,23 @@ class TinyLlamaChatArtifactValidatorTests(unittest.TestCase):
         for name in ("test-controller", "lifecycle-test"):
             self.assertTrue((editor / f"Examples/tinyllama-minimal-chat-{name}.cs.txt.meta").is_file())
 
+    def test_sample_stub_declares_the_generated_api(self):
+        # The Editor gate compiles the TinyLlama Chat Package Sample against
+        # this stand-in when the real artifact is absent.
+        package = ROOT / "unity/Packages/com.lemolatoon.udoncl"
+        stub = (package / "Tests/Editor/Fixtures/tinyllama-chat-binding.cs.txt").read_text(
+            encoding="utf-8")
+        self.assertIn("public sealed class UdonclTinyllamaChatBinding ", stub)
+        for method in VALIDATOR.BINDING_METHODS:
+            self.assertIn(method, stub)
+        sample = (package / "Samples~/TinyLlama Chat/TinyLlamaChat.cs").read_text(
+            encoding="utf-8")
+        self.assertIn("private UdonclTinyllamaChatBinding binding;", sample)
+        for required in ("OnEnable()", "OnDisable()", "Interact()", "TryDispose(",
+                         "TryBeginMessage(", "TryContinueMessage(", "StartGenerate(",
+                         "TryReadStreamedText("):
+            self.assertIn(required, sample)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])

@@ -8,7 +8,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     // Compiles every Package Sample to an Udon program against the bindings
     // of the imported example artifacts. Prepare Package Sample Validation
     // copies the samples into SampleRoot after SAXPY and MNIST are imported;
-    // the TinyLlama Chat sample uses the public API of its binding.
+    // the TinyLlama Chat sample uses the public API of the binding of the
+    // TinyLlama chat example (examples/tinyllama-chat).
     public sealed class PackageSampleCompilationTests
     {
         private const string SampleRoot = "Assets/UdonclSampleValidation";
@@ -32,10 +33,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             if (
                 AssetDatabase.LoadAssetAtPath<MonoScript>(
-                    SampleRoot + "/UdonclTinyLlamaChatBinding.cs"
+                    SampleRoot + "/UdonclTinyllamaChatBinding.cs"
                 ) != null
             )
-                EnsureCompiled(SampleRoot, "UdonclTinyLlamaChatBinding");
+                EnsureCompiled(SampleRoot, "UdonclTinyllamaChatBinding");
         }
 
         [TestCase("SaxpyCaller")]

@@ -409,9 +409,6 @@ namespace Lemolatoon.Udoncl.Editor
                 "tinyllama_real_chat",
                 program
             );
-            // The TinyLlama Chat Package Sample compiles against the binding
-            // generated for this artifact.
-            CopyPackageSamples(package.resolvedPath, TinyLlamaChatSample, validationRoot);
             File.WriteAllText(
                 editorRoot + "/Udoncl.TinyLlama.Chat.Focused.Tests.asmdef",
                 "{\n"
@@ -499,6 +496,9 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/PublicTinyLlamaMinimalChatLifecycleTests.cs",
                 true
             );
+            // The TinyLlama Chat Package Sample compiles against the binding
+            // generated for this artifact.
+            CopyPackageSamples(package.resolvedPath, TinyLlamaChatSample, validationRoot);
             File.WriteAllText(
                 editorRoot + "/Udoncl.TinyLlama.MinimalChat.Focused.Tests.asmdef",
                 "{\n"
@@ -680,12 +680,9 @@ namespace Lemolatoon.Udoncl.Editor
             // copied after Prepare Public MNIST Validation and Prepare
             // Packaged Example Validation imported MNIST and SAXPY.
             CopyPackageSamples(package.resolvedPath, null, SampleValidationRoot);
-            // The TinyLlama Chat Artifact needs the real model. Without it,
-            // the sample compiles against the public API of its binding.
-            if (
-                !AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_real_chat")
-                && !AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_real_chat_4k")
-            )
+            // The TinyLlama chat example needs the real model. Without it, the
+            // sample compiles against the public API of its binding.
+            if (!AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_chat"))
                 File.Copy(
                     Path.Combine(
                         package.resolvedPath,
@@ -694,7 +691,7 @@ namespace Lemolatoon.Udoncl.Editor
                         "Fixtures",
                         TinyLlamaChatBindingStub
                     ),
-                    SampleValidationRoot + "/UdonclTinyLlamaChatBinding.cs",
+                    SampleValidationRoot + "/UdonclTinyllamaChatBinding.cs",
                     true
                 );
             AssetDatabase.ImportAsset(

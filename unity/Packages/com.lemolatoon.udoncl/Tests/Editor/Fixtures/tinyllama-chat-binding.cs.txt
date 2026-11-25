@@ -1,17 +1,16 @@
 // Compile-only stand-in for the U# binding that udonclc generates for the
-// TinyLlama Chat Artifacts (programs tinyllama_real_chat and
-// tinyllama_real_chat_4k of examples/onnx-transformer-tiny). The Editor gate
-// compiles the TinyLlama Chat Package Sample against this public API
-// without the real model; the real-TinyLlama gate compiles the sample
-// against the generated binding itself. Every call reports
-// StatusNotInitialized.
+// TinyLlama chat example (program tinyllama_chat of examples/tinyllama-chat).
+// The Editor gate compiles the TinyLlama Chat Package Sample against this
+// public API without the real model; the real-TinyLlama gate (tinychat)
+// compiles the sample against the generated binding itself. Every call
+// reports StatusNotInitialized.
 using UdonSharp;
 using UnityEngine;
 using VRC.Udon;
 
 namespace Lemolatoon.Udoncl.Generated
 {
-    public sealed class UdonclTinyLlamaChatBinding : UdonSharpBehaviour
+    public sealed class UdonclTinyllamaChatBinding : UdonSharpBehaviour
     {
         public const int StatusSuccess = 0;
         public const int StatusNotInitialized = -1;
@@ -47,13 +46,13 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int TryShutdown(out int result)
+        public int TryDispose(out int result)
         {
             result = 0;
             return StatusNotInitialized;
         }
 
-        public int StartGenerate(int max_new_tokens, UdonSharpBehaviour receiver, string completionEvent)
+        public int StartGenerate(UdonSharpBehaviour receiver, string completionEvent)
         {
             return StatusNotInitialized;
         }
@@ -64,36 +63,6 @@ namespace Lemolatoon.Udoncl.Generated
         }
 
         public int TryGetGenerateResult(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryContinueChatTurn(string user_text, int max_work, out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryLastTokenizerStatus(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryPromptTokenCount(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryReadStreamedText(int[] destination, int offset, int count, out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TrySetChatPrompt(string system_text, string user_text, out int result)
         {
             result = 0;
             return StatusNotInitialized;
@@ -115,25 +84,13 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int TryBeginChatPrompt(out int result)
+        public int TryReadStreamedText(int[] destination, int offset, out int result)
         {
             result = 0;
             return StatusNotInitialized;
         }
 
-        public int TryBeginChatTurn(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryStreamedTextLength(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryGeneratedTextLength(out int result)
+        public int TryBeginMessage(string text, out int result)
         {
             result = 0;
             return StatusNotInitialized;
@@ -145,69 +102,7 @@ namespace Lemolatoon.Udoncl.Generated
             return StatusNotInitialized;
         }
 
-        public int TryReadGeneratedText(int[] destination, out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int StartResetChat(UdonSharpBehaviour receiver, string completionEvent)
-        {
-            return StatusNotInitialized;
-        }
-
-        public int GetResetChatStatus()
-        {
-            return StatusNotInitialized;
-        }
-
-        public int TryGetResetChatResult(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryReadPromptTokens(int[] destination, out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryGeneratedTokenCount(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int StartReset(UdonSharpBehaviour receiver, string completionEvent)
-        {
-            return StatusNotInitialized;
-        }
-
-        public int GetResetStatus()
-        {
-            return StatusNotInitialized;
-        }
-
-        public int TryGetResetResult(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryChatPromptPending(out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TryContinueChatPrompt(string system_text, string user_text, int max_work, out int result)
-        {
-            result = 0;
-            return StatusNotInitialized;
-        }
-
-        public int TrySetPromptTokens(int[] token_ids, int token_count, out int result)
+        public int TryContinueMessage(out int result)
         {
             result = 0;
             return StatusNotInitialized;
