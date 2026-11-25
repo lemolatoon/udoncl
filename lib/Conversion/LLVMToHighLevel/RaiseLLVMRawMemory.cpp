@@ -425,6 +425,11 @@ globalInitializer(LLVM::GlobalOp op, Type storageType, OpBuilder &builder,
   if (!returned || returned.getNumOperands() != 1)
     return failure();
   Operation *value = returned.getOperand(0).getDefiningOp();
+  // A null pointer of another address space is a cast of the generic null,
+  // as a file-scope udon_string_t (address space 200) is initialized.
+  if (auto cast = dyn_cast_or_null<LLVM::AddrSpaceCastOp>(value))
+    if (isa_and_nonnull<LLVM::ZeroOp>(cast.getArg().getDefiningOp()))
+      value = cast.getArg().getDefiningOp();
   if (isa_and_nonnull<LLVM::ZeroOp>(value))
     return zeroInitializer(builder, storageType);
   if (auto constant = dyn_cast_or_null<LLVM::ConstantOp>(value))
