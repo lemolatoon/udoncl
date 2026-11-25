@@ -78,27 +78,9 @@ static cl_context context;
 static cl_command_queue queue;
 static udononnxSession_t *session;
 static cl_mem input_ids, attention_mask, position_ids, logits;
-/* One variable per layer's K and V buffer, reached through constant tables
- * of their addresses: udonclc unrolls the loops over the layers and folds
- * every table entry to its variable. */
-#define TINYLLAMA_LAYER_VARIABLES(prefix)                                      \
-  prefix##0, prefix##1, prefix##2, prefix##3, prefix##4, prefix##5, prefix##6, \
-      prefix##7, prefix##8, prefix##9, prefix##10, prefix##11, prefix##12,     \
-      prefix##13, prefix##14, prefix##15, prefix##16, prefix##17, prefix##18,  \
-      prefix##19, prefix##20, prefix##21
-#define TINYLLAMA_LAYER_ADDRESSES(prefix)                                      \
-  {                                                                            \
-      &prefix##0,  &prefix##1,  &prefix##2,  &prefix##3,  &prefix##4,          \
-      &prefix##5,  &prefix##6,  &prefix##7,  &prefix##8,  &prefix##9,          \
-      &prefix##10, &prefix##11, &prefix##12, &prefix##13, &prefix##14,         \
-      &prefix##15, &prefix##16, &prefix##17, &prefix##18, &prefix##19,         \
-      &prefix##20, &prefix##21}
-static cl_mem TINYLLAMA_LAYER_VARIABLES(key_cache_);
-static cl_mem TINYLLAMA_LAYER_VARIABLES(value_cache_);
-static cl_mem *const keys[TINYLLAMA_LAYERS] =
-    TINYLLAMA_LAYER_ADDRESSES(key_cache_);
-static cl_mem *const values[TINYLLAMA_LAYERS] =
-    TINYLLAMA_LAYER_ADDRESSES(value_cache_);
+/* Each layer's K and V buffer. udonclc unrolls the loops over the layers
+ * that create, bind and release them, so every element is one buffer. */
+static cl_mem keys[TINYLLAMA_LAYERS], values[TINYLLAMA_LAYERS];
 static cl_mem partials, result;
 static int32_t prompt[TINYLLAMA_CONTEXT_CAPACITY];
 static int32_t generated[TINYLLAMA_GENERATED_CAPACITY];
@@ -142,8 +124,8 @@ static udononnxStatus_t release_opencl(void) {
   TINYLLAMA_RELEASE(result);
   TINYLLAMA_RELEASE(partials);
   for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
-    TINYLLAMA_RELEASE(*keys[layer]);
-    TINYLLAMA_RELEASE(*values[layer]);
+    TINYLLAMA_RELEASE(keys[layer]);
+    TINYLLAMA_RELEASE(values[layer]);
   }
   TINYLLAMA_RELEASE(logits);
   TINYLLAMA_RELEASE(position_ids);
@@ -207,20 +189,20 @@ static udononnxStatus_t bind_position(uint32_t position) {
                              mask_dims, mask_buffer_dims);
   for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
     if (status == UDONONNX_STATUS_SUCCESS)
-      status = udononnxBindInput(session, past_key_names[layer], *keys[layer],
-                                 4, past_dims, cache_buffer_dims);
+      status = udononnxBindInput(session, past_key_names[layer], keys[layer], 4,
+                                 past_dims, cache_buffer_dims);
     if (status == UDONONNX_STATUS_SUCCESS)
       status =
-          udononnxBindInput(session, past_value_names[layer], *values[layer], 4,
+          udononnxBindInput(session, past_value_names[layer], values[layer], 4,
                             past_dims, cache_buffer_dims);
     if (status == UDONONNX_STATUS_SUCCESS)
       status =
-          udononnxBindOutput(session, present_key_names[layer], *keys[layer], 4,
+          udononnxBindOutput(session, present_key_names[layer], keys[layer], 4,
                              present_dims, cache_buffer_dims);
     if (status == UDONONNX_STATUS_SUCCESS)
-      status = udononnxBindOutput(session, present_value_names[layer],
-                                  *values[layer], 4, present_dims,
-                                  cache_buffer_dims);
+      status =
+          udononnxBindOutput(session, present_value_names[layer], values[layer],
+                             4, present_dims, cache_buffer_dims);
   }
   return status;
 }
@@ -271,12 +253,13 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
   if (!logits || error != CL_SUCCESS)
     return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
   for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer) {
-    *keys[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
-    *values[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
-  }
-  for (layer = 0; layer < TINYLLAMA_LAYERS; ++layer)
-    if (!*keys[layer] || !*values[layer])
+    keys[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
+    if (error != CL_SUCCESS)
       return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+    values[layer] = create_buffer(TINYLLAMA_CACHE_BYTES, &error);
+    if (error != CL_SUCCESS)
+      return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
+  }
   partials =
       create_buffer(TINYLLAMA_ARGMAX_PARTIAL_WORDS * sizeof(uint32_t), &error);
   if (!partials || error != CL_SUCCESS)
