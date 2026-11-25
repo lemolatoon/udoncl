@@ -7,12 +7,14 @@ instance in the active scene automatically. The source workflow below lets
 users modify and rebuild the ordinary Host C and OpenCL C inputs.
 
 This example is a standalone consumer of `find_package(UdonCL CONFIG)`. Its
-Host C ([`host.c`](host.c)) uses the standard OpenCL 1.2 API: it creates the
-`x`, `y` and `result` buffers, creates the `saxpy` kernel of
-[`saxpy.cl`](saxpy.cl) with `clCreateKernel`, sets its arguments with
-`clSetKernelArg`, launches it with `clEnqueueNDRangeKernel` and waits with
-`clFinish`. `run_saxpy` is marked `UDONCL_EXPORT` and returns the OpenCL
-status. The linked `UdonCL::OpenCLRuntime` implements the API; the kernel is
+Host C ([`host.c`](host.c)) uses the standard OpenCL 1.2 API in the UdonCL
+lifecycle Initialize → Write → Run → Read → Dispose. `initialize` creates the
+`x`, `y` and `result` buffers and the `saxpy` kernel of
+[`saxpy.cl`](saxpy.cl) with `clCreateKernel`; `run(n, alpha)` sets the kernel
+arguments with `clSetKernelArg`, launches it with `clEnqueueNDRangeKernel` and
+waits with `clFinish`; `dispose` releases everything, after which
+`initialize` may run again. The three are marked `UDONCL_EXPORT` and return
+the OpenCL status. The linked `UdonCL::OpenCLRuntime` implements the API; the kernel is
 compiled ahead of time from the Device library, and `udoncl_add_unity_library`
 derives its launch from the Host C. The Host C also describes the public U#
 API: `UDONCL_PROGRAM("saxpy_demo")` names the program, and
@@ -37,18 +39,26 @@ build/saxpy-cmake/udoncl/saxpy-unity-library/artifact
 ```
 
 The artifact carries the typed U# binding `udonclc` generates
-(`binding.cs`), which the Importer installs, with an asynchronous
-`StartRunSaxpy(int n, float alpha, receiver, completionEvent)`, three 128-byte
-linear RGBA8 RenderTextures, and the kernel material. U# writes the 32-word
-inputs with `TryWriteX(float[])` and `TryWriteY(float[])`, starts
-`RunSaxpy(16, 2.0f)`, reads `GetRunSaxpyStatus()` and the returned OpenCL
-status with `TryGetRunSaxpyResult(out int)` in the completion event, and then
-reads `result` with `StartReadResult(float[], receiver, completionEvent)`. The
-first 16 result words hold `2 * x[i] + y[i]`; the others hold `y[i]`.
+(`binding.cs`), which the Importer installs, three 128-byte linear RGBA8
+RenderTextures, and the kernel material. `initialize` and `dispose` launch no
+Device work, so the binding runs them at once with `TryInitialize(out int)`
+and `TryDispose(out int)`; `run` is the asynchronous
+`StartRun(int n, float alpha, receiver, completionEvent)`. A U# behaviour
+initializes the library in `OnEnable` (one frame later, once the binding is
+ready), then writes the 32-word inputs with `TryWriteX(float[])` and
+`TryWriteY(float[])`, starts `Run(16, 2.0f)`, reads `GetRunStatus()` and the
+returned OpenCL status with `TryGetRunResult(out int)` in the completion
+event, and reads `result` with `StartReadResult(float[], receiver,
+completionEvent)`. The first 16 result words hold `2 * x[i] + y[i]`; the
+others hold `y[i]`. Writing new inputs and calling `Run` again reuses the
+kernel. `OnDisable` calls `TryDispose`.
 
 The launch is derived from the Host C, so it must stay within what the build
 can see: every buffer argument precedes the `int`/`uint`/`float` scalars, each
 argument has a dominating `clSetKernelArg`, the kernel object comes from one
 `clCreateKernel` of a constant name, and the global work size is one
 constant. A buffer whose address is passed to the runtime lives in a Host
-global. The build fails with a diagnostic naming the kernel otherwise.
+global. The kernel object may live in a global that `initialize` sets and
+`run` launches; `dispose` releases it without storing `0` into it, since a
+launch must name one kernel. The build fails with a diagnostic naming the
+kernel otherwise.

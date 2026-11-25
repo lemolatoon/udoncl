@@ -238,8 +238,8 @@ available as a Package Sample:
 
 This tutorial builds the [`examples/saxpy`](examples/saxpy/README.md) project
 from source, imports it into Unity, and calls it from your own
-UdonSharpBehaviour. The kernel computes `z[i] = alpha * x[i] + y[i]` for 16
-elements on the GPU. Build the compiler first as described in
+UdonSharpBehaviour. The kernel computes `result[i] = alpha * x[i] + y[i]` on
+the GPU, first for 16 elements and then, with new inputs, for all 32. Build the compiler first as described in
 [Install and build](#install-and-build).
 
 #### 1. The files you write
@@ -264,17 +264,24 @@ __kernel void saxpy(__global const float *x, __global const float *y,
 ```
 
 **The Host C** ([`host.c`](examples/saxpy/host.c)). Host code uses the
-ordinary Khronos OpenCL 1.2 API. It creates the buffers and the kernel, sets
-the kernel arguments, launches it and waits for it, and returns the OpenCL
-status. Three macros of `<udoncl/export.h>` describe the public U# API. The
-essential part is:
+ordinary Khronos OpenCL 1.2 API and follows the UdonCL lifecycle Initialize →
+Write → Run → Read → Dispose: `initialize` creates the buffers and the kernel
+once, `run` sets the kernel arguments, launches the kernel and waits for it,
+and `dispose` releases everything. Each returns the OpenCL status. Three
+macros of `<udoncl/export.h>` describe the public U# API. The essential part
+is:
 
 ```c
 UDONCL_PROGRAM("saxpy_demo");
 
 UDONCL_PUBLIC(float) cl_mem x, y, result;
 
-UDONCL_EXPORT int run_saxpy(int n, float alpha) {
+static cl_context context;
+static cl_command_queue queue;
+static cl_program program;
+static cl_kernel kernel;
+
+UDONCL_EXPORT int initialize(void) {
   /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
      clCreateCommandQueue, each followed by a status check ... */
   x = clCreateBuffer(context, CL_MEM_READ_ONLY, SAXPY_WORDS * sizeof(float), 0,
@@ -283,21 +290,32 @@ UDONCL_EXPORT int run_saxpy(int n, float alpha) {
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
   status = clBuildProgram(program, 0, 0, 0, 0, 0);
   kernel = clCreateKernel(program, "saxpy", &status);
+  return status;
+}
+
+UDONCL_EXPORT int run(int n, float alpha) {
+  size_t global = SAXPY_WORDS;
+  size_t local = 1;
+  cl_int status;
   if ((status = clSetKernelArg(kernel, 0, sizeof(x), &x)) != CL_SUCCESS ||
       (status = clSetKernelArg(kernel, 1, sizeof(y), &y)) != CL_SUCCESS ||
       (status = clSetKernelArg(kernel, 2, sizeof(result), &result)) !=
           CL_SUCCESS ||
       (status = clSetKernelArg(kernel, 3, sizeof(n), &n)) != CL_SUCCESS ||
       (status = clSetKernelArg(kernel, 4, sizeof(alpha), &alpha)) != CL_SUCCESS)
-    goto cleanup;
+    return status;
   status =
       clEnqueueNDRangeKernel(queue, kernel, 1, 0, &global, &local, 0, 0, 0);
   if (status != CL_SUCCESS)
-    goto cleanup;
-  status = clFinish(queue);
-cleanup:
-  /* ... release the kernel, program, buffers, queue, and context ... */
-  return status;
+    return status;
+  return clFinish(queue);
+}
+
+UDONCL_EXPORT int dispose(void) {
+  clReleaseKernel(kernel);
+  clReleaseProgram(program);
+  /* ... release the buffers, the queue and the context ... */
+  return CL_SUCCESS;
 }
 ```
 
@@ -307,8 +325,10 @@ C. That works within limits: every buffer argument precedes the
 `int`/`uint`/`float` scalars, each argument has a dominating
 `clSetKernelArg`, the kernel object comes from one `clCreateKernel` of a
 constant name, and the global work size is one constant. A buffer whose
-address is passed to the runtime lives in a Host global. Unsupported patterns
-are compile errors rather than approximations.
+address is passed to the runtime lives in a Host global. The kernel object may
+live in a global created by one export and launched by another, as here; do
+not store `0` into it in `dispose`, since a launch must name one kernel.
+Unsupported patterns are compile errors rather than approximations.
 
 The three macros replace a separate API description:
 
@@ -319,8 +339,11 @@ The three macros replace a separate API description:
   `BINDING_CLASS` and `BINDING_NAMESPACE` arguments of
   `udoncl_add_unity_library` override both.
 - `UDONCL_EXPORT` makes a function a U# method named after the PascalCase of
-  its C name (`run_saxpy` → `RunSaxpy`), with the C parameter names (`n`,
-  `alpha`). The parameter and result types come from the C signature.
+  its C name (`initialize` → `Initialize`, `run` → `Run`, `dispose` →
+  `Dispose`), with the C parameter names (`n`, `alpha`). The parameter and
+  result types come from the C signature. An export that launches no Device
+  work (`initialize`, `dispose`) is a synchronous `Try*` method; one that does
+  (`run`) is an asynchronous `Start*` method.
 - `UDONCL_PUBLIC(float)` makes a file-scope `cl_mem` variable a public Device
   buffer of `float` elements, named after the variable: `x` → `TryWriteX`,
   `result` → `StartReadResult`. Its `clCreateBuffer` flags give its
@@ -406,12 +429,14 @@ build/saxpy-cmake/udoncl/saxpy-unity-library/artifact
    Alternatively, import the same script as the **C and OpenCL SAXPY** sample:
    in Package Manager select **UdonCL Runtime and ONNX Importer**, open
    **Samples**, and choose **Import**.
-5. Create an empty GameObject, add the **Saxpy Caller** component, and drag
-   the `UdonclSaxpyDemoBinding` scene instance into its **Binding** field.
+5. Create a GameObject with a collider (for example **3D Object → Cube**), so
+   that it can be interacted with, add the **Saxpy Caller** component, and
+   drag the `UdonclSaxpyDemoBinding` scene instance into its **Binding**
+   field.
 
    > **Screenshot (pending):** Inspector of the SaxpyCaller GameObject with Binding set to the UdonclSaxpyDemoBinding scene instance — docs/images/getting-started/saxpy-inspector-binding.png
 
-6. Enter Play Mode and watch the Console.
+6. Enter Play Mode, interact with the cube, and watch the Console.
 
 #### 4. Your UdonSharpBehaviour
 
@@ -420,18 +445,21 @@ The generated binding exposes:
 - `int TryWriteX(float[] source)` and `int TryWriteY(float[] source)`: upload
   the whole `x` or `y` buffer. The array length must equal the buffer size in
   words (32).
-- `int StartRunSaxpy(int n, float alpha, UdonSharpBehaviour receiver, string completionEvent)`:
-  starts the `RunSaxpy` export. An export that launches Device work runs
+- `int TryInitialize(out int result)` and `int TryDispose(out int result)`:
+  run `initialize` and `dispose` at once and return the value they returned
+  in `result`, here the OpenCL status (`0` is `CL_SUCCESS`).
+- `int StartRun(int n, float alpha, UdonSharpBehaviour receiver, string completionEvent)`:
+  starts the `Run` export. An export that launches Device work runs
   asynchronously: when it finishes, the binding calls
   `receiver.SendCustomEvent(completionEvent)`, so the event method must be
   `public`.
-- `int GetRunSaxpyStatus()`: the status of the finished export, and
-  `int TryGetRunSaxpyResult(out int result)`: the value `run_saxpy` returned,
-  here the OpenCL status (`0` is `CL_SUCCESS`).
+- `int GetRunStatus()`: the status of the finished export, and
+  `int TryGetRunResult(out int result)`: the value `run` returned, the
+  OpenCL status.
 - `int StartReadResult(float[] destination, UdonSharpBehaviour receiver, string completionEvent)`:
   starts an asynchronous GPU readback of the whole `result` buffer into
   `destination` (again exactly 32 words) and calls the completion event like
-  `StartRunSaxpy`.
+  `StartRun`.
 - `int GetLastReadbackStatus()`: the status of the completed readback.
 - Status constants `StatusSuccess` (0), `StatusNotInitialized` (-1),
   `StatusBusy` (-2), `StatusInvalidArgument` (-3, for example a wrong array
@@ -440,8 +468,13 @@ The generated binding exposes:
 - `int TryBindProgram(UdonBehaviour program)`, `bool IsInitialized()` and
   `int TryUnbindProgram()`: attach the binding to its raw Udon program (the
   binding prefab does this for you), ask whether it is attached, and detach
-  it. `TryUnbindProgram` runs no Host code; a Host `dispose` export would be
-  its own method, `TryDispose`.
+  it. `TryUnbindProgram` runs no Host code; the Host `dispose` export is its
+  own method, `TryDispose`.
+
+`SaxpyCaller` follows the pattern of every UdonCL example: `OnEnable`
+initializes the library one frame later, once the binding is ready; `Interact`
+writes the inputs, runs the kernel and reads the result; `OnDisable` disposes
+the library. A second run reuses the same kernel with new inputs.
 
 `SaxpyCaller.cs` (identical to the **C and OpenCL SAXPY** Package Sample):
 
@@ -456,24 +489,59 @@ public class SaxpyCaller : UdonSharpBehaviour
     [SerializeField]
     private UdonclSaxpyDemoBinding binding;
 
+    private bool initialized;
+    private bool secondRun;
     private float[] x;
     private float[] y;
     private float[] result;
 
-    private void Start()
+    private void OnEnable()
     {
-        // Run one frame after start-up so every behaviour is initialized.
-        SendCustomEventDelayedFrames("RunSaxpyOnce", 1);
+        // One frame later every behaviour, the binding included, is ready.
+        SendCustomEventDelayedFrames(nameof(InitializeSaxpy), 1);
     }
 
-    public void RunSaxpyOnce()
+    private void OnDisable()
     {
+        if (!initialized)
+            return;
+        initialized = false;
+        int openclStatus;
+        int status = binding.TryDispose(out openclStatus);
+        if (status != UdonclSaxpyDemoBinding.StatusSuccess)
+            Debug.LogError("SAXPY: Dispose failed with status " + status);
+    }
+
+    public void InitializeSaxpy()
+    {
+        if (initialized)
+            return;
         if (binding == null)
         {
             Debug.LogError("SAXPY: assign the UdonclSaxpyDemoBinding instance.");
             return;
         }
+        // Initialize creates the buffers and the kernel and enqueues no Device
+        // work, so it completes at once.
+        int openclStatus;
+        int status = binding.TryInitialize(out openclStatus);
+        if (status != UdonclSaxpyDemoBinding.StatusSuccess || openclStatus != 0)
+        {
+            Debug.LogError(
+                "SAXPY: Initialize failed with status "
+                    + status
+                    + " and OpenCL status "
+                    + openclStatus
+            );
+            return;
+        }
+        initialized = true;
+    }
 
+    public override void Interact()
+    {
+        if (!initialized)
+            return;
         x = new float[32];
         y = new float[32];
         result = new float[32];
@@ -482,7 +550,12 @@ public class SaxpyCaller : UdonSharpBehaviour
             x[i] = i + 1;
             y[i] = 100 + i;
         }
+        secondRun = false;
+        StartSaxpy(16, 2.0f);
+    }
 
+    private void StartSaxpy(int n, float alpha)
+    {
         int status = binding.TryWriteX(x);
         if (status == UdonclSaxpyDemoBinding.StatusSuccess)
             status = binding.TryWriteY(y);
@@ -492,29 +565,26 @@ public class SaxpyCaller : UdonSharpBehaviour
             return;
         }
 
-        status = binding.StartRunSaxpy(16, 2.0f, this, "OnSaxpyComplete");
+        status = binding.StartRun(n, alpha, this, nameof(OnSaxpyComplete));
         if (status != UdonclSaxpyDemoBinding.StatusSuccess)
-            Debug.LogError("SAXPY: StartRunSaxpy failed with status " + status);
+            Debug.LogError("SAXPY: StartRun failed with status " + status);
     }
 
     public void OnSaxpyComplete()
     {
         int openclStatus = 0;
-        int status = binding.GetRunSaxpyStatus();
+        int status = binding.GetRunStatus();
         if (status == UdonclSaxpyDemoBinding.StatusSuccess)
-            status = binding.TryGetRunSaxpyResult(out openclStatus);
+            status = binding.TryGetRunResult(out openclStatus);
         if (status != UdonclSaxpyDemoBinding.StatusSuccess || openclStatus != 0)
         {
             Debug.LogError(
-                "SAXPY: RunSaxpy failed with status "
-                    + status
-                    + " and OpenCL status "
-                    + openclStatus
+                "SAXPY: Run failed with status " + status + " and OpenCL status " + openclStatus
             );
             return;
         }
 
-        status = binding.StartReadResult(result, this, "OnSaxpyReadback");
+        status = binding.StartReadResult(result, this, nameof(OnSaxpyReadback));
         if (status != UdonclSaxpyDemoBinding.StatusSuccess)
             Debug.LogError("SAXPY: StartReadResult failed with status " + status);
     }
@@ -528,10 +598,35 @@ public class SaxpyCaller : UdonSharpBehaviour
             return;
         }
 
-        for (int i = 0; i < 16; i++)
+        if (!secondRun)
         {
-            float expected = 2.0f * x[i] + y[i];
-            Debug.Log("SAXPY: result[" + i + "] = " + result[i] + " (expected " + expected + ")");
+            // The first run: alpha 2 over the first 16 words.
+            for (int i = 0; i < 16; i++)
+            {
+                float expected = 2.0f * x[i] + y[i];
+                Debug.Log(
+                    "SAXPY: result[" + i + "] = " + result[i] + " (expected " + expected + ")"
+                );
+            }
+
+            // The second run reuses the kernel with new inputs: alpha 0.5 over
+            // all 32 words.
+            for (int i = 0; i < 32; i++)
+            {
+                x[i] = 10 * (i + 1);
+                y[i] = -i;
+            }
+            secondRun = true;
+            StartSaxpy(32, 0.5f);
+            return;
+        }
+
+        for (int i = 0; i < 32; i++)
+        {
+            float expected = 0.5f * x[i] + y[i];
+            Debug.Log(
+                "SAXPY: second result[" + i + "] = " + result[i] + " (expected " + expected + ")"
+            );
         }
     }
 }
@@ -539,11 +634,18 @@ public class SaxpyCaller : UdonSharpBehaviour
 
 #### 5. Expected result
 
-Each Console line shows `result[i] = 2 * x[i] + y[i]`. With the inputs above,
-`x[i] = i + 1` and `y[i] = 100 + i`, so `result[i] = 3 * i + 102`:
-`result[0] = 102`, `result[1] = 105`, ..., `result[15] = 147`, each equal to
-its `expected` value. Result words 16–31 (not logged) hold a copy of `y`, as
-do the words at or beyond a smaller `n`.
+Enter Play Mode and interact with the GameObject (or call `Interact` from
+another behaviour). The first sixteen Console lines show
+`result[i] = 2 * x[i] + y[i]`. With the inputs above, `x[i] = i + 1` and
+`y[i] = 100 + i`, so `result[i] = 3 * i + 102`: `result[0] = 102`,
+`result[1] = 105`, ..., `result[15] = 147`, each equal to its `expected`
+value. Result words 16–31 (not logged) hold a copy of `y`, as do the words at
+or beyond a smaller `n`.
+
+The second run writes `x[i] = 10 * (i + 1)` and `y[i] = -i` and runs with
+`n = 32` and `alpha = 0.5`, so the next 32 lines show
+`second result[i] = 4 * i + 5`, from `5` to `129`. Leaving Play Mode disables
+the behaviour, which disposes the library.
 
 > **Screenshot (pending):** Unity Console in Play Mode showing the sixteen SAXPY result lines — docs/images/getting-started/saxpy-console-output.png
 
