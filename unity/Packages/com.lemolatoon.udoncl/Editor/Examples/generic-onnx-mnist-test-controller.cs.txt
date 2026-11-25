@@ -101,7 +101,7 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
             phase = 10;
-            status = binding.TryShutdown(out libraryStatus);
+            status = binding.TryDispose(out libraryStatus);
             completed = true;
         }
     }

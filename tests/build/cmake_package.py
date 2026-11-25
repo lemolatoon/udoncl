@@ -804,7 +804,7 @@ def main():
     } == {
         'initialize': 'Initialize',
         'run': 'Run',
-        'shutdown': 'Shutdown',
+        'dispose': 'Dispose',
     }
     assert onnx_mnist_manifest['program']['binding_source'] == 'binding.cs'
     mnist_binding = (onnx_mnist_artifact / 'binding.cs').read_text(
@@ -1088,7 +1088,7 @@ def main():
         'receiver.SendCustomEvent(completionEvent);',
     ]:
         assert cleanup in complete_readback
-    assert 'public int TryShutdown(out int result)' in mnist_binding
+    assert 'public int TryDispose(out int result)' in mnist_binding
     assert 'BindOnnxTensorPhysical' not in mnist_binding
     assert 'public void _ContinueAsyncCommand()' in mnist_binding
     assert 'int physicalBufferToken = (int)rawBuffer;' in mnist_binding
@@ -1108,7 +1108,7 @@ def main():
         'binding.TryGetRunResult(',
         'binding.StartReadLogits(',
         'binding.GetLastReadbackStatus()',
-        'binding.TryShutdown(',
+        'binding.TryDispose(',
     ]:
         assert call in mnist_controller, call
     assert 'TryTry' not in mnist_controller

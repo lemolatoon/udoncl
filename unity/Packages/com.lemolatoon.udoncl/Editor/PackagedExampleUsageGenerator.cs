@@ -202,9 +202,40 @@ namespace Lemolatoon.Udoncl.Generated
         [SerializeField] private int predictedDigit = -1;
         [SerializeField] private int status;
         [SerializeField] private int libraryStatus;
+        [SerializeField] private int disposeStatus = -1;
+        [SerializeField] private int disposeResult;
         private bool initialized;
         private float[] image;
         private float[] logits;
+
+        private void OnEnable()
+        {
+            // One frame later every behaviour, the binding included, is ready.
+            SendCustomEventDelayedFrames(nameof(InitializeModel), 1);
+        }
+
+        private void OnDisable()
+        {
+            if (!initialized)
+                return;
+            initialized = false;
+            disposeStatus = binding.TryDispose(out disposeResult);
+        }
+
+        public void InitializeModel()
+        {
+            if (initialized)
+                return;
+            if (binding == null)
+            {
+                status = UdonclGenericOnnxMnistBinding.StatusNotInitialized;
+                return;
+            }
+            // Initialize enqueues no Device work, so it completes at once.
+            status = binding.TryInitialize(out libraryStatus);
+            initialized =
+                status == UdonclGenericOnnxMnistBinding.StatusSuccess && libraryStatus == 0;
+        }
 
         public override void Interact()
         {
@@ -214,26 +245,13 @@ namespace Lemolatoon.Udoncl.Generated
         public void Run()
         {
             predictedDigit = -1;
-            libraryStatus = 0;
-            if (binding == null)
-            {
-                status = UdonclGenericOnnxMnistBinding.StatusNotInitialized;
+            InitializeModel();
+            if (!initialized)
                 return;
-            }
             image = new float[784];
             for (int index = 0; index < 784; ++index)
                 image[index] = Digit[index] == '#' ? 1.0f : 0.0f;
             logits = new float[10];
-            if (initialized)
-            {
-                Classify();
-                return;
-            }
-            // Initialize enqueues no Device work, so it completes at once.
-            status = binding.TryInitialize(out libraryStatus);
-            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess || libraryStatus != 0)
-                return;
-            initialized = true;
             Classify();
         }
 

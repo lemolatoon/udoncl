@@ -505,6 +505,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("binding.StartRun(this", usage.Source);
             StringAssert.Contains("binding.TryGetRunResult(out libraryStatus)", usage.Source);
             StringAssert.Contains("binding.StartReadLogits(logits, this", usage.Source);
+            StringAssert.Contains("binding.TryDispose(out disposeResult)", usage.Source);
             StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
         }
 

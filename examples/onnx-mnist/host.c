@@ -96,7 +96,8 @@ fail:
  * StartReadLogits reads through the same in-order queue. */
 UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+/* Releases the session and the buffers; initialize may run again. */
+UDONCL_EXPORT udononnxStatus_t dispose(void) {
   if (!session)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return release_resources();

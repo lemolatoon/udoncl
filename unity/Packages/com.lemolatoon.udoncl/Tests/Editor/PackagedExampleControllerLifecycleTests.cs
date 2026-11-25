@@ -179,6 +179,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
             int libraryStatus = (int)
                 UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            // Disabling the controller disposes the session.
+            instance.SetActive(false);
+            yield return null;
+            int disposeStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "disposeStatus");
+            int disposeResult = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "disposeResult");
             yield return new ExitPlayMode();
 
             Assert.Less(
@@ -192,6 +199,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(0, status);
             Assert.AreEqual(0, libraryStatus);
             Assert.AreEqual(7, predicted);
+            Assert.AreEqual(0, disposeStatus);
+            Assert.AreEqual(0, disposeResult);
         }
 
         [UnityTest]
