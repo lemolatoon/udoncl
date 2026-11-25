@@ -108,7 +108,9 @@ struct ClassifyAnnotatedPublicDeviceResourcesPass
           signalPassFailure();
           return;
         }
-        cells[global.getValue()] = cell;
+        // An element of a cl_mem array is no UDONCL_PUBLIC variable.
+        if (!cell.contains("offset"))
+          cells[global.getValue()] = cell;
       }
     }
 

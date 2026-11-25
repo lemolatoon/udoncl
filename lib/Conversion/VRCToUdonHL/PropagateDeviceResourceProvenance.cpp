@@ -9,6 +9,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APInt.h"
@@ -927,23 +928,82 @@ bool isExactCellAccess(OpOperand &use, Value cell) {
 /// passed to whose own uses do the same. `visited` holds the parameters
 /// already accepted, so recursive helpers terminate.
 bool isExactCellPointer(Value cell, ModuleOp module,
+                        llvm::DenseSet<Value> &visited);
+
+/// Whether `use` of a cell address reads or writes the 4-byte handle, or
+/// passes the address to a parameter whose uses do (isExactCellPointer).
+bool isExactCellPointerUse(OpOperand &use, ModuleOp module,
+                           llvm::DenseSet<Value> &visited) {
+  if (isExactCellAccess(use, use.get()))
+    return true;
+  auto call = dyn_cast<func::CallOp>(use.getOwner());
+  auto callee = call ? module.lookupSymbol<func::FuncOp>(call.getCallee())
+                     : func::FuncOp();
+  if (!callee || callee.isExternal() ||
+      use.getOperandNumber() >= callee.getNumArguments())
+    return false;
+  Value parameter = callee.getArgument(use.getOperandNumber());
+  if (!isHandleType(parameter.getType()))
+    return false;
+  if (!visited.insert(parameter).second)
+    return true;
+  return isExactCellPointer(parameter, module, visited);
+}
+
+bool isExactCellPointer(Value cell, ModuleOp module,
                         llvm::DenseSet<Value> &visited) {
   return llvm::all_of(cell.getUses(), [&](OpOperand &use) {
-    if (isExactCellAccess(use, cell))
-      return true;
-    auto call = dyn_cast<func::CallOp>(use.getOwner());
-    auto callee = call ? module.lookupSymbol<func::FuncOp>(call.getCallee())
-                       : func::FuncOp();
-    if (!callee || callee.isExternal() ||
-        use.getOperandNumber() >= callee.getNumArguments())
-      return false;
-    Value parameter = callee.getArgument(use.getOperandNumber());
-    if (!isHandleType(parameter.getType()))
-      return false;
-    if (!visited.insert(parameter).second)
-      return true;
-    return isExactCellPointer(parameter, module, visited);
+    return isExactCellPointerUse(use, module, visited);
   });
+}
+
+/// The `udonhl.address_of` and the constant byte offset `pointer`
+/// addresses: the address moved by constant `udonhl.ptr_add` offsets.
+std::optional<std::pair<::vrc::udonhl::AddressOfOp, int64_t>>
+constantGlobalAddress(Value pointer) {
+  int64_t offset = 0;
+  for (unsigned depth = 0; depth != 16; ++depth) {
+    if (auto address = pointer.getDefiningOp<::vrc::udonhl::AddressOfOp>())
+      return std::make_pair(address, offset);
+    auto add = pointer.getDefiningOp<::vrc::udonhl::PtrAddOp>();
+    APInt step;
+    if (!add || !matchPattern(add.getByteOffset(), m_ConstantInt(&step)))
+      return std::nullopt;
+    offset += step.getSExtValue();
+    pointer = add.getPointer();
+  }
+  return std::nullopt;
+}
+
+/// Whether every use of the address of a `cl_mem` array global reaches one
+/// whole element: a constant `udonhl.ptr_add` of a multiple of 4 below
+/// `bytes`, whose result (or the address itself, for element 0) is only
+/// accessed exactly. `offending` is the first other use.
+bool isConstantElementAddress(Value address, int64_t offset, uint64_t bytes,
+                              ModuleOp module, Operation *&offending) {
+  for (OpOperand &use : address.getUses()) {
+    if (auto add = dyn_cast<::vrc::udonhl::PtrAddOp>(use.getOwner())) {
+      APInt step;
+      int64_t element = 0;
+      if (use.getOperandNumber() != 0 ||
+          !matchPattern(add.getByteOffset(), m_ConstantInt(&step)) ||
+          (element = offset + step.getSExtValue()) < 0 ||
+          static_cast<uint64_t>(element) >= bytes ||
+          !isConstantElementAddress(add.getResult(), element, bytes, module,
+                                    offending)) {
+        if (!offending)
+          offending = use.getOwner();
+        return false;
+      }
+      continue;
+    }
+    llvm::DenseSet<Value> visited;
+    if (offset % 4 != 0 || !isExactCellPointerUse(use, module, visited)) {
+      offending = use.getOwner();
+      return false;
+    }
+  }
+  return true;
 }
 
 bool isSingletonCell(::vrc::udonhl::AllocaOp allocation) {
@@ -1032,7 +1092,16 @@ struct PropagateDeviceResourceProvenancePass
   CaseMap argumentCases;
   CaseMap functionResultCases;
   llvm::DenseSet<Operation *> active;
+  /// The tracked global cells by key: the name of a `cl_mem` global, or
+  /// `name[offset]` for an element of a `cl_mem` array global.
   llvm::StringMap<::vrc::udonhl::GlobalOp> eligibleGlobals;
+  /// The byte offset of each element cell of a `cl_mem` array global.
+  llvm::StringMap<int32_t> elementCellOffsets;
+  /// The element cell keys by the object id of their array and offset.
+  std::map<std::pair<ObjectId, int32_t>, std::string> elementCellsByObject;
+  /// The `cl_mem` array globals indexed other than at constant elements,
+  /// with the first such use.
+  llvm::StringMap<Operation *> rejectedCellArrays;
   llvm::StringMap<Fact> globalFacts;
   llvm::StringMap<Fact> globalWrites;
   llvm::StringSet<> resourceGlobals;
@@ -1433,30 +1502,69 @@ struct PropagateDeviceResourceProvenancePass
     }
   }
 
-  ::vrc::udonhl::GlobalOp globalCell(Value pointer) {
-    auto address = pointer.getDefiningOp<::vrc::udonhl::AddressOfOp>();
+  /// The key of the tracked global cell `pointer` addresses: a `cl_mem`
+  /// global's address, or a constant element address of a `cl_mem` array.
+  std::optional<StringRef> globalCell(Value pointer) {
+    auto address = constantGlobalAddress(pointer);
     if (!address)
-      return {};
-    auto found = eligibleGlobals.find(address.getGlobalAttr().getValue());
-    return found == eligibleGlobals.end() ? ::vrc::udonhl::GlobalOp()
-                                          : found->getValue();
+      return std::nullopt;
+    StringRef name = address->first.getGlobalAttr().getValue();
+    if (address->second == 0) {
+      auto found = eligibleGlobals.find(name);
+      if (found != eligibleGlobals.end() &&
+          !elementCellOffsets.contains(found->getKey()))
+        return found->getKey();
+    }
+    auto object = globalObjects.find(name);
+    if (object == globalObjects.end() ||
+        address->second > std::numeric_limits<int32_t>::max())
+      return std::nullopt;
+    auto element = elementCellsByObject.find(
+        {object->getValue(), static_cast<int32_t>(address->second)});
+    if (element == elementCellsByObject.end())
+      return std::nullopt;
+    return eligibleGlobals.find(element->second)->getKey();
   }
 
   /// The tracked global cell `pointer` addresses: its address, or a pointer
   /// parameter the address was passed to in this invocation.
-  ::vrc::udonhl::GlobalOp
+  std::optional<StringRef>
   globalCell(Value pointer,
              const llvm::DenseMap<Value, ObjectRefSet> &objectValues) {
-    if (auto global = globalCell(pointer))
-      return global;
+    if (auto key = globalCell(pointer))
+      return key;
     if (!isa<BlockArgument>(pointer))
-      return {};
+      return std::nullopt;
     auto objects = objectValues.find(pointer);
     auto object = objects == objectValues.end() ? std::nullopt
                                                 : exactObject(objects->second);
-    if (!object || object->offset != 0)
-      return {};
-    return eligibleGlobalObjects.lookup(object->base);
+    if (!object)
+      return std::nullopt;
+    auto element = elementCellsByObject.find({object->base, object->offset});
+    if (element != elementCellsByObject.end())
+      return eligibleGlobals.find(element->second)->getKey();
+    if (object->offset != 0)
+      return std::nullopt;
+    auto global = eligibleGlobalObjects.lookup(object->base);
+    if (!global)
+      return std::nullopt;
+    return eligibleGlobals.find(global.getSymName())->getKey();
+  }
+
+  /// The `cl_mem` array global `pointer` addresses whose uses are not all
+  /// constant elements, if any.
+  StringRef rejectedCellArray(Value pointer) {
+    for (unsigned depth = 0; depth != 16; ++depth) {
+      if (auto address = pointer.getDefiningOp<::vrc::udonhl::AddressOfOp>()) {
+        StringRef name = address.getGlobalAttr().getValue();
+        return rejectedCellArrays.contains(name) ? name : StringRef();
+      }
+      auto add = pointer.getDefiningOp<::vrc::udonhl::PtrAddOp>();
+      if (!add)
+        return {};
+      pointer = add.getPointer();
+    }
+    return {};
   }
 
   Fact valueFact(Value value, llvm::DenseMap<Value, Fact> &facts) {
@@ -2007,8 +2115,8 @@ struct PropagateDeviceResourceProvenancePass
             }
             localResourceCells[*exactCell] = {true, true, resourceValue};
           }
-          if (auto global = globalCell(cell, objectValues)) {
-            StringRef name = global.getSymName();
+          if (auto key = globalCell(cell, objectValues)) {
+            StringRef name = *key;
             bool classified = resourceGlobals.contains(name);
             if (!classified && stored.resource) {
               resourceGlobals.insert(name);
@@ -2047,7 +2155,25 @@ struct PropagateDeviceResourceProvenancePass
                   worklist.push_back(user->getBlock());
           } else {
             if (stored.resource && !directViewField) {
-              if (cell.getDefiningOp<::vrc::udonhl::AddressOfOp>())
+              if (StringRef array = rejectedCellArray(cell); !array.empty()) {
+                Operation *access = rejectedCellArrays.lookup(array);
+                auto accessFunction =
+                    access ? access->getParentOfType<func::FuncOp>()
+                           : func::FuncOp();
+                InFlightDiagnostic diagnostic =
+                    store.emitError("static device resource stored in the "
+                                    "cl_mem array '")
+                    << array << "', which ";
+                if (accessFunction)
+                  diagnostic << "@" << accessFunction.getSymName() << " ";
+                diagnostic
+                    << "indexes at a run-time index or accesses partially; "
+                       "index a cl_mem array at constant elements only, "
+                       "directly or in the constant-trip allocation, bind "
+                       "and release loops udonclc unrolls";
+                if (access)
+                  diagnostic.attachNote(access->getLoc()) << "accessed here";
+              } else if (cell.getDefiningOp<::vrc::udonhl::AddressOfOp>())
                 store.emitError("static device resource stored through an "
                                 "unsupported or escaping global cell");
               else
@@ -2067,11 +2193,11 @@ struct PropagateDeviceResourceProvenancePass
           auto exactCell = cellObjects == objectValues.end()
                                ? std::nullopt
                                : exactObject(cellObjects->second);
-          if (auto global = globalCell(cell, objectValues)) {
+          if (auto key = globalCell(cell, objectValues)) {
             // A store of this invocation on every path to the load decides
             // the handle; otherwise the cell holds any handle a write of any
             // export left in it.
-            Fact loaded = globalFacts[global.getSymName()];
+            Fact loaded = globalFacts[*key];
             if (exactCell) {
               auto state = localResourceCells.find(*exactCell);
               if (state != localResourceCells.end() &&
@@ -2250,8 +2376,8 @@ struct PropagateDeviceResourceProvenancePass
             Value cell = call.getOperand(1);
             ResourceCellMap beforeResourceCells = localResourceCells;
             ResourceCellMap successfulResourceCells = localResourceCells;
-            if (auto global = globalCell(cell)) {
-              StringRef name = global.getSymName();
+            if (auto key = globalCell(cell)) {
+              StringRef name = *key;
               resourceGlobals.insert(name);
               globalWrites[name] = joinFacts(globalWrites[name], state);
             } else if (auto object = objectValues.find(cell);
@@ -2413,8 +2539,8 @@ struct PropagateDeviceResourceProvenancePass
             Value cell = call.getOperand(1);
             ResourceCellMap beforeResourceCells = localResourceCells;
             ResourceCellMap successfulResourceCells = localResourceCells;
-            if (auto global = globalCell(cell)) {
-              StringRef name = global.getSymName();
+            if (auto key = globalCell(cell)) {
+              StringRef name = *key;
               resourceGlobals.insert(name);
               globalWrites[name] = joinFacts(globalWrites[name], resource);
             } else if (auto object = objectValues.find(cell);
@@ -3850,21 +3976,35 @@ struct PropagateDeviceResourceProvenancePass
         names.push_back(entry.getKey());
     if (names.empty())
       return;
-    llvm::sort(names);
+    llvm::sort(names, [&](StringRef left, StringRef right) {
+      auto key = [&](StringRef name) {
+        return std::make_pair(eligibleGlobals.lookup(name).getSymName(),
+                              elementCellOffsets.lookup(name));
+      };
+      return key(left) < key(right);
+    });
     SmallVector<Attribute> cells;
     for (StringRef name : names) {
       const Fact &fact = globalFacts[name];
       SmallVector<Attribute> ids;
       for (int32_t id : fact.ids)
         ids.push_back(builder->getI32IntegerAttr(id));
-      cells.push_back(builder->getDictionaryAttr({
-          builder->getNamedAttr(
-              "global", FlatSymbolRefAttr::get(module.getContext(), name)),
+      SmallVector<NamedAttribute> fields{
+          builder->getNamedAttr("global",
+                                FlatSymbolRefAttr::get(
+                                    module.getContext(),
+                                    eligibleGlobals.lookup(name).getSymName())),
           builder->getNamedAttr("may_be_null",
                                 builder->getBoolAttr(fact.mayBeNull)),
           builder->getNamedAttr("resource_ids", builder->getArrayAttr(ids)),
           builder->getNamedAttr("unknown", builder->getBoolAttr(fact.unknown)),
-      }));
+      };
+      // An element of a cl_mem array names its byte offset.
+      auto offset = elementCellOffsets.find(name);
+      if (offset != elementCellOffsets.end())
+        fields.push_back(builder->getNamedAttr(
+            "offset", builder->getI32IntegerAttr(offset->getValue())));
+      cells.push_back(builder->getDictionaryAttr(fields));
     }
     module->setAttr(
         globalCellAttribute,
@@ -3908,6 +4048,9 @@ struct PropagateDeviceResourceProvenancePass
     module->removeAttr(globalCellAttribute);
     functions.clear();
     eligibleGlobals.clear();
+    elementCellOffsets.clear();
+    elementCellsByObject.clear();
+    rejectedCellArrays.clear();
     eligibleGlobalObjects.clear();
     eligibleHandleGlobals.clear();
     globalObjects.clear();
@@ -4063,6 +4206,45 @@ struct PropagateDeviceResourceProvenancePass
       auto object = globalObjects.find(entry.getKey());
       if (object != globalObjects.end())
         eligibleGlobalObjects[object->getValue()] = entry.getValue();
+    }
+    // An internal, zero-initialized array of cl_mem whose every use is a
+    // whole element at a constant offset (after the loops over it are
+    // unrolled) is one tracked cell per element.
+    for (auto global : module.getOps<::vrc::udonhl::GlobalOp>()) {
+      auto array = dyn_cast<LLVM::LLVMArrayType>(global.getStorageType());
+      auto bytes =
+          dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr());
+      auto object = globalObjects.find(global.getSymName());
+      if (!array || array.getNumElements() == 0 ||
+          !isa<LLVM::LLVMPointerType, ::vrc::udonhl::PtrType>(
+              array.getElementType()) ||
+          global.getLinkage() != "internal" || global.getConstant() ||
+          global.getAddressSpace() != 0 || global.getAlignment() < 4 ||
+          !bytes ||
+          bytes.size() != static_cast<int64_t>(array.getNumElements()) * 4 ||
+          !llvm::all_of(bytes.asArrayRef(),
+                        [](int8_t byte) { return byte == 0; }) ||
+          object == globalObjects.end())
+        continue;
+      Operation *offending = nullptr;
+      bool exact = true;
+      module.walk([&](::vrc::udonhl::AddressOfOp address) {
+        if (exact && address.getGlobalAttr().getValue() == global.getSymName())
+          exact = isConstantElementAddress(address.getResult(), 0, bytes.size(),
+                                           module, offending);
+      });
+      if (!exact) {
+        rejectedCellArrays[global.getSymName()] = offending;
+        continue;
+      }
+      for (int32_t offset = 0; offset < static_cast<int32_t>(bytes.size());
+           offset += 4) {
+        std::string key =
+            (global.getSymName() + "[" + Twine(offset) + "]").str();
+        eligibleGlobals.try_emplace(key, global);
+        elementCellOffsets[key] = offset;
+        elementCellsByObject[{object->getValue(), offset}] = key;
+      }
     }
     for (auto &[name, global] : eligibleGlobals)
       globalFacts[name] = Fact::scalar();

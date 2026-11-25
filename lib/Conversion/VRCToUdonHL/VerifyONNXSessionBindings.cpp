@@ -224,7 +224,8 @@ struct VerifyONNXSessionBindingsPass
       if (auto entries = summary.getAs<ArrayAttr>("cells"))
         for (Attribute attribute : entries)
           if (auto cell = dyn_cast<DictionaryAttr>(attribute))
-            if (auto global = cell.getAs<FlatSymbolRefAttr>("global"))
+            if (auto global = cell.getAs<FlatSymbolRefAttr>("global");
+                global && !cell.contains("offset"))
               cells[global.getValue()] = cell;
     std::map<int64_t, int64_t> capacities, memoryFlags;
     if (auto requirements =

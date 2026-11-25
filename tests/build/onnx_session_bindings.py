@@ -177,6 +177,79 @@ UDONCL_EXPORT udononnxStatus_t run(void) {'''),
                      '0, &error);'),
         'ONNX graph output "sum" needs 32768 bytes, but its Device buffer has '
         '16')
+    # cl_mem arrays: the inputs in an array bound in a loop, and 22 scratch
+    # buffers created, filled and released in loops whose iterations return
+    # early. Every element is a buffer of its own.
+    arrays_host = host.replace(
+        'UDONCL_PUBLIC(float) cl_mem a, b, c;',
+        'static cl_mem inputs[3];\n#define LAYERS 22\n'
+        'static cl_mem layers[LAYERS];'
+    ).replace(
+        'static cl_mem *const input_buffers[3] = {&a, &b, &c};', ''
+    ).replace('''  a = create(CL_MEM_READ_ONLY, &error);
+  if (error != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  b = create(CL_MEM_READ_ONLY, &error);
+  if (error != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  c = create(CL_MEM_READ_ONLY, &error);
+  if (error != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+''', '''  for (int i = 0; i < 3; ++i) {
+    inputs[i] = create(CL_MEM_READ_ONLY, &error);
+    if (error != CL_SUCCESS)
+      return UDONONNX_STATUS_OPENCL_ERROR;
+  }
+  for (int layer = 0; layer < LAYERS; ++layer) {
+    layers[layer] = clCreateBuffer(context, CL_MEM_READ_WRITE, 64, 0, &error);
+    if (error != CL_SUCCESS)
+      return UDONONNX_STATUS_OPENCL_ERROR;
+    float value = (float)layer;
+    if (clEnqueueFillBuffer(queue, layers[layer], &value, sizeof(value), 0,
+                            64, 0, 0, 0) != CL_SUCCESS)
+      return UDONONNX_STATUS_OPENCL_ERROR;
+  }
+''').replace('*input_buffers[i]', 'inputs[i]').replace(
+        '''  clReleaseMemObject(c);
+  clReleaseMemObject(b);
+  clReleaseMemObject(a);
+''', '''  for (int layer = 0; layer < LAYERS; ++layer)
+    clReleaseMemObject(layers[layer]);
+  for (int i = 0; i < 3; ++i)
+    clReleaseMemObject(inputs[i]);
+''')
+    assert 'input_buffers' not in arrays_host and 'layers[layer]' in arrays_host
+    arrays = compile_variant(arrays_host)
+    assert arrays.returncode == 0, arrays.stdout + arrays.stderr
+    arrays_manifest = json.loads(
+        (artifact / 'manifest.json').read_text(encoding='utf-8'))
+    arrays_buffers = arrays_manifest['device']['buffers']
+    assert [buffer['name'] for buffer in arrays_buffers
+            if 'public_access' in buffer] == ['sum'], arrays_buffers
+    private_bytes = sorted(buffer['capacity_bytes']
+                           for buffer in arrays_buffers
+                           if 'public_access' not in buffer)
+    assert private_bytes.count(64) == 22, private_bytes
+    assert private_bytes.count(32 * 256 * 4) >= 3, private_bytes
+    assert arrays_manifest['device']['mutable_handle_capacity'] >= 26
+    # An element of a cl_mem array is indexed at a constant only.
+    rejected(
+        'dynamic-array-index',
+        arrays_host.replace('UDONCL_EXPORT udononnxStatus_t run(void) {', '''\
+UDONCL_EXPORT int fill(int layer, float value) {
+  return clEnqueueFillBuffer(queue, layers[layer & 7], &value, sizeof(value),
+                             0, 64, 0, 0, 0);
+}
+
+UDONCL_EXPORT udononnxStatus_t run(void) {'''),
+        "static device resource stored in the cl_mem array 'layers', which "
+        '@fill indexes at a run-time index or accesses partially')
+    # A UDONCL_PUBLIC variable is one cl_mem, not an array.
+    rejected(
+        'public-array',
+        arrays_host.replace('static cl_mem inputs[3];',
+                            'UDONCL_PUBLIC(float) cl_mem inputs[3];'),
+        'UDONCL_PUBLIC requires a cl_mem variable: inputs')
     # The original Host builds again.
     restored = compile_variant(host)
     assert restored.returncode == 0, restored.stdout + restored.stderr

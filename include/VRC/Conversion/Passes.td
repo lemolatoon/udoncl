@@ -316,6 +316,13 @@ def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-
     allocation identities every tracked Host global cell may hold: the union
     over all writes and call contexts, whether it may be null and whether it
     may hold an unknown handle.
+
+    A tracked cell is an internal, zero-initialized `cl_mem` global, or one
+    element of an internal, zero-initialized array of `cl_mem` whose every
+    use is a whole element at a constant byte offset (once the loops over it
+    are unrolled); an element's entry has its byte `offset`. A resource
+    stored in a `cl_mem` array that is also indexed at a run-time index or
+    accessed partially is an error naming the array.
   }];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
 }
