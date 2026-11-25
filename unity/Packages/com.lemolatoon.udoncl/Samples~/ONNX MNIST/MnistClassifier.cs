@@ -44,14 +44,31 @@ public class MnistClassifier : UdonSharpBehaviour
     private float[] logits;
     private bool initialized;
 
-    private void Start()
+    private void OnEnable()
     {
-        // Initialize one frame after start-up so every behaviour is ready.
-        SendCustomEventDelayedFrames("InitializeModel", 1);
+        // One frame later every behaviour, the binding included, is ready.
+        SendCustomEventDelayedFrames(nameof(InitializeModel), 1);
+    }
+
+    private void OnDisable()
+    {
+        if (!initialized)
+            return;
+        initialized = false;
+        // Dispose releases the session and the buffers of the C Host; the
+        // next OnEnable initializes them again.
+        int libraryStatus;
+        int status = binding.TryDispose(out libraryStatus);
+        if (status != UdonclGenericOnnxMnistBinding.StatusSuccess || libraryStatus != 0)
+            Debug.LogError(
+                "MNIST: Dispose failed with status " + status + " and ONNX status " + libraryStatus
+            );
     }
 
     public void InitializeModel()
     {
+        if (initialized)
+            return;
         if (binding == null)
         {
             Debug.LogError("MNIST: assign the UdonclGenericOnnxMnistBinding instance.");
@@ -81,7 +98,6 @@ public class MnistClassifier : UdonSharpBehaviour
         }
 
         initialized = true;
-        Classify();
     }
 
     public override void Interact()
@@ -101,7 +117,7 @@ public class MnistClassifier : UdonSharpBehaviour
             return;
         }
 
-        status = binding.StartRun(this, "OnRunComplete");
+        status = binding.StartRun(this, nameof(OnRunComplete));
         if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
             Debug.LogError("MNIST: StartRun failed with status " + status);
     }
@@ -120,7 +136,7 @@ public class MnistClassifier : UdonSharpBehaviour
             return;
         }
 
-        status = binding.StartReadLogits(logits, this, "OnLogitsRead");
+        status = binding.StartReadLogits(logits, this, nameof(OnLogitsRead));
         if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
             Debug.LogError("MNIST: StartReadLogits failed with status " + status);
     }

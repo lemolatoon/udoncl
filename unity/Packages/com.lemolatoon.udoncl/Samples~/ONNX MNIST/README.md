@@ -12,6 +12,7 @@ on the GPU.
    to place the `UdonclGenericOnnxMnistBinding` prefab in the scene.
 2. Add `MnistClassifier` to a GameObject and assign the
    `UdonclGenericOnnxMnistBinding` scene instance to its **Binding** field.
-3. Enter Play Mode. The sample initializes the model, classifies its
-   hand-drawn seven and logs `MNIST: predicted 7`. Interact with the object to
-   classify the image again.
+3. Enter Play Mode. `OnEnable` initializes the model one frame later.
+   Interact with the object: the sample writes its hand-drawn seven, runs the
+   model, reads the logits and logs `MNIST: predicted 7`. `OnDisable`
+   disposes the model.

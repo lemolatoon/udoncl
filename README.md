@@ -710,7 +710,7 @@ UDONCL_EXPORT udononnxStatus_t initialize(void) {
 
 UDONCL_EXPORT udononnxStatus_t run(void) { return udononnxRun(session); }
 
-UDONCL_EXPORT udononnxStatus_t shutdown(void) {
+UDONCL_EXPORT udononnxStatus_t dispose(void) {
   /* ... udononnxReleaseSession, clReleaseMemObject, clReleaseCommandQueue,
      clReleaseContext ... */
 }
@@ -718,7 +718,8 @@ UDONCL_EXPORT udononnxStatus_t shutdown(void) {
 
 `run` launches GPU work, so it becomes an asynchronous U# method;
 `initialize` only creates the buffers and the session (the weights are
-compiled into the artifact), so it is synchronous. `udononnxRun` returns once
+compiled into the artifact), so it is synchronous, as is `dispose`, which
+releases them; `initialize` may run again after it. `udononnxRun` returns once
 the graph is enqueued on the session's in-order queue. U# writes the image
 into the buffer bound as the model input and reads the buffer bound as the
 model output; the Host C never copies tensor data itself.
@@ -735,7 +736,7 @@ model output; the Host C never copies tensor data itself.
   unbound.
 - The three `UDONCL_EXPORT` functions are U# methods named after the
   PascalCase of their C names: `initialize` → `Initialize`, `run` → `Run`,
-  and `shutdown` → `Shutdown`, none with parameters.
+  and `dispose` → `Dispose`, none with parameters.
 - The other Device buffers of the model belong to the session and stay
   private; the compiler derives them from the model.
 
@@ -847,7 +848,7 @@ build/onnx-mnist-cmake/udoncl/onnx-mnist/artifact
 
    > **Screenshot (pending):** Inspector of the MnistClassifier GameObject with Binding set to the UdonclGenericOnnxMnistBinding scene instance — docs/images/getting-started/mnist-inspector-binding.png
 
-5. Enter Play Mode and watch the Console.
+5. Enter Play Mode, interact with the cube, and watch the Console.
 
 #### 4. Your UdonSharpBehaviour
 
@@ -858,17 +859,18 @@ The generated binding follows the same rules as in the SAXPY tutorial:
 - `int StartRun(UdonSharpBehaviour receiver, string completionEvent)`,
   `int GetRunStatus()`, and `int TryGetRunResult(out int result)`: run `run`
   asynchronously and read its `udononnxStatus_t`.
-- `int TryShutdown(out int result)`: `shutdown`, which launches no GPU
-  work and therefore runs synchronously.
+- `int TryDispose(out int result)`: `dispose`, which launches no GPU work
+  and therefore runs synchronously.
 - `int TryWriteImage(float[] source)`: upload the 784 pixels of the `image`
   input, row by row.
 - `int StartReadLogits(float[] destination, UdonSharpBehaviour receiver, string completionEvent)`
   and `int GetLastReadbackStatus()`: read the 10 `logits` asynchronously.
 
-`MnistClassifier.cs` (identical to the **ONNX MNIST** Package Sample) draws a
-seven as text, initializes the model once, classifies the image, and logs the
-digit with the largest logit. Interacting with the object classifies the
-image again:
+`MnistClassifier.cs` (identical to the **ONNX MNIST** Package Sample) follows
+the pattern of the SAXPY tutorial: `OnEnable` initializes the model one frame
+later, `Interact` writes a seven drawn as text, runs the model, reads the
+logits and logs the digit with the largest logit, and `OnDisable` disposes the
+model:
 
 ```csharp
 using Lemolatoon.Udoncl.Generated;
@@ -917,14 +919,31 @@ public class MnistClassifier : UdonSharpBehaviour
     private float[] logits;
     private bool initialized;
 
-    private void Start()
+    private void OnEnable()
     {
-        // Initialize one frame after start-up so every behaviour is ready.
-        SendCustomEventDelayedFrames("InitializeModel", 1);
+        // One frame later every behaviour, the binding included, is ready.
+        SendCustomEventDelayedFrames(nameof(InitializeModel), 1);
+    }
+
+    private void OnDisable()
+    {
+        if (!initialized)
+            return;
+        initialized = false;
+        // Dispose releases the session and the buffers of the C Host; the
+        // next OnEnable initializes them again.
+        int libraryStatus;
+        int status = binding.TryDispose(out libraryStatus);
+        if (status != UdonclGenericOnnxMnistBinding.StatusSuccess || libraryStatus != 0)
+            Debug.LogError(
+                "MNIST: Dispose failed with status " + status + " and ONNX status " + libraryStatus
+            );
     }
 
     public void InitializeModel()
     {
+        if (initialized)
+            return;
         if (binding == null)
         {
             Debug.LogError("MNIST: assign the UdonclGenericOnnxMnistBinding instance.");
@@ -954,7 +973,6 @@ public class MnistClassifier : UdonSharpBehaviour
         }
 
         initialized = true;
-        Classify();
     }
 
     public override void Interact()
@@ -974,7 +992,7 @@ public class MnistClassifier : UdonSharpBehaviour
             return;
         }
 
-        status = binding.StartRun(this, "OnRunComplete");
+        status = binding.StartRun(this, nameof(OnRunComplete));
         if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
             Debug.LogError("MNIST: StartRun failed with status " + status);
     }
@@ -993,7 +1011,7 @@ public class MnistClassifier : UdonSharpBehaviour
             return;
         }
 
-        status = binding.StartReadLogits(logits, this, "OnLogitsRead");
+        status = binding.StartReadLogits(logits, this, nameof(OnLogitsRead));
         if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
             Debug.LogError("MNIST: StartReadLogits failed with status " + status);
     }
@@ -1020,9 +1038,9 @@ public class MnistClassifier : UdonSharpBehaviour
 
 #### 5. Expected result
 
-After the model is initialized, the Console shows
-`MNIST: predicted 7 (logit ...)` with the largest logit. Interact with the
-object to classify the image again; edit `Digit` to draw another digit.
+Each interaction with the object logs `MNIST: predicted 7 (logit ...)` with
+the largest logit; edit `Digit` to draw another digit. Leaving Play Mode
+disables the behaviour, which disposes the model.
 
 > **Screenshot (pending):** Unity Console in Play Mode showing "MNIST: predicted 7" — docs/images/getting-started/mnist-console-output.png
 
