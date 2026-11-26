@@ -341,6 +341,12 @@ class ContainedProcess:
     def poll(self):
         return self.process.poll()
 
+    def _group_alive(self):
+        # An exited leader stays in its group as a zombie until it is reaped,
+        # so reap it before probing the group for surviving descendants.
+        self.process.poll()
+        return _process_group_alive(self.process_group)
+
     def close(self):
         if os.name == "nt":
             _terminate_windows_job(self.windows_job)
@@ -349,21 +355,15 @@ class ContainedProcess:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.process_group, signal.SIGTERM)
             deadline = time.monotonic() + 10
-            while (
-                _process_group_alive(self.process_group)
-                and time.monotonic() < deadline
-            ):
+            while self._group_alive() and time.monotonic() < deadline:
                 time.sleep(0.05)
-            if _process_group_alive(self.process_group):
+            if self._group_alive():
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(self.process_group, signal.SIGKILL)
                 deadline = time.monotonic() + 10
-                while (
-                    _process_group_alive(self.process_group)
-                    and time.monotonic() < deadline
-                ):
+                while self._group_alive() and time.monotonic() < deadline:
                     time.sleep(0.05)
-                if _process_group_alive(self.process_group):
+                if self._group_alive():
                     raise RuntimeError(
                         f"process group {self.process_group} survived SIGKILL"
                     )
