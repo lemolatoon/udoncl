@@ -1023,8 +1023,8 @@ struct PrepareUdonAsyncRuntimePass
             region->getBlocks().insert(std::next(current->getIterator()),
                                        pending);
             suspend->moveBefore(pending, pending->end());
-            cf::BranchOp::create(OpBuilder::atBlockEnd(current),
-                                 operation->getLoc(), pending);
+            OpBuilder branchBuilder = OpBuilder::atBlockEnd(current);
+            cf::BranchOp::create(branchBuilder, operation->getLoc(), pending);
             operation->erase();
             continue;
           }
