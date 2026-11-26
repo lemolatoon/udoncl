@@ -138,7 +138,12 @@ Comparison compare(const char *name, const Buffer &fused,
   Comparison result;
   for (uint32_t index = 0; index < count; ++index) {
     uint32_t word = bits(fused[index]);
-    bool same = word == bits(reference[index]);
+    // Every non-NaN word, including the sign of zero, must match bit for
+    // bit. Any two NaNs match: graphics drivers need not preserve NaN
+    // payloads or signs (llvmpipe canonicalizes them in the fused kernels
+    // but not in the library kernels).
+    bool same = word == bits(reference[index]) ||
+                (std::isnan(fused[index]) && std::isnan(reference[index]));
     result.exact += same;
     if (!same && result.exact + 8 > index)
       std::cerr << name << "[" << index << "]: fused 0x" << std::hex << word
