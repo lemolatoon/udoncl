@@ -263,6 +263,46 @@ class InstallONNXMLIRTests(unittest.TestCase):
         self.assertFalse(any('_USE_MATH_DEFINES' in str(part)
                              for part in command))
 
+    def write_llvm_config(self, rtti):
+        config = self.root / 'llvm/lib/cmake/llvm/LLVMConfig.cmake'
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            'set(LLVM_ENABLE_EH OFF)\n'
+            f'set(LLVM_ENABLE_RTTI {rtti})\n', encoding='utf-8')
+        return self.root / 'llvm'
+
+    def test_release_archive_without_rtti_builds_without_rtti(self):
+        # The official Linux release archive is built without RTTI, and
+        # ONNX-MLIR's exception handling would otherwise keep RTTI enabled.
+        llvm = self.write_llvm_config('OFF')
+        self.assertFalse(installer.llvm_enables_rtti(llvm))
+        command = installer.configure_command(
+            self.lock, Path('source'), Path('build'), llvm, 'linux', 'cmake',
+            (), installer.llvm_enables_rtti(llvm))
+        self.assertIn('-DCMAKE_CXX_FLAGS=-fno-rtti', command)
+
+    def test_sdk_with_rtti_keeps_default_flags(self):
+        llvm = self.write_llvm_config('ON')
+        self.assertTrue(installer.llvm_enables_rtti(llvm))
+        command = installer.configure_command(
+            self.lock, Path('source'), Path('build'), llvm, 'linux', 'cmake',
+            (), installer.llvm_enables_rtti(llvm))
+        self.assertFalse(any(str(part).startswith('-DCMAKE_CXX_FLAGS=')
+                             for part in command))
+
+    def test_windows_configuration_ignores_sdk_rtti(self):
+        # MSVC emits RTTI descriptors in each object, so ONNX-MLIR links
+        # against the RTTI-less Windows SDK without changing its flags.
+        command = installer.configure_command(
+            self.lock, Path('source'), Path('build'), Path('llvm'),
+            'windows', 'cmake', (), False)
+        self.assertIn('-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES', command)
+        self.assertNotIn('-DCMAKE_CXX_FLAGS=-fno-rtti', command)
+
+    def test_sdk_without_cmake_config_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'no CMake config'):
+            installer.llvm_enables_rtti(self.root / 'missing-llvm')
+
 
 if __name__ == '__main__':
     unittest.main()

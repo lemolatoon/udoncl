@@ -232,8 +232,19 @@ def missing_lit_tools(llvm_prefix):
     return [tool for tool in LIT_TOOL_TARGETS if tool not in exported]
 
 
+def llvm_enables_rtti(llvm_prefix):
+    config = llvm_prefix / 'lib/cmake/llvm/LLVMConfig.cmake'
+    if not config.is_file():
+        raise RuntimeError(f'LLVM/MLIR SDK has no CMake config: {config}')
+    match = re.search(r'^set\(LLVM_ENABLE_RTTI\s+(\S+)\)',
+                      config.read_text(encoding='utf-8'), re.MULTILINE)
+    if not match:
+        raise RuntimeError(f'{config} does not record LLVM_ENABLE_RTTI')
+    return match.group(1).upper() in {'1', 'ON', 'YES', 'TRUE', 'Y'}
+
+
 def configure_command(lock, source, build, llvm_prefix, host, cmake,
-                      lit_tool_stubs=()):
+                      lit_tool_stubs=(), llvm_rtti=True):
     command = [cmake, '-S', source, '-B', build, '-G', 'Ninja',
                f'-DMLIR_DIR={llvm_prefix / "lib/cmake/mlir"}',
                '-DCMAKE_BUILD_TYPE=Release']
@@ -241,6 +252,14 @@ def configure_command(lock, source, build, llvm_prefix, host, cmake,
                 for name, value in lock['cmake_options'].items()]
     if host == 'windows':
         command.append('-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES')
+    elif not llvm_rtti:
+        # ONNX-MLIR sets LLVM_REQUIRES_EH, which makes LLVM's build flags keep
+        # the compiler's default RTTI. Its passes and dialects derive from
+        # MLIR classes, so with RTTI they reference typeinfo symbols that an
+        # SDK built without RTTI (the official Linux release archive) does
+        # not define, and every consumer fails to link. Nothing built here
+        # uses dynamic_cast or typeid, and protobuf and Abseil detect -fno-rtti.
+        command.append('-DCMAKE_CXX_FLAGS=-fno-rtti')
     # The project include stubs lit tools the SDK lacks, so the unused
     # check-* suites stay generatable.
     command += [
@@ -283,7 +302,8 @@ def install(lock, host, prefix, source, build, llvm_prefix, jobs):
         raise RuntimeError('cmake and ninja must be available on PATH')
     ensure_source(lock, source)
     run(configure_command(lock, source, build, llvm_prefix, host, cmake,
-                          missing_lit_tools(llvm_prefix)))
+                          missing_lit_tools(llvm_prefix),
+                          llvm_enables_rtti(llvm_prefix)))
     for command in build_commands(lock, build, cmake, jobs):
         run(command)
     library_root = build / 'Release/lib'

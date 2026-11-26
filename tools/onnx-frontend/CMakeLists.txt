@@ -14,5 +14,8 @@ vrc_configure_target(udoncl-onnx-frontend)
 if(MSVC)
   target_compile_options(udoncl-onnx-frontend PRIVATE /GR /EHsc)
 else()
-  target_compile_options(udoncl-onnx-frontend PRIVATE -frtti -fexceptions)
+  # Keep llvm_update_compile_flags' RTTI choice, which matches the LLVM SDK
+  # and the ONNX-MLIR SDK built against it. Forcing -frtti against an SDK
+  # built without RTTI references MLIR typeinfo symbols that do not exist.
+  target_compile_options(udoncl-onnx-frontend PRIVATE -fexceptions)
 endif()
