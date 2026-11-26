@@ -59,3 +59,5 @@ LICENSE text eol=lf
 # Verbatim upstream copies keep their exact bytes (digests in SOURCE.json);
 # LLVM's LICENSE.TXT ends with a blank line.
 third_party/llvm-project/** -whitespace
+# `*.txt` matches LICENSE.TXT only where Git ignores case.
+third_party/llvm-project/LICENSE.TXT text eol=lf
