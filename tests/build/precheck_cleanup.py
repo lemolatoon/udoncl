@@ -35,12 +35,26 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck cleanup ") as temporary
     service.shutil.rmtree = transient_rmtree
     service.time.sleep = lambda _delay: None
     try:
-        service.remove_owned(transient, temporary)
+        if os.name == "nt":
+            service.remove_owned(transient, temporary)
+        else:
+            # Only Windows sharing violations are retried.
+            try:
+                service.remove_owned(transient, temporary)
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("a non-Windows removal error was retried")
     finally:
         service.shutil.rmtree = original_rmtree
         service.time.sleep = original_sleep
-    assert attempts == 2
-    assert not transient.exists()
+    if os.name == "nt":
+        assert attempts == 2
+        assert not transient.exists()
+    else:
+        assert attempts == 1
+        service.remove_owned(transient, temporary)
+        assert not transient.exists()
 
     repository = temporary / "repository"
     repository.mkdir()
@@ -248,14 +262,17 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck cleanup ") as temporary
     def reject_direct_spawn(*_args, **_kwargs):
         raise AssertionError("manual start spawned beside the installed supervisor")
 
-    service.wait_for_service = record_supervisor_wait
-    service.subprocess.Popen = reject_direct_spawn
-    try:
-        service.start_background(repository, supervised_cache, 2)
-    finally:
-        service.wait_for_service = original_wait_for_service
-        service.subprocess.Popen = original_popen
-    assert waited == [(supervised_cache, 15)]
+    # Only the Windows startup fallback installs a supervisor that owns
+    # coordinator startup through the service-enabled marker.
+    if os.name == "nt":
+        service.wait_for_service = record_supervisor_wait
+        service.subprocess.Popen = reject_direct_spawn
+        try:
+            service.start_background(repository, supervised_cache, 2)
+        finally:
+            service.wait_for_service = original_wait_for_service
+            service.subprocess.Popen = original_popen
+        assert waited == [(supervised_cache, 15)]
 
     ownership_cache = temporary / "ownership-cache"
     ownership_process = subprocess.Popen(
