@@ -55,3 +55,7 @@ LICENSE text eol=lf
 *.exr binary
 *.dll binary
 *.exe binary
+
+# Verbatim upstream copies keep their exact bytes (digests in SOURCE.json);
+# LLVM's LICENSE.TXT ends with a blank line.
+third_party/llvm-project/** -whitespace

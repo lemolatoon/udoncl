@@ -3,6 +3,16 @@ configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/lit/lit.site.cfg.py.in"
   "${CMAKE_CURRENT_BINARY_DIR}/lit/lit.site.cfg.py"
   @ONLY)
+# The official Linux LLVM release archive installs the LLVMFileCheck library
+# and its header but not the FileCheck tool. Build the upstream driver of the
+# pinned LLVM commit (third_party/llvm-project) against that library; SDKs
+# that export FileCheck, such as the Windows SDK, keep their own tool.
+if(NOT TARGET FileCheck)
+  add_llvm_executable(FileCheck
+    "${PROJECT_SOURCE_DIR}/third_party/llvm-project/llvm/utils/FileCheck/FileCheck.cpp")
+  target_link_libraries(FileCheck PRIVATE LLVMFileCheck LLVMSupport)
+  vrc_configure_target(FileCheck)
+endif()
 add_test(NAME mlir-lit
   COMMAND "${CMAKE_COMMAND}" -E env
     "UDONCL_LIT_VRC_OPT=$<TARGET_FILE:vrc-opt>"
