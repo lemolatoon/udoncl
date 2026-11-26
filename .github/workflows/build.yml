@@ -45,6 +45,8 @@ jobs:
           python-version: '3.12'
       - name: Install ONNX weight packer test dependency
         run: python -m pip install -r scripts/requirements-onnx.txt
+      - name: Install pinned lit test runner
+        run: python -m pip install -r scripts/requirements-test.txt
       - name: Restore pinned TinyLlama ONNX model
         uses: actions/cache/restore@v4
         id: tinyllama-model
