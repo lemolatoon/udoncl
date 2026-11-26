@@ -89,6 +89,10 @@ target_compile_definitions(opencl-aot-runtime PRIVATE
   UDONCL_AOT_RUNTIME_VALIDATION=1
   UDONCL_AOT_ENABLE_DNN=1
   UDONCL_AOT_ENABLE_ONNX=1)
+# The included device sources call sin and cos, which live in libm on Unix.
+if(NOT WIN32)
+  target_link_libraries(opencl-aot-runtime PRIVATE m)
+endif()
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
 add_executable(udontokenizers-runtime
   runtime/udontokenizers.c
