@@ -78,7 +78,7 @@ Compile the Host with the same temporary 32-bit SPIR layout used by the current
 boundary prototype:
 
 ```powershell
-& $clang -target spir-unknown-unknown -x c -std=c11 `
+& $clang -target spir-unknown-unknown -x c -std=c11 -nostdlibinc `
   -Xclang -fdefault-calling-conv=cdecl -O0 `
   -Xclang -disable-O0-optnone -fomit-frame-pointer -ffp-contract=off `
   -S -emit-llvm examples/hello-kernel/host.c -o "$out/host.ll"

@@ -8,7 +8,7 @@ import subprocess
 
 # The Host flags of udoncl_add_host_library (UdonCLConfig.cmake).
 HOST_FLAGS = [
-    '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+    '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11', '-nostdlibinc',
     '-Xclang', '-fdefault-calling-conv=cdecl', '-O1', '-fno-inline',
     '-fno-discard-value-names', '-fomit-frame-pointer', '-ffp-contract=off', '-emit-llvm', '-c',
 ]

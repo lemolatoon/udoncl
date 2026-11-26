@@ -422,8 +422,13 @@ function(_udoncl_compile_source_target artifact kind unit sources dependencies
     get_filename_component(_stem "${_source}" NAME_WE)
     set(_object "${_object_directory}/${_index}-${_stem}.bc")
     if(kind STREQUAL "HOST")
+      # Host C sees only Clang's own freestanding headers (stdint.h,
+      # stddef.h, limits.h, float.h, ...). The driver adds no system include
+      # directories for a SPIR target on Windows, but adds /usr/include on
+      # Linux, whose glibc headers need multiarch directories a SPIR target
+      # never searches.
       set(_language_flags -target spir-unknown-unknown -x c -std=c11
-          -Xclang -fdefault-calling-conv=cdecl)
+          -nostdlibinc -Xclang -fdefault-calling-conv=cdecl)
       # Promote fixed aggregates and scalar pointer wrappers while keeping a
       # stable LLVM form for recovery. Whole-program inlining runs only after
       # all Host modules have been linked and raised to MLIR, where library

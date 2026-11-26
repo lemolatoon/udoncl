@@ -2644,7 +2644,7 @@ def main():
     unlinked_module = output / 'unlinked-opencl-host.bc'
     run([
         args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
-        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-nostdlibinc', '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
         '-Xclang', '-disable-O0-optnone', '-fno-discard-value-names',
         '-fomit-frame-pointer',
         '-ffp-contract=off', '-emit-llvm', '-c', str(saxpy_source / 'host.c'),
@@ -2685,7 +2685,7 @@ def main():
     )
     run([
         args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
-        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-nostdlibinc', '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
         '-Xclang', '-disable-O0-optnone', '-fno-discard-value-names',
         '-fomit-frame-pointer',
         '-ffp-contract=off', '-emit-llvm', '-c', str(unity_buffer_source),
