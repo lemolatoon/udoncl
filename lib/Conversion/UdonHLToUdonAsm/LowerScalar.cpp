@@ -6136,7 +6136,7 @@ private:
           rawWordIndex(location, pointer, wordIndex, staticAddress);
       emitPush(location, rawHeapSlot);
       emitPush(location, index);
-      emitPush(location, type.isF32() ? word : result);
+      emitPush(location, type.isF32() ? StringRef(word) : result);
       emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
       if (type.isF32()) {
         emitPush(location, word);
