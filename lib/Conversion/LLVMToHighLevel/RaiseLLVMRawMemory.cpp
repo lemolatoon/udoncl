@@ -103,7 +103,9 @@ FailureOr<uint64_t> abiAlignment(const DataLayout &layout, Type type) {
     return alignment;
   }
   uint64_t alignment = layout.getTypeABIAlignment(type);
-  return alignment ? FailureOr<uint64_t>(alignment) : failure();
+  if (!alignment)
+    return failure();
+  return alignment;
 }
 
 LogicalResult reject(Operation *operation, StringRef reason) {
