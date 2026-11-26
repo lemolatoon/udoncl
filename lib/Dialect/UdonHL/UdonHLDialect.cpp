@@ -219,9 +219,10 @@ std::optional<uint64_t> vrc::udonhl::GlobalOp::getObjectByteSize() {
 
 mlir::LogicalResult
 vrc::udonhl::GlobalOp::verifySymbolUses(mlir::SymbolTableCollection &symbols) {
-  if (!getRelocations())
+  mlir::ArrayAttr relocations = getRelocationsAttr();
+  if (!relocations)
     return mlir::success();
-  for (mlir::Attribute attribute : *getRelocations()) {
+  for (mlir::Attribute attribute : relocations) {
     auto relocation = GlobalRelocation::parse(attribute);
     if (!relocation || !relocation->symbol)
       continue;
