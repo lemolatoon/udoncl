@@ -170,7 +170,7 @@ class InstallONNXMLIRTests(unittest.TestCase):
         command = installer.configure_command(
             self.lock, Path('source'), Path('build'), Path('llvm'),
             'windows', 'cmake')
-        self.assertIn('-DMLIR_DIR=llvm\\lib\\cmake\\mlir', command)
+        self.assertIn(f'-DMLIR_DIR={Path("llvm/lib/cmake/mlir")}', command)
         self.assertIn('-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES', command)
         self.assertIn('-DONNX_MLIR_ENABLE_STABLEHLO=OFF', command)
         self.assertIn('-DONNX_MLIR_BUILD_TESTS=OFF', command)
