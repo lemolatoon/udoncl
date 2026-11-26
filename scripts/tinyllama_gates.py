@@ -1832,9 +1832,13 @@ def probe_artifact(path: Path, target: str) -> Path:
     return path / built["artifact"]
 
 
-def shader_names(directory: Path) -> dict[str, Path]:
+def shader_names(directory: Path, exclude: Path | None = None) -> dict[str, Path]:
+    """Shader names under `directory` (outside `exclude`) and the first file
+    defining each, in path order."""
     names: dict[str, Path] = {}
     for path in sorted(Path(directory).rglob("*.shader")):
+        if exclude is not None and lexically_within(path, exclude):
+            continue
         with contextlib.suppress(OSError):
             match = SHADER_NAME.search(path.read_text(encoding="utf-8", errors="replace"))
             if match:
@@ -1857,11 +1861,11 @@ def shader_conflicts(project: Path, artifact: Path) -> list[str]:
     """Artifact shader names a project copy already defines: Shader.Find
     would be ambiguous (for example an imported TinyLlama artifact)."""
     ours = artifact_shader_names(artifact)
-    existing: dict[str, Path] = {}
+    existing: set[str] = set()
     for folder in ("Assets", "Packages"):
-        for name, path in shader_names(project / folder).items():
-            if not lexically_within(path, project / PROBE_FOLDER):
-                existing.setdefault(name, path)
+        # Exclude the probe's own copies before picking one file per name: a
+        # probe copy that sorts first must not hide another definition.
+        existing.update(shader_names(project / folder, project / PROBE_FOLDER))
     return sorted(name for name in ours if name in existing)
 
 
